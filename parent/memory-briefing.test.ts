@@ -15,6 +15,7 @@ import {
   resetMemoryEmbedderForTests,
   setMemoryEmbedderForTests,
 } from "../shared/memory-embedding.ts";
+import { getMemoryActivityGeneration } from "../shared/memory-graph.ts";
 
 function fakeEmbed(texts: string[]): Promise<Float32Array[]> {
   return Promise.resolve(
@@ -213,6 +214,31 @@ test("unresolved recall model fails closed with a visible notice", async () => {
       gen.activity_generation,
       0,
       "unavailable recall must not cool heat via activity generation",
+    );
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
+test("unresolved recall model with an empty index fails closed without advancing activity generation", async () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const result = await buildMemorySessionBriefing({
+      db,
+      query: "anything",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: { find: () => undefined } as never,
+      currentSessionModel: undefined,
+      embed: fakeEmbed,
+    });
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /no configured model/);
+    assert.equal(result.notice.customType, "pi-dream-briefing");
+    assert.equal(
+      getMemoryActivityGeneration(db),
+      0,
+      "unresolved recall model must not advance activity generation, even on an empty index",
     );
   } finally {
     closeMemoryDatabase(db);

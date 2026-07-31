@@ -98,7 +98,8 @@ function loadBriefingPlannerPrompt(): string | undefined {
 
 /**
  * Run the full first-turn recall pipeline once.
- * Advances activity generation only after abort-gated search/planning succeed.
+ * Advances activity generation only after recall-model resolution and
+ * abort-gated search/planning succeed.
  * Records recall only for rendered nodes.
  */
 export async function buildMemorySessionBriefing(
@@ -126,16 +127,6 @@ export async function buildMemorySessionBriefing(
   });
   throwIfMemoryAborted(signal);
 
-  if (hybrid.candidates.length === 0) {
-    // Empty index is still a completed first-turn opportunity.
-    incrementMemoryActivityGeneration(input.db);
-    return {
-      ok: true,
-      plan: { sections: [], estimatedTokens: 0, selectedIds: [] },
-      message: null,
-    };
-  }
-
   if (!resolved.ok) {
     return {
       ok: false,
@@ -146,6 +137,17 @@ export async function buildMemorySessionBriefing(
         display: true,
         details: { status: "unavailable", error: resolved.error },
       },
+    };
+  }
+
+  if (hybrid.candidates.length === 0) {
+    // Empty index after a successful model resolve is still a completed
+    // first-turn opportunity.
+    incrementMemoryActivityGeneration(input.db);
+    return {
+      ok: true,
+      plan: { sections: [], estimatedTokens: 0, selectedIds: [] },
+      message: null,
     };
   }
 

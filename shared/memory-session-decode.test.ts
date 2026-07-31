@@ -149,7 +149,7 @@ test("generated briefings keep provenance and are not learner evidence", () => {
   assert.equal(page.messages[0]!.text, "I like tabs");
 });
 
-test("memory-tool calls and results are excluded from learner input", () => {
+test("memory-tool parts are excluded without discarding mixed messages", () => {
   const decoded = decodeMemorySession([
     { type: "session", id: "1", cwd: "/x" },
     {
@@ -157,6 +157,7 @@ test("memory-tool calls and results are excluded from learner input", () => {
       message: {
         role: "assistant",
         content: [
+          { type: "text", text: "I found the relevant preference." },
           {
             type: "toolCall",
             id: "tc1",
@@ -192,15 +193,20 @@ test("memory-tool calls and results are excluded from learner input", () => {
       },
     },
   ]);
-  // Ordinary tool results stay visible; memory-tool output does not.
+  // Ordinary tool results and text alongside a memory call stay visible;
+  // only the memory-tool parts are removed.
   const page = formatMemorySessionPage(decoded);
-  assert.equal(page.totalMessages, 2);
+  assert.equal(page.totalMessages, 3);
   assert.equal(page.messages[0]!.role, "assistant");
-  assert.equal(page.messages[0]!.text, "I will remember that.");
-  assert.equal(page.messages[1]!.role, "toolResult");
-  assert.equal(page.messages[1]!.text, "[toolResult bash done]");
+  assert.equal(page.messages[0]!.text, "I found the relevant preference.");
+  assert.equal(page.messages[1]!.role, "assistant");
+  assert.equal(page.messages[1]!.text, "I will remember that.");
+  assert.equal(page.messages[2]!.role, "toolResult");
+  assert.equal(page.messages[2]!.text, "[toolResult bash done]");
 
   // Decoded provenance remains available for consumers that want it.
+  assert.equal(decoded.messages[0]!.role, "assistant");
+  assert.equal(decoded.messages[0]!.parts[1]!.tool, "memory_search");
   assert.equal(decoded.messages[1]!.role, "toolResult");
   assert.equal(decoded.messages[1]!.parts[0]!.tool, "memory_search");
 });

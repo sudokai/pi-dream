@@ -26,7 +26,10 @@ import {
   MEMORY_BRIEFING_CUSTOM_TYPE,
   MEMORY_CHILD_ENV,
 } from "./shared/memory-types.ts";
-import { buildMemorySessionBriefing } from "./parent/memory-briefing.ts";
+import {
+  buildMemorySessionBriefing,
+  createMemoryBriefingSignal,
+} from "./parent/memory-briefing.ts";
 import { evaluateMemoryLearningCadence } from "./parent/memory-cadence.ts";
 import { launchMemoryLearningRun } from "./parent/memory-learning-launcher.ts";
 import { registerMemoryAgentTools } from "./parent/memory-tools.ts";
@@ -180,7 +183,10 @@ export default function piDreamExtension(pi: ExtensionAPI) {
         modelRegistry: ctx.modelRegistry as never,
         currentSessionModel: ctx.model as never,
         piSessionId: ctx.sessionManager.getSessionId(),
-        signal: ctx.signal,
+        // Pi 0.83 runs before_agent_start before creating the active run, so
+        // ctx.signal is normally undefined here. Use its signal when a newer
+        // lifecycle provides one and otherwise keep opening work bounded.
+        signal: createMemoryBriefingSignal(ctx.signal),
       });
 
       if (!result.ok) {

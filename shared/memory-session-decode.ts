@@ -343,23 +343,33 @@ const MEMORY_TOOL_NAMES: ReadonlySet<string> = new Set([
   "memory_commit_session",
 ]);
 
+function isMemoryToolPart(part: MemoryDecodedPart): boolean {
+  return (
+    (part.type === "toolResult" || part.type === "toolCall") &&
+    part.tool !== undefined &&
+    MEMORY_TOOL_NAMES.has(part.tool)
+  );
+}
+
 /**
- * Whether a decoded message counts as user evidence for the learner.
- * Custom messages (extension-generated) and dream's own memory tool
- * calls/results are excluded; ordinary tool results stay visible.
+ * Filter one decoded message down to learner evidence parts. Generated custom
+ * messages and Dream memory-tool parts are removed individually, preserving
+ * text and ordinary tool results from a mixed assistant message.
+ */
+function filterMemoryLearnerEvidenceParts(
+  m: MemoryDecodedMessage,
+): MemoryDecodedPart[] {
+  if (m.role === "custom") return [];
+  return m.parts.filter((part) => !isMemoryToolPart(part));
+}
+
+/**
+ * Whether a decoded message has learner evidence after per-part filtering.
+ * Ordinary tool results stay visible even when a message also used Dream's
+ * memory tools.
  */
 export function isMemoryLearnerEvidence(m: MemoryDecodedMessage): boolean {
-  if (m.role === "custom") return false;
-  for (const p of m.parts) {
-    if (
-      (p.type === "toolResult" || p.type === "toolCall") &&
-      p.tool !== undefined &&
-      MEMORY_TOOL_NAMES.has(p.tool)
-    ) {
-      return false;
-    }
-  }
-  return true;
+  return filterMemoryLearnerEvidenceParts(m).length > 0;
 }
 
 /**
@@ -378,7 +388,12 @@ export function formatMemorySessionPage(
 } {
   const offset = opts?.offset ?? 0;
   const limit = opts?.limit ?? 40;
-  const visible = session.messages.filter(isMemoryLearnerEvidence);
+  const visible = session.messages
+    .map((message) => {
+      const parts = filterMemoryLearnerEvidenceParts(message);
+      return parts.length > 0 ? { ...message, parts } : null;
+    })
+    .filter((message): message is MemoryDecodedMessage => message !== null);
   const total = visible.length;
   const slice = visible.slice(offset, offset + limit);
   const messages = slice.map((m, i) => {

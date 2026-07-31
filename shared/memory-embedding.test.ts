@@ -66,3 +66,27 @@ test("an aborted embedder load detaches promptly without poisoning the cache", a
     resetMemoryEmbedderForTests();
   }
 });
+
+test("many cancelled embedder waiters do not block a later active waiter", async () => {
+  const deferred = deferredMemoryEmbedder();
+  const fakeEmbed: MemoryEmbedFn = async (texts) =>
+    texts.map(() => new Float32Array([1]));
+  setMemoryEmbedderFactoryForTests(() => deferred.promise);
+
+  try {
+    const cancelledLoads: Promise<MemoryEmbedFn | null>[] = [];
+    for (let i = 0; i < 100; i++) {
+      const turn = new AbortController();
+      cancelledLoads.push(loadMemoryEmbedder("test/minilm", turn.signal));
+      turn.abort();
+    }
+    assert.deepEqual(await Promise.all(cancelledLoads), Array(100).fill(null));
+
+    const activeTurn = new AbortController();
+    const activeLoad = loadMemoryEmbedder("test/minilm", activeTurn.signal);
+    deferred.resolve(fakeEmbed);
+    assert.ok(await activeLoad);
+  } finally {
+    resetMemoryEmbedderForTests();
+  }
+});

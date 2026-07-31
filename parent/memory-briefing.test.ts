@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { buildMemorySessionBriefing } from "./memory-briefing.ts";
+import {
+  buildMemorySessionBriefing,
+  createMemoryBriefingSignal,
+} from "./memory-briefing.ts";
 import {
   closeMemoryDatabase,
   openMemoryDatabaseAtPath,
@@ -18,6 +21,13 @@ function fakeEmbed(texts: string[]): Promise<Float32Array[]> {
     texts.map(() => new Float32Array([0.25, 0.5, 0.75])),
   );
 }
+
+test("briefing signal uses a bounded timeout before pi exposes a run signal", async () => {
+  const signal = createMemoryBriefingSignal(undefined, 10);
+  assert.equal(signal.aborted, false);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(signal.aborted, true);
+});
 
 test("buildMemorySessionBriefing completes through the pi-ai provider adapter by default", async () => {
   const db = openMemoryDatabaseAtPath(":memory:");

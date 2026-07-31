@@ -27,6 +27,20 @@ import {
 import { readFileSync } from "node:fs";
 import { memoryExtensionPath } from "../shared/pi-process-invocation.ts";
 
+/** Maximum time the pre-agent opening briefing may wait without a run signal. */
+export const MEMORY_BRIEFING_TIMEOUT_MS = 15_000;
+
+/**
+ * Use pi's active run signal when available; before_agent_start otherwise has
+ * no run signal, so bound opening briefing work with an independent timeout.
+ */
+export function createMemoryBriefingSignal(
+  signal?: AbortSignal,
+  timeoutMs: number = MEMORY_BRIEFING_TIMEOUT_MS,
+): AbortSignal {
+  return signal ?? AbortSignal.timeout(timeoutMs);
+}
+
 export interface BuildMemoryBriefingInput {
   db: DatabaseSync;
   query: string;

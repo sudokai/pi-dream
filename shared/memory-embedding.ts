@@ -113,6 +113,63 @@ async function createMemoryEmbedder(
   };
 }
 
+interface MemoryEmbedderLoadWaiter {
+  finish: (embedder: MemoryEmbedFn | null) => void;
+  fail: (error: unknown) => void;
+  cancel: () => void;
+}
+
+// Keep one settlement reaction per shared load. Per-caller abort listeners are
+// removed from this registry immediately, so a stalled model load does not
+// retain every cancelled caller's closure and AbortSignal.
+const memoryEmbedderLoadWaiters = new WeakMap<
+  Promise<MemoryEmbedFn | null>,
+  Set<MemoryEmbedderLoadWaiter>
+>();
+const memoryEmbedderLoadSettlementHandlers = new WeakSet<
+  Promise<MemoryEmbedFn | null>
+>();
+
+function settleMemoryEmbedderLoadWaiters(
+  loading: Promise<MemoryEmbedFn | null>,
+  embedder: MemoryEmbedFn | null,
+): void {
+  const waiters = memoryEmbedderLoadWaiters.get(loading);
+  if (!waiters) return;
+  memoryEmbedderLoadWaiters.delete(loading);
+  for (const waiter of waiters) waiter.finish(embedder);
+}
+
+function failMemoryEmbedderLoadWaiters(
+  loading: Promise<MemoryEmbedFn | null>,
+  error: unknown,
+): void {
+  const waiters = memoryEmbedderLoadWaiters.get(loading);
+  if (!waiters) return;
+  memoryEmbedderLoadWaiters.delete(loading);
+  for (const waiter of waiters) waiter.fail(error);
+}
+
+function registerMemoryEmbedderLoadSettlement(
+  loading: Promise<MemoryEmbedFn | null>,
+): Set<MemoryEmbedderLoadWaiter> {
+  let waiters = memoryEmbedderLoadWaiters.get(loading);
+  if (!waiters) {
+    waiters = new Set<MemoryEmbedderLoadWaiter>();
+    memoryEmbedderLoadWaiters.set(loading, waiters);
+  }
+  if (!memoryEmbedderLoadSettlementHandlers.has(loading)) {
+    memoryEmbedderLoadSettlementHandlers.add(loading);
+    // The shared handler owns no caller-specific references. Each caller is
+    // represented only while it is actively waiting in the registry above.
+    void loading.then(
+      (embedder) => settleMemoryEmbedderLoadWaiters(loading, embedder),
+      (error: unknown) => failMemoryEmbedderLoadWaiters(loading, error),
+    );
+  }
+  return waiters;
+}
+
 /** Return a shared load result, or detach this caller as soon as it aborts. */
 function waitForMemoryEmbedderLoad(
   loading: Promise<MemoryEmbedFn | null>,
@@ -122,26 +179,44 @@ function waitForMemoryEmbedderLoad(
   if (signal.aborted) return Promise.resolve(null);
 
   return new Promise((resolve, reject) => {
-    const onAbort = () => {
-      cleanup();
-      resolve(null);
+    const waiters = registerMemoryEmbedderLoadSettlement(loading);
+    let waiter!: MemoryEmbedderLoadWaiter;
+    let active = true;
+
+    const removeWaiter = () => {
+      const pending = memoryEmbedderLoadWaiters.get(loading);
+      if (!pending) return;
+      pending.delete(waiter);
+      if (pending.size === 0) memoryEmbedderLoadWaiters.delete(loading);
     };
-    const cleanup = () => signal.removeEventListener("abort", onAbort);
-    signal.addEventListener("abort", onAbort, { once: true });
-    if (signal.aborted) {
-      onAbort();
-      return;
-    }
-    loading.then(
-      (embedder) => {
+    const cleanup = () => {
+      signal.removeEventListener("abort", waiter.cancel);
+    };
+    waiter = {
+      finish: (embedder) => {
+        if (!active) return;
+        active = false;
         cleanup();
         resolve(embedder);
       },
-      (error: unknown) => {
+      fail: (error) => {
+        if (!active) return;
+        active = false;
         cleanup();
         reject(error);
       },
-    );
+      cancel: () => {
+        if (!active) return;
+        active = false;
+        cleanup();
+        removeWaiter();
+        resolve(null);
+      },
+    };
+
+    waiters.add(waiter);
+    signal.addEventListener("abort", waiter.cancel, { once: true });
+    if (signal.aborted) waiter.cancel();
   });
 }
 

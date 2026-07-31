@@ -129,6 +129,7 @@ export default function piDreamExtension(pi: ExtensionAPI) {
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    let openedDb: DatabaseSync | null = null;
     try {
       if (pinned?.db) {
         closeMemoryDatabase(pinned.db);
@@ -138,6 +139,7 @@ export default function piDreamExtension(pi: ExtensionAPI) {
       const workspaceId = resolveMemoryWorkspaceId(cwd);
       ensureMemoryWorkspaceDataDir(workspaceId);
       const db = openMemoryDatabase(workspaceId);
+      openedDb = db;
       const loaded = loadMemoryConfigForWorkspace(workspaceId);
       const config = loaded.ok
         ? loaded.config
@@ -168,9 +170,13 @@ export default function piDreamExtension(pi: ExtensionAPI) {
       if (notice) {
         ctx.ui.notify(notice.message, notice.level);
       }
+      openedDb = null;
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       ctx.ui.notify(`Memory init failed: ${detail}`, "warning");
+      if (openedDb) {
+        closeMemoryDatabase(openedDb);
+      }
       pinned = null;
     }
   });

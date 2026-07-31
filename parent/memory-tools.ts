@@ -122,6 +122,7 @@ export function registerMemoryAgentTools(
           details: {
             count: 0,
             semanticDegraded: false,
+            semanticError: null,
             usage: undefined as unknown,
             selectedIds: [] as string[],
           },
@@ -145,6 +146,7 @@ export function registerMemoryAgentTools(
           details: {
             count: 0,
             semanticDegraded: hybrid.semanticDegraded,
+            semanticError: hybrid.semanticError ?? null,
             usage: undefined as unknown,
             selectedIds: [] as string[],
           },
@@ -202,6 +204,7 @@ export function registerMemoryAgentTools(
             usage: planned.usage as unknown,
             selectedIds: [] as string[],
             semanticDegraded: hybrid.semanticDegraded,
+            semanticError: hybrid.semanticError ?? null,
           },
         };
       }
@@ -230,6 +233,7 @@ export function registerMemoryAgentTools(
           selectedIds: refreshed.selectedIds as string[],
           usage: planned.usage as unknown,
           semanticDegraded: hybrid.semanticDegraded,
+          semanticError: hybrid.semanticError ?? null,
         },
       };
     },

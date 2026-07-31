@@ -219,6 +219,7 @@ export async function buildMemorySessionBriefing(
         selectedIds: refreshed.selectedIds,
         estimatedTokens: refreshed.estimatedTokens,
         semanticDegraded: hybrid.semanticDegraded,
+        semanticError: hybrid.semanticError ?? null,
       },
     },
   };

@@ -508,7 +508,10 @@ export async function searchMemorySemantic(
     if (signal?.aborted) {
       return { hits: [], degraded: true, error: "aborted" };
     }
-    const detail = err instanceof Error ? err.message : String(err);
-    return { hits: [], degraded: true, error: detail };
+    // Unexpected errors (corrupt index, IO, embedder failure) are not recall
+    // degradation: propagate so the boundary handlers surface them visibly
+    // instead of an empty result indistinguishable from a genuinely empty
+    // index. Only aborts soft-return as degraded.
+    throw err;
   }
 }

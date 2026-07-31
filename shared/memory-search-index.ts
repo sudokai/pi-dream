@@ -60,41 +60,45 @@ export function searchMemoryBm25(
   const match = escapeMemoryFtsQuery(query);
   if (match === '""') return [];
 
-  try {
-    const docCount = db
-      .prepare(`SELECT COUNT(*) AS n FROM search_documents WHERE state = 'active'`)
-      .get() as { n: number };
-    const ftsCount = db
-      .prepare(`SELECT COUNT(*) AS n FROM search_fts`)
-      .get() as { n: number };
-    if (Number(docCount.n) > 0 && Number(ftsCount.n) === 0) {
+  // Unexpected FTS/DB errors (SQLITE_CORRUPT, BUSY after busy_timeout, ...)
+  // must propagate instead of degrading to an empty hit list: an empty BM25
+  // result is indistinguishable from a genuinely empty index for every caller.
+  const docCount = db
+    .prepare(`SELECT COUNT(*) AS n FROM search_documents WHERE state = 'active'`)
+    .get() as { n: number };
+  const ftsCount = db
+    .prepare(`SELECT COUNT(*) AS n FROM search_fts`)
+    .get() as { n: number };
+  if (Number(docCount.n) > 0 && Number(ftsCount.n) === 0) {
+    try {
       rebuildMemorySearchDocuments(db);
+    } catch {
+      // Best-effort self-heal only: a failed rebuild must not mask the missing
+      // index state — the MATCH query below reflects whatever FTS rows exist.
     }
-
-    const rows = db
-      .prepare(
-        `SELECT search_fts.node_type AS node_type,
-                search_fts.node_id AS node_id,
-                bm25(search_fts) AS score
-         FROM search_fts
-         WHERE search_fts MATCH ?
-         ORDER BY score ASC
-         LIMIT ?`,
-      )
-      .all(match, limit) as Array<{
-      node_type: MemorySearchableNodeType;
-      node_id: number;
-      score: number;
-    }>;
-
-    return rows.map((r, i) => ({
-      nodeType: r.node_type,
-      nodeId: Number(r.node_id),
-      rank: i + 1,
-    }));
-  } catch {
-    return [];
   }
+
+  const rows = db
+    .prepare(
+      `SELECT search_fts.node_type AS node_type,
+              search_fts.node_id AS node_id,
+              bm25(search_fts) AS score
+       FROM search_fts
+       WHERE search_fts MATCH ?
+       ORDER BY score ASC
+       LIMIT ?`,
+    )
+    .all(match, limit) as Array<{
+    node_type: MemorySearchableNodeType;
+    node_id: number;
+    score: number;
+  }>;
+
+  return rows.map((r, i) => ({
+    nodeType: r.node_type,
+    nodeId: Number(r.node_id),
+    rank: i + 1,
+  }));
 }
 
 /**
@@ -188,19 +192,16 @@ export async function searchMemoryHybrid(
   }
 
   const bm25 = searchMemoryBm25(db, query, limit);
-  let semanticResult: Awaited<ReturnType<typeof searchMemorySemantic>>;
-  try {
-    semanticResult = await searchMemorySemantic(db, query, {
-      embed: opts.embed,
-      modelId: opts.modelId,
-      floor: opts.semanticFloor,
-      limit,
-      signal: opts.signal,
-    });
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    semanticResult = { hits: [], degraded: true, error: detail };
-  }
+  // Do NOT soft-catch semantic failures here: searchMemorySemantic already
+  // degrades gracefully for aborts and embedder unavailability. Unexpected
+  // errors propagate so the caller's boundary handler surfaces them.
+  const semanticResult = await searchMemorySemantic(db, query, {
+    embed: opts.embed,
+    modelId: opts.modelId,
+    floor: opts.semanticFloor,
+    limit,
+    signal: opts.signal,
+  });
   const semanticRanks = semanticResult.hits.map((h, i) => ({
     nodeType: h.nodeType,
     nodeId: h.nodeId,

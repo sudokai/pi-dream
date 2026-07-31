@@ -1,0 +1,249 @@
+import { test } from "node:test";
+import * as assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import {
+  closeMemoryDatabase,
+  openMemoryDatabaseAtPath,
+} from "./memory-database.ts";
+import { acquireMemoryRunClaim } from "./memory-run-claim.ts";
+import {
+  buildMemoryLearningManifest,
+  hasMemoryLearningEligibleSession,
+  readMemoryLearningManifest,
+  writeMemoryLearningManifest,
+} from "./memory-session-discovery.ts";
+import { loadDecodedMemorySession } from "./memory-session-decode.ts";
+import {
+  commitMemoryLearningSession,
+  getSourceSessionCheckpoint,
+} from "./memory-repository.ts";
+import { listActiveMemories } from "./memory-graph.ts";
+import {
+  encodeMemorySessionDirName,
+  MEMORY_SESSIONS_ROOT_ENV,
+  normalizeMemoryCwd,
+} from "./memory-workspace-id.ts";
+
+function withSessionRoot(fn: (root: string) => void): void {
+  const prev = process.env[MEMORY_SESSIONS_ROOT_ENV];
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "dream-sessions-"));
+  process.env[MEMORY_SESSIONS_ROOT_ENV] = root;
+  try {
+    fn(root);
+  } finally {
+    if (prev === undefined) {
+      delete process.env[MEMORY_SESSIONS_ROOT_ENV];
+    } else {
+      process.env[MEMORY_SESSIONS_ROOT_ENV] = prev;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function writeSessionFile(
+  sessionsRoot: string,
+  cwd: string,
+  lines: string[],
+): string {
+  // Discovery encodes the normalized (realpath) cwd as the session dir name.
+  const dir = path.join(sessionsRoot, encodeMemorySessionDirName(normalizeMemoryCwd(cwd)));
+  fs.mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, "session.jsonl");
+  fs.writeFileSync(filePath, `${lines.join("\n")}\n`, "utf8");
+  return filePath;
+}
+
+test("manifest snapshots sessions at discovery; live appends are not mined", () => {
+  withSessionRoot((root) => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "dream-cwd-"));
+    const snapshotDir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-snap-"));
+    const db = openMemoryDatabaseAtPath(":memory:");
+    try {
+      const livePath = writeSessionFile(root, cwd, [
+        JSON.stringify({ type: "session", id: "sess-1", cwd }),
+        JSON.stringify({
+          type: "message",
+          message: { role: "user", content: "first" },
+        }),
+      ]);
+
+      const manifest = buildMemoryLearningManifest(db, cwd, "ws-any", {
+        snapshotDir,
+      });
+      assert.equal(manifest.length, 1);
+      const entry = manifest[0]!;
+      assert.equal(entry.sessionId, "sess-1");
+      assert.equal(entry.sessionPath, livePath);
+      assert.notEqual(entry.snapshotPath, livePath);
+      assert.match(entry.contentHash, /^[0-9a-f]{64}$/);
+
+      // Live file keeps being appended while the learner would run: the
+      // snapshot still reflects exactly the discovery-time content.
+      fs.appendFileSync(
+        livePath,
+        `${JSON.stringify({
+          type: "message",
+          message: { role: "user", content: "second" },
+        })}\n`,
+        "utf8",
+      );
+      const snapshot = loadDecodedMemorySession(entry.snapshotPath);
+      assert.equal(snapshot.messages.length, 1);
+      const live = loadDecodedMemorySession(livePath);
+      assert.equal(live.messages.length, 2);
+
+      // Manifest round-trips with snapshot + hash intact.
+      const manifestPath = path.join(snapshotDir, "manifest.json");
+      writeMemoryLearningManifest(manifestPath, manifest);
+      assert.deepEqual(readMemoryLearningManifest(manifestPath), manifest);
+    } finally {
+      closeMemoryDatabase(db);
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(snapshotDir, { recursive: true, force: true });
+    }
+  });
+});
+
+test("readMemoryLearningManifest fails closed on entries without snapshots", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-manifest-"));
+  try {
+    const manifestPath = path.join(dir, "manifest.json");
+    fs.writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        version: 1,
+        sessions: [
+          {
+            sessionId: "sess-1",
+            sessionPath: "/tmp/s1.jsonl",
+            cwd: "/tmp",
+            mtimeMs: 1,
+          },
+        ],
+      }),
+      "utf8",
+    );
+    assert.throws(() => readMemoryLearningManifest(manifestPath), /snapshot/i);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("capped manifests leave older checkpoint-missing sessions eligible", () => {
+  withSessionRoot((root) => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "dream-cwd-"));
+    const snapshotDir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-snap-"));
+    const db = openMemoryDatabaseAtPath(":memory:");
+    try {
+      const dir = path.join(
+        root,
+        encodeMemorySessionDirName(normalizeMemoryCwd(cwd)),
+      );
+      fs.mkdirSync(dir, { recursive: true });
+      for (let i = 0; i < 31; i++) {
+        const filePath = path.join(dir, `session-${i}.jsonl`);
+        fs.writeFileSync(
+          filePath,
+          [
+            JSON.stringify({ type: "session", id: `session-${i}`, cwd }),
+            JSON.stringify({
+              type: "message",
+              message: { role: "user", content: `message ${i}` },
+            }),
+          ].join("\n") + "\n",
+          "utf8",
+        );
+        fs.utimesSync(filePath, 1_000 + i, 1_000 + i);
+      }
+
+      const manifest = buildMemoryLearningManifest(db, cwd, "ws-any", {
+        cap: 30,
+        snapshotDir,
+      });
+      assert.equal(manifest.length, 30);
+      const claim = acquireMemoryRunClaim(db, "manual");
+      for (const entry of manifest) {
+        commitMemoryLearningSession(db, {
+          runId: claim.runId!,
+          sourceSessionId: entry.sessionId,
+          sessionPath: entry.sessionPath,
+          cwd: entry.cwd,
+          processedMtimeMs: entry.mtimeMs,
+          contentHash: entry.contentHash,
+          plan: { operations: [{ op: "no_op", reason: "batch checkpoint" }] },
+        });
+      }
+
+      assert.equal(
+        hasMemoryLearningEligibleSession(db, cwd, "ws-any"),
+        true,
+        "the session outside the newest-first cap remains eligible",
+      );
+    } finally {
+      closeMemoryDatabase(db);
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(snapshotDir, { recursive: true, force: true });
+    }
+  });
+});
+
+test("same snapshot content is never re-mined even when the live mtime advances", () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "manual");
+    const r1 = commitMemoryLearningSession(db, {
+      runId: claim.runId!,
+      sourceSessionId: "sess-1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1000,
+      contentHash: "h1",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "t",
+            kind: "fact",
+            observationText: "X is Y",
+            memoryText: "X is Y",
+          },
+        ],
+      },
+    });
+    assert.equal(r1.applied, true);
+
+    // A later run sees the same bytes but a newer live mtime: the snapshot
+    // hash is authoritative, so the commit must be a no-op.
+    const r2 = commitMemoryLearningSession(db, {
+      runId: claim.runId!,
+      sourceSessionId: "sess-1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 2000,
+      contentHash: "h1",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "t",
+            kind: "fact",
+            observationText: "X is Y",
+            memoryText: "X is Y",
+          },
+        ],
+      },
+    });
+    assert.equal(r2.applied, false);
+    assert.equal(r2.reason, "already checkpointed");
+    assert.equal(
+      getSourceSessionCheckpoint(db, "sess-1")!.processedMtimeMs,
+      2000,
+      "a same-hash replay advances only the source mtime checkpoint",
+    );
+    assert.equal(listActiveMemories(db).length, 1);
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});

@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "description": "Recall cases for hybrid search + LLM planner: precision, cold rediscovery, summary vs detail, contradictions.",
+  "cases": [
+    {
+      "id": "relevant-preference",
+      "query": "How should I format indentation?",
+      "memories": [
+        { "id": "M:1", "kind": "preference", "text": "Use tabs for indentation", "relevant": true },
+        { "id": "M:2", "kind": "fact", "text": "CI runs on Ubuntu 24.04", "relevant": false }
+      ],
+      "expectSelected": ["M:1"]
+    },
+    {
+      "id": "adjacent-but-irrelevant",
+      "query": "What is the package manager?",
+      "memories": [
+        { "id": "M:1", "kind": "fact", "text": "Package manager is pnpm", "relevant": true },
+        { "id": "M:2", "kind": "fact", "text": "Package name is pi-dream", "relevant": false }
+      ],
+      "expectSelected": ["M:1"]
+    },
+    {
+      "id": "contradictory-excluded",
+      "query": "What API style do we use?",
+      "memories": [
+        { "id": "M:1", "kind": "fact", "text": "API is REST", "state": "conflicted", "relevant": false },
+        { "id": "M:2", "kind": "fact", "text": "API is GraphQL", "state": "conflicted", "relevant": false }
+      ],
+      "expectSelected": []
+    },
+    {
+      "id": "cold-rediscovery",
+      "query": "Where do we deploy production?",
+      "memories": [
+        { "id": "M:9", "kind": "fact", "text": "Production deploys to Fly.io", "heat": 0.01, "relevant": true }
+      ],
+      "expectSelected": ["M:9"],
+      "notes": "Low heat must not prevent selection when relevant"
+    },
+    {
+      "id": "summary-over-details",
+      "query": "Remind me about our coding style",
+      "memories": [
+        { "id": "S:1", "kind": "summary", "text": "Coding style: tabs, minimal comments, no emoji commits", "relevant": true },
+        { "id": "M:1", "kind": "preference", "text": "Use tabs for indentation", "relevant": true },
+        { "id": "M:2", "kind": "preference", "text": "Prefer minimal comments", "relevant": true }
+      ],
+      "preferSummary": true,
+      "notes": "Planner may choose S:1 instead of multiple cold details"
+    }
+  ]
+}

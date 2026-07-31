@@ -1,0 +1,341 @@
+/**
+ * Strict per-workspace configuration for adaptive memory.
+ * Model fields default to the current session model at execution time.
+ */
+
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import * as path from "node:path";
+import {
+  MEMORY_BRIEFING_TOKEN_BUDGET,
+  MEMORY_DEFAULT_MIN_MINUTES,
+  MEMORY_DEFAULT_MIN_TURNS,
+  MEMORY_EMBEDDING_MODEL_ID,
+  MEMORY_HEAT_DECAY,
+  MEMORY_HYBRID_POOL_SIZE,
+  MEMORY_NOVELTY_BOOST,
+  MEMORY_NOVELTY_GENERATIONS,
+  MEMORY_RRF_K,
+  MEMORY_SEMANTIC_FLOOR,
+} from "./memory-types.ts";
+import { memoryWorkspaceConfigPath } from "./memory-workspace-id.ts";
+
+export const MEMORY_THINKING_LEVELS = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+
+export type MemoryThinkingLevel = (typeof MEMORY_THINKING_LEVELS)[number];
+
+/** Versioned workspace config stored at `config.json`. */
+export interface MemoryWorkspaceConfig {
+  version: 1;
+  enabled: boolean;
+  /** Exact `provider/modelId`, or omit to use current session model. */
+  learningModel?: string;
+  learningThinking?: MemoryThinkingLevel;
+  /** Exact `provider/modelId`, or omit to use current session model. */
+  recallModel?: string;
+  recallThinking?: MemoryThinkingLevel;
+  minTurns: number;
+  minMinutes: number;
+  briefingTokenBudget: number;
+  embeddingModel: string;
+  hybridPoolSize: number;
+  rrfK: number;
+  semanticFloor: number;
+  noveltyBoost: number;
+  noveltyGenerations: number;
+  heatDecay: number;
+}
+
+export type MemoryConfigLoadResult =
+  | { ok: true; config: MemoryWorkspaceConfig; invalidFallback: boolean }
+  | { ok: false; error: string };
+
+/** Defaults applied when config is missing or a field is absent. */
+export function defaultMemoryWorkspaceConfig(): MemoryWorkspaceConfig {
+  return {
+    version: 1,
+    enabled: true,
+    minTurns: MEMORY_DEFAULT_MIN_TURNS,
+    minMinutes: MEMORY_DEFAULT_MIN_MINUTES,
+    briefingTokenBudget: MEMORY_BRIEFING_TOKEN_BUDGET,
+    embeddingModel: MEMORY_EMBEDDING_MODEL_ID,
+    hybridPoolSize: MEMORY_HYBRID_POOL_SIZE,
+    rrfK: MEMORY_RRF_K,
+    semanticFloor: MEMORY_SEMANTIC_FLOOR,
+    noveltyBoost: MEMORY_NOVELTY_BOOST,
+    noveltyGenerations: MEMORY_NOVELTY_GENERATIONS,
+    heatDecay: MEMORY_HEAT_DECAY,
+  };
+}
+
+function isThinkingLevel(value: unknown): value is MemoryThinkingLevel {
+  return (
+    typeof value === "string" &&
+    (MEMORY_THINKING_LEVELS as readonly string[]).includes(value)
+  );
+}
+
+function positiveInt(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return fallback;
+  }
+  return Math.floor(value);
+}
+
+function positiveNumber(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return fallback;
+  }
+  return value;
+}
+
+function unitInterval(value: unknown, fallback: number): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value <= 0 ||
+    value > 1
+  ) {
+    return fallback;
+  }
+  return value;
+}
+
+/**
+ * Parse workspace config from an unknown JSON value.
+ * Unknown keys are rejected; missing optional fields use defaults.
+ */
+export function parseMemoryWorkspaceConfig(
+  value: unknown,
+): MemoryConfigLoadResult {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, error: "Memory config must be a JSON object." };
+  }
+  const obj = value as Record<string, unknown>;
+  const allowed = new Set([
+    "version",
+    "enabled",
+    "learningModel",
+    "learningThinking",
+    "recallModel",
+    "recallThinking",
+    "minTurns",
+    "minMinutes",
+    "briefingTokenBudget",
+    "embeddingModel",
+    "hybridPoolSize",
+    "rrfK",
+    "semanticFloor",
+    "noveltyBoost",
+    "noveltyGenerations",
+    "heatDecay",
+  ]);
+  const unknown = Object.keys(obj).filter((key) => !allowed.has(key));
+  if (unknown.length) {
+    return {
+      ok: false,
+      error: `Memory config contains unknown key(s): ${unknown.join(", ")}.`,
+    };
+  }
+  if (obj.version !== 1) {
+    return { ok: false, error: "Memory config version must be 1." };
+  }
+  if (typeof obj.enabled !== "boolean") {
+    return { ok: false, error: "Memory config enabled must be a boolean." };
+  }
+  for (const key of ["learningModel", "recallModel", "embeddingModel"] as const) {
+    if (
+      obj[key] !== undefined &&
+      (typeof obj[key] !== "string" || !(obj[key] as string).trim())
+    ) {
+      return {
+        ok: false,
+        error: `Memory config ${key} must be a non-empty string when set.`,
+      };
+    }
+  }
+  for (const key of ["learningThinking", "recallThinking"] as const) {
+    if (obj[key] !== undefined && !isThinkingLevel(obj[key])) {
+      return {
+        ok: false,
+        error: `Memory config ${key} must be one of: ${MEMORY_THINKING_LEVELS.join(", ")}.`,
+      };
+    }
+  }
+
+  const defaults = defaultMemoryWorkspaceConfig();
+  const config: MemoryWorkspaceConfig = {
+    version: 1,
+    enabled: obj.enabled,
+    minTurns: positiveInt(obj.minTurns, defaults.minTurns),
+    minMinutes: positiveInt(obj.minMinutes, defaults.minMinutes),
+    briefingTokenBudget: positiveInt(
+      obj.briefingTokenBudget,
+      defaults.briefingTokenBudget,
+    ),
+    embeddingModel:
+      typeof obj.embeddingModel === "string" && obj.embeddingModel.trim()
+        ? obj.embeddingModel.trim()
+        : defaults.embeddingModel,
+    hybridPoolSize: positiveInt(obj.hybridPoolSize, defaults.hybridPoolSize),
+    rrfK: positiveInt(obj.rrfK, defaults.rrfK),
+    semanticFloor: unitInterval(obj.semanticFloor, defaults.semanticFloor),
+    noveltyBoost: positiveNumber(obj.noveltyBoost, defaults.noveltyBoost),
+    noveltyGenerations: positiveInt(
+      obj.noveltyGenerations,
+      defaults.noveltyGenerations,
+    ),
+    heatDecay: unitInterval(obj.heatDecay, defaults.heatDecay),
+  };
+  if (typeof obj.learningModel === "string" && obj.learningModel.trim()) {
+    config.learningModel = obj.learningModel.trim();
+  }
+  if (isThinkingLevel(obj.learningThinking)) {
+    config.learningThinking = obj.learningThinking;
+  }
+  if (typeof obj.recallModel === "string" && obj.recallModel.trim()) {
+    config.recallModel = obj.recallModel.trim();
+  }
+  if (isThinkingLevel(obj.recallThinking)) {
+    config.recallThinking = obj.recallThinking;
+  }
+  return { ok: true, config, invalidFallback: false };
+}
+
+/**
+ * Load workspace config. Missing file ⇒ defaults (enabled).
+ * Bad JSON / invalid shape ⇒ defaults with invalidFallback, or hard error if unreadable.
+ */
+export function loadMemoryWorkspaceConfig(
+  configPath: string,
+): MemoryConfigLoadResult {
+  if (!existsSync(configPath)) {
+    return {
+      ok: true,
+      config: defaultMemoryWorkspaceConfig(),
+      invalidFallback: false,
+    };
+  }
+  let raw: string;
+  try {
+    raw = readFileSync(configPath, "utf-8");
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      error: `Cannot read memory config ${configPath}: ${detail}`,
+    };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {
+      ok: true,
+      config: defaultMemoryWorkspaceConfig(),
+      invalidFallback: true,
+    };
+  }
+  const result = parseMemoryWorkspaceConfig(parsed);
+  if (!result.ok) {
+    return {
+      ok: true,
+      config: defaultMemoryWorkspaceConfig(),
+      invalidFallback: true,
+    };
+  }
+  return result;
+}
+
+/** Persist workspace config (creates parent dirs). */
+export function saveMemoryWorkspaceConfig(
+  configPath: string,
+  config: MemoryWorkspaceConfig,
+): void {
+  const directory = path.dirname(configPath);
+  if (!existsSync(directory)) {
+    mkdirSync(directory, { recursive: true });
+  }
+  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
+}
+
+/** Load config for a workspace id via the standard path. */
+export function loadMemoryConfigForWorkspace(
+  workspaceId: string,
+): MemoryConfigLoadResult {
+  return loadMemoryWorkspaceConfig(memoryWorkspaceConfigPath(workspaceId));
+}
+
+/** Atomically set only the enabled flag (pause/resume). */
+export function setMemoryWorkspaceEnabled(
+  workspaceId: string,
+  enabled: boolean,
+): MemoryWorkspaceConfig {
+  const configPath = memoryWorkspaceConfigPath(workspaceId);
+  const loaded = loadMemoryWorkspaceConfig(configPath);
+  const config =
+    loaded.ok ? { ...loaded.config, enabled } : {
+      ...defaultMemoryWorkspaceConfig(),
+      enabled,
+    };
+  saveMemoryWorkspaceConfig(configPath, config);
+  return config;
+}
+
+/** Split `provider/modelId` into parts; null if malformed. */
+export function splitMemoryModelId(
+  id: string,
+): { provider: string; modelId: string } | null {
+  const slash = id.indexOf("/");
+  if (slash <= 0 || slash === id.length - 1) return null;
+  return { provider: id.slice(0, slash), modelId: id.slice(slash + 1) };
+}
+
+export interface MemoryModelFinder {
+  find(provider: string, modelId: string): unknown;
+}
+
+/**
+ * Validate an optional configured model against the registry.
+ * Returns an error string when set but invalid; null when ok or unset.
+ */
+export function validateOptionalMemoryModel(
+  fieldName: string,
+  modelId: string | undefined,
+  find: MemoryModelFinder["find"],
+): string | null {
+  if (!modelId) return null;
+  const parsed = splitMemoryModelId(modelId);
+  if (!parsed) {
+    return `${fieldName} must use provider/model format: ${modelId}`;
+  }
+  const model = find(parsed.provider, parsed.modelId);
+  if (!model) {
+    return `${fieldName} does not resolve to an available model: ${modelId}`;
+  }
+  return null;
+}
+
+/** Resolve effective model id: config override or current session model. */
+export function resolveEffectiveMemoryModelId(
+  configured: string | undefined,
+  currentSessionModelId: string | undefined,
+): string | null {
+  if (configured && configured.trim()) return configured.trim();
+  if (currentSessionModelId && currentSessionModelId.trim()) {
+    return currentSessionModelId.trim();
+  }
+  return null;
+}

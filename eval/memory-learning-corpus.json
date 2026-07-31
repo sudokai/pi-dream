@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "description": "Quality cases for the memory learner: include durable preferences/facts; exclude trivia, secrets, one-offs, activity logs.",
+  "cases": [
+    {
+      "id": "explicit-preference",
+      "shouldExtract": true,
+      "kind": "preference",
+      "transcriptSnippet": "User: Always use tabs, never spaces, in this repo.",
+      "expectedTheme": "tabs for indentation"
+    },
+    {
+      "id": "explicit-correction",
+      "shouldExtract": true,
+      "kind": "correction",
+      "transcriptSnippet": "User: Stop writing commit messages with emoji. I told you this before.",
+      "expectedTheme": "no emoji in commits"
+    },
+    {
+      "id": "stable-workspace-fact",
+      "shouldExtract": true,
+      "kind": "fact",
+      "transcriptSnippet": "User: Our production deploy target is Fly.io, not Heroku.",
+      "expectedTheme": "deploy to Fly.io"
+    },
+    {
+      "id": "recurring-inferred-preference",
+      "shouldExtract": true,
+      "kind": "preference",
+      "transcriptSnippet": "Session A: User asks for minimal comments. Session B: User again rejects verbose comments.",
+      "expectedTheme": "minimal comments",
+      "notes": "Inferred preferences need independent recurrence"
+    },
+    {
+      "id": "one-off-task",
+      "shouldExtract": false,
+      "transcriptSnippet": "User: For this PR only, skip the changelog.",
+      "reason": "one-off instruction"
+    },
+    {
+      "id": "activity-log",
+      "shouldExtract": false,
+      "transcriptSnippet": "Assistant: I ran the tests and they passed. Next I will open a PR.",
+      "reason": "activity log / process narration"
+    },
+    {
+      "id": "trivia",
+      "shouldExtract": false,
+      "transcriptSnippet": "User: lol that function name is funny",
+      "reason": "trivia"
+    },
+    {
+      "id": "secret",
+      "shouldExtract": false,
+      "transcriptSnippet": "User: The API key is sk-live-abc123, put it in .env",
+      "reason": "secrets / credentials"
+    },
+    {
+      "id": "transient-impl",
+      "shouldExtract": false,
+      "transcriptSnippet": "User: Rename the temp variable to x2 while debugging this function.",
+      "reason": "transient implementation detail"
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "name": "pi-dream",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Adaptive workspace memory for pi: learns durable preferences and facts into an auditable SQLite graph and injects a visible first-turn briefing.",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "agent-memory",
+    "continual-learning"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "tsc --noEmit",
+    "eval:learning": "node scripts/evaluate-memory-learning.mjs",
+    "eval:recall": "node scripts/evaluate-memory-recall.mjs"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "dependencies": {
+    "@xenova/transformers": "^2.17.2"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

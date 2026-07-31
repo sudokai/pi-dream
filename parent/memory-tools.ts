@@ -23,6 +23,12 @@ import {
 } from "../shared/memory-graph.ts";
 import { readFileSync } from "node:fs";
 import { memoryExtensionPath } from "../shared/pi-process-invocation.ts";
+import {
+  composeMemoryAbortSignal,
+  isMemoryQueryBlank,
+  throwIfMemoryAborted,
+} from "../shared/memory-abort.ts";
+import { MEMORY_RECALL_OPERATION_TIMEOUT_MS } from "../shared/memory-types.ts";
 
 export interface MemoryToolsContext {
   getDb: () => DatabaseSync;
@@ -105,6 +111,23 @@ export function registerMemoryAgentTools(
       query: Type.String({ description: "Natural-language search query" }),
     }),
     async execute(_toolCallId, params, signal) {
+      const effectiveSignal = composeMemoryAbortSignal(
+        signal ?? undefined,
+        MEMORY_RECALL_OPERATION_TIMEOUT_MS,
+      );
+      throwIfMemoryAborted(effectiveSignal);
+      if (isMemoryQueryBlank(params.query)) {
+        return {
+          content: [{ type: "text" as const, text: "No matching memories." }],
+          details: {
+            count: 0,
+            semanticDegraded: false,
+            usage: undefined as unknown,
+            selectedIds: [] as string[],
+          },
+        };
+      }
+
       const db = ctx.getDb();
       const config = ctx.getConfig();
       const hybrid = await searchMemoryHybrid(db, params.query, {
@@ -112,8 +135,9 @@ export function registerMemoryAgentTools(
         rrfK: config.rrfK,
         modelId: config.embeddingModel,
         semanticFloor: config.semanticFloor,
-        signal: signal ?? undefined,
+        signal: effectiveSignal,
       });
+      throwIfMemoryAborted(effectiveSignal);
 
       if (hybrid.candidates.length === 0) {
         return {
@@ -144,7 +168,7 @@ export function registerMemoryAgentTools(
         query: params.query,
         candidates: hybrid.candidates,
         tokenBudget: config.briefingTokenBudget,
-        signal: signal ?? undefined,
+        signal: effectiveSignal,
         db,
         plannerPrompt: loadBriefingPlannerPrompt(),
         complete: ({ system, user, signal: s }) =>
@@ -154,6 +178,7 @@ export function registerMemoryAgentTools(
             signal: s,
           }),
       });
+      throwIfMemoryAborted(effectiveSignal);
 
       if (!planned.ok) {
         throw new Error(`memory_search planner failed: ${planned.error}`);
@@ -162,6 +187,7 @@ export function registerMemoryAgentTools(
       // Re-read selected nodes before rendering; drop any that are no longer
       // active or whose text changed since planning.
       const refreshed = refreshMemoryBriefingPlanNodes(db, planned.plan);
+      throwIfMemoryAborted(effectiveSignal);
 
       if (refreshed.selectedIds.length === 0) {
         return {

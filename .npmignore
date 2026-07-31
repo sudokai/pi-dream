@@ -1,0 +1,6 @@
+**/*.test.ts
+eval/
+plan.md
+implementation-notes.md
+SHIP_READINESS_REPORT.md
+scripts/

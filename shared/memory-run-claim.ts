@@ -191,6 +191,99 @@ export function markMemoryRunReported(db: DatabaseSync, runId: string): void {
   ).run(runId);
 }
 
+/** Atomically claim one unreported terminal run for parent notification. */
+export function consumeOneUnreportedMemoryRun(
+  db: DatabaseSync,
+  opts?: {
+    /**
+     * Runs inside the same BEGIN IMMEDIATE transaction after the run is
+     * claimed (`reported_to_parent=1`) and before COMMIT. Use for cadence
+     * reset so a crash cannot leave the run reported without side effects.
+     */
+    beforeCommit?: (run: {
+      id: string;
+      status: "completed" | "failed";
+      errorText: string | null;
+      trigger: LearningRunTrigger;
+      finishedAt: string | null;
+    }) => void;
+  },
+): {
+  id: string;
+  status: "completed" | "failed";
+  errorText: string | null;
+  trigger: LearningRunTrigger;
+  finishedAt: string | null;
+} | null {
+  try {
+    db.exec("BEGIN IMMEDIATE");
+  } catch {
+    // Lock busy: nothing claimed; caller may retry on a later tick.
+    return null;
+  }
+  try {
+    const row = db
+      .prepare(
+        `SELECT id, status, error_text, trigger, finished_at
+         FROM learning_runs
+         WHERE reported_to_parent = 0 AND status IN ('completed', 'failed')
+         ORDER BY finished_at ASC, id ASC
+         LIMIT 1`,
+      )
+      .get() as
+      | {
+          id: string;
+          status: "completed" | "failed";
+          error_text: string | null;
+          trigger: LearningRunTrigger;
+          finished_at: string | null;
+        }
+      | undefined;
+    if (!row) {
+      db.exec("ROLLBACK");
+      return null;
+    }
+    const updated = db
+      .prepare(
+        `UPDATE learning_runs SET reported_to_parent = 1
+         WHERE id = ? AND reported_to_parent = 0`,
+      )
+      .run(row.id);
+    if (Number(updated.changes) !== 1) {
+      db.exec("ROLLBACK");
+      return null;
+    }
+    const run = {
+      id: row.id,
+      status: row.status,
+      errorText: row.error_text,
+      trigger: row.trigger,
+      finishedAt: row.finished_at,
+    };
+    opts?.beforeCommit?.(run);
+    db.exec("COMMIT");
+    return run;
+  } catch (err) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      // Nested rollback failure is ignored.
+    }
+    throw err;
+  }
+}
+
+/** Whether a run has reached a terminal state. */
+export function isMemoryRunTerminal(
+  db: DatabaseSync,
+  runId: string,
+): boolean {
+  const row = db
+    .prepare(`SELECT status FROM learning_runs WHERE id = ?`)
+    .get(runId) as { status: string } | undefined;
+  return row?.status === "completed" || row?.status === "failed";
+}
+
 /** Active (non-stale) claimed/running run id, if any. */
 export function activeMemoryRunId(
   db: DatabaseSync,

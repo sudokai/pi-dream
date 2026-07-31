@@ -60,3 +60,17 @@ test("an already-aborted first turn never starts the embedder load", async () =>
     assert.equal(memoryEmbeddingStatus().error, null);
   });
 });
+
+test("blank hybrid queries never invoke the embedder", async () => {
+  await withEmptyDb(async (db) => {
+    let embedCalled = false;
+    const hybrid = await searchMemoryHybrid(db, "   ", {
+      embed: async () => {
+        embedCalled = true;
+        return [];
+      },
+    });
+    assert.equal(hybrid.candidates.length, 0);
+    assert.equal(embedCalled, false);
+  });
+});

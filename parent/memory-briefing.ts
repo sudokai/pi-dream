@@ -22,23 +22,27 @@ import {
 } from "../shared/memory-graph.ts";
 import {
   MEMORY_BRIEFING_CUSTOM_TYPE,
+  MEMORY_RECALL_OPERATION_TIMEOUT_MS,
   type MemoryBriefingPlan,
 } from "../shared/memory-types.ts";
 import { readFileSync } from "node:fs";
 import { memoryExtensionPath } from "../shared/pi-process-invocation.ts";
+import {
+  composeMemoryAbortSignal,
+  throwIfMemoryAborted,
+} from "../shared/memory-abort.ts";
 
 /** Maximum time the pre-agent opening briefing may wait without a run signal. */
-export const MEMORY_BRIEFING_TIMEOUT_MS = 15_000;
+export const MEMORY_BRIEFING_TIMEOUT_MS = MEMORY_RECALL_OPERATION_TIMEOUT_MS;
 
 /**
- * Use pi's active run signal when available; before_agent_start otherwise has
- * no run signal, so bound opening briefing work with an independent timeout.
+ * Compose pi's active run signal with an independent opening timeout.
  */
 export function createMemoryBriefingSignal(
   signal?: AbortSignal,
   timeoutMs: number = MEMORY_BRIEFING_TIMEOUT_MS,
 ): AbortSignal {
-  return signal ?? AbortSignal.timeout(timeoutMs);
+  return composeMemoryAbortSignal(signal, timeoutMs);
 }
 
 export interface BuildMemoryBriefingInput {
@@ -94,13 +98,14 @@ function loadBriefingPlannerPrompt(): string | undefined {
 
 /**
  * Run the full first-turn recall pipeline once.
- * Advances activity generation. Records recall only for rendered nodes.
+ * Advances activity generation only after abort-gated search/planning succeed.
+ * Records recall only for rendered nodes.
  */
 export async function buildMemorySessionBriefing(
   input: BuildMemoryBriefingInput,
 ): Promise<BuildMemoryBriefingResult> {
-  // Advance generation for this first-turn opportunity regardless of hits.
-  incrementMemoryActivityGeneration(input.db);
+  const signal = input.signal;
+  throwIfMemoryAborted(signal);
 
   const sessionModelId = formatSessionModelId(input.currentSessionModel);
   const resolved = resolveMemoryModel(
@@ -117,10 +122,13 @@ export async function buildMemorySessionBriefing(
     modelId: input.config.embeddingModel,
     semanticFloor: input.config.semanticFloor,
     embed: input.embed,
-    signal: input.signal,
+    signal,
   });
+  throwIfMemoryAborted(signal);
 
   if (hybrid.candidates.length === 0) {
+    // Empty index is still a completed first-turn opportunity.
+    incrementMemoryActivityGeneration(input.db);
     return {
       ok: true,
       plan: { sections: [], estimatedTokens: 0, selectedIds: [] },
@@ -155,10 +163,11 @@ export async function buildMemorySessionBriefing(
     candidates: hybrid.candidates,
     tokenBudget: input.config.briefingTokenBudget,
     complete,
-    signal: input.signal,
+    signal,
     db: input.db,
     plannerPrompt: loadBriefingPlannerPrompt(),
   });
+  throwIfMemoryAborted(signal);
 
   if (!planned.ok) {
     return {
@@ -173,9 +182,13 @@ export async function buildMemorySessionBriefing(
     };
   }
 
+  // Planning succeeded: advance generation before recording recall side effects.
+  incrementMemoryActivityGeneration(input.db);
+
   // Re-read selected nodes from the database before rendering: only nodes
   // still active with unchanged text are rendered.
   const refreshed = refreshMemoryBriefingPlanNodes(input.db, planned.plan);
+  throwIfMemoryAborted(signal);
   if (refreshed.selectedIds.length === 0) {
     return { ok: true, plan: refreshed, message: null };
   }

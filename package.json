@@ -10,6 +10,41 @@
     "agent-memory",
     "continual-learning"
   ],
+  "files": [
+    "index.ts",
+    "child/memory-learning-entry.ts",
+    "child/memory-learning-finalize.ts",
+    "child/memory-learning-tools.ts",
+    "parent/memory-briefing.ts",
+    "parent/memory-cadence.ts",
+    "parent/memory-command.ts",
+    "parent/memory-learning-launcher.ts",
+    "parent/memory-session-lifecycle.ts",
+    "parent/memory-tools.ts",
+    "prompts",
+    "shared/memory-abort.ts",
+    "shared/memory-completion.ts",
+    "shared/memory-config.ts",
+    "shared/memory-database.ts",
+    "shared/memory-embedding.ts",
+    "shared/memory-fs.ts",
+    "shared/memory-graph.ts",
+    "shared/memory-heat.ts",
+    "shared/memory-model.ts",
+    "shared/memory-recall-planner.ts",
+    "shared/memory-redaction.ts",
+    "shared/memory-repository.ts",
+    "shared/memory-run-claim.ts",
+    "shared/memory-search-index.ts",
+    "shared/memory-session-decode.ts",
+    "shared/memory-session-discovery.ts",
+    "shared/memory-types.ts",
+    "shared/memory-workspace-id.ts",
+    "shared/pi-process-invocation.ts",
+    "CONTEXT.md",
+    "README.md",
+    "package.json"
+  ],
   "engines": {
     "node": ">=24"
   },
@@ -34,6 +69,11 @@
     "typebox": "*"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "0.83.0",
+    "@earendil-works/pi-coding-agent": "0.83.0",
+    "@earendil-works/pi-tui": "0.83.0",
+    "@types/node": "^24.0.0",
+    "typebox": "1.3.7",
     "typescript": "5.9.3"
   }
 }

@@ -33,7 +33,6 @@ import {
 import { formatSessionModelId } from "../shared/memory-model.ts";
 import { launchMemoryLearningRun } from "./memory-learning-launcher.ts";
 import type { MemoryModelRegistryLike } from "../shared/memory-model.ts";
-import { rebuildMemorySearchDocuments } from "../shared/memory-database.ts";
 
 export const MEMORY_COMMAND_USAGE =
   "Usage: /memory [status|list [query]|open <id> [cursor=<n>]|learn|pause|resume|forget <id>]";
@@ -322,11 +321,6 @@ export function registerMemoryCommand(
 
         if (parsed.action === "forget") {
           retireMemoryNode(db, parsed.id);
-          try {
-            rebuildMemorySearchDocuments(db);
-          } catch {
-            // Search index rebuild is best-effort after soft-retire.
-          }
           cmdCtx.ui.notify(
             `Forgot ${parsed.id} (soft-retired; history preserved).`,
             "info",

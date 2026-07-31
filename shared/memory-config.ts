@@ -5,9 +5,7 @@
 
 import {
   existsSync,
-  mkdirSync,
   readFileSync,
-  writeFileSync,
 } from "node:fs";
 import * as path from "node:path";
 import {
@@ -23,6 +21,10 @@ import {
   MEMORY_SEMANTIC_FLOOR,
 } from "./memory-types.ts";
 import { memoryWorkspaceConfigPath } from "./memory-workspace-id.ts";
+import {
+  ensureMemorySecureDir,
+  writeMemorySecureFileAtomic,
+} from "./memory-fs.ts";
 
 export const MEMORY_THINKING_LEVELS = [
   "off",
@@ -59,8 +61,18 @@ export interface MemoryWorkspaceConfig {
 }
 
 export type MemoryConfigLoadResult =
-  | { ok: true; config: MemoryWorkspaceConfig; invalidFallback: boolean }
+  | {
+      ok: true;
+      config: MemoryWorkspaceConfig;
+      invalidFallback: boolean;
+      disabledReason?: string;
+    }
   | { ok: false; error: string };
+
+/** Safe disabled config used when an on-disk config is invalid or unreadable shape. */
+export function disabledMemoryWorkspaceConfig(): MemoryWorkspaceConfig {
+  return { ...defaultMemoryWorkspaceConfig(), enabled: false };
+}
 
 /** Defaults applied when config is missing or a field is absent. */
 export function defaultMemoryWorkspaceConfig(): MemoryWorkspaceConfig {
@@ -216,7 +228,7 @@ export function parseMemoryWorkspaceConfig(
 
 /**
  * Load workspace config. Missing file ⇒ defaults (enabled).
- * Bad JSON / invalid shape ⇒ defaults with invalidFallback, or hard error if unreadable.
+ * Bad JSON / invalid shape ⇒ safe disabled state until repaired.
  */
 export function loadMemoryWorkspaceConfig(
   configPath: string,
@@ -244,31 +256,34 @@ export function loadMemoryWorkspaceConfig(
   } catch {
     return {
       ok: true,
-      config: defaultMemoryWorkspaceConfig(),
+      config: disabledMemoryWorkspaceConfig(),
       invalidFallback: true,
+      disabledReason:
+        "Memory config contains invalid JSON; memory is disabled until repaired.",
     };
   }
   const result = parseMemoryWorkspaceConfig(parsed);
   if (!result.ok) {
     return {
       ok: true,
-      config: defaultMemoryWorkspaceConfig(),
+      config: disabledMemoryWorkspaceConfig(),
       invalidFallback: true,
+      disabledReason: `Memory config is invalid (${result.error}); memory is disabled until repaired.`,
     };
   }
   return result;
 }
 
-/** Persist workspace config (creates parent dirs). */
+/** Persist workspace config atomically with restrictive file mode. */
 export function saveMemoryWorkspaceConfig(
   configPath: string,
   config: MemoryWorkspaceConfig,
 ): void {
-  const directory = path.dirname(configPath);
-  if (!existsSync(directory)) {
-    mkdirSync(directory, { recursive: true });
-  }
-  writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
+  ensureMemorySecureDir(path.dirname(configPath));
+  writeMemorySecureFileAtomic(
+    configPath,
+    `${JSON.stringify(config, null, 2)}\n`,
+  );
 }
 
 /** Load config for a workspace id via the standard path. */
@@ -278,18 +293,17 @@ export function loadMemoryConfigForWorkspace(
   return loadMemoryWorkspaceConfig(memoryWorkspaceConfigPath(workspaceId));
 }
 
-/** Atomically set only the enabled flag (pause/resume). */
+/** Atomically set only the enabled flag (pause/resume), preserving other fields. */
 export function setMemoryWorkspaceEnabled(
   workspaceId: string,
   enabled: boolean,
 ): MemoryWorkspaceConfig {
   const configPath = memoryWorkspaceConfigPath(workspaceId);
   const loaded = loadMemoryWorkspaceConfig(configPath);
-  const config =
-    loaded.ok ? { ...loaded.config, enabled } : {
-      ...defaultMemoryWorkspaceConfig(),
-      enabled,
-    };
+  if (!loaded.ok) {
+    throw new Error(loaded.error);
+  }
+  const config = { ...loaded.config, enabled };
   saveMemoryWorkspaceConfig(configPath, config);
   return config;
 }

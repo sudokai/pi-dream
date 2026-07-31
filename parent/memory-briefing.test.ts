@@ -206,6 +206,86 @@ test("unresolved recall model fails closed with a visible notice", async () => {
     assert.match(result.error, /no configured model/);
     assert.equal(result.notice.customType, "pi-dream-briefing");
     assert.match(result.notice.content, /unavailable/i);
+    const gen = db
+      .prepare(`SELECT activity_generation FROM workspace_state WHERE id = 1`)
+      .get() as { activity_generation: number };
+    assert.equal(
+      gen.activity_generation,
+      0,
+      "unavailable recall must not cool heat via activity generation",
+    );
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
+test("empty briefing still advances activity generation once", async () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const result = await buildMemorySessionBriefing({
+      db,
+      query: "anything",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: { find: () => ({ id: "fake-model" }) } as never,
+      currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
+      embed: fakeEmbed,
+    });
+    assert.equal(result.ok, true);
+    const gen = db
+      .prepare(`SELECT activity_generation FROM workspace_state WHERE id = 1`)
+      .get() as { activity_generation: number };
+    assert.equal(gen.activity_generation, 1);
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
+test("aborted briefing before planning does not advance activity generation", async () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "manual");
+    assert.equal(claim.acquired, true);
+    commitMemoryLearningSession(db, {
+      runId: claim.runId!,
+      sourceSessionId: "s1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1,
+      contentHash: "h1",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "t",
+            kind: "preference",
+            observationText: "User avoids emoji",
+            memoryText: "Do not use emoji in commits",
+          },
+        ],
+      },
+    });
+
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      () =>
+        buildMemorySessionBriefing({
+          db,
+          query: "what should I know?",
+          config: defaultMemoryWorkspaceConfig(),
+          modelRegistry: {
+            find: () => ({ id: "fake-model" }),
+            getProvider: () => undefined,
+          } as never,
+          currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
+          embed: fakeEmbed,
+          signal: controller.signal,
+        }),
+    );
+    const gen = db
+      .prepare(`SELECT activity_generation FROM workspace_state WHERE id = 1`)
+      .get() as { activity_generation: number };
+    assert.equal(gen.activity_generation, 0);
   } finally {
     closeMemoryDatabase(db);
   }

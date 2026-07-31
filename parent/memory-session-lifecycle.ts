@@ -3,30 +3,30 @@
  */
 
 import type { DatabaseSync } from "node:sqlite";
-import {
-  listUnreportedMemoryRuns,
-  markMemoryRunReported,
-} from "../shared/memory-run-claim.ts";
+import { consumeOneUnreportedMemoryRun } from "../shared/memory-run-claim.ts";
 import { markMemoryLearningCompleted } from "./memory-cadence.ts";
 
 /**
  * Surface at most one compact unreported learning run notification.
- * Marks the run reported so it is not repeated. Cadence resets (turns,
- * success time, transcript watermark) only when the run completed; failed
- * runs leave cadence untouched so the work stays retryable.
+ * Consumes the run and (on success) resets cadence in one transaction so a
+ * crash cannot leave the run reported without the cooldown watermark.
  */
 export function consumeMemoryRunNotification(
   db: DatabaseSync,
 ): { message: string; level: "info" | "warning" | "error" } | null {
-  const runs = listUnreportedMemoryRuns(db);
-  if (runs.length === 0) return null;
-  const run = runs[0]!;
-  markMemoryRunReported(db, run.id);
+  const run = consumeOneUnreportedMemoryRun(db, {
+    beforeCommit: (claimed) => {
+      if (claimed.status !== "completed") return;
+      const finishedAtMs = claimed.finishedAt
+        ? Date.parse(claimed.finishedAt)
+        : NaN;
+      markMemoryLearningCompleted(db, {
+        nowMs: Number.isFinite(finishedAtMs) ? finishedAtMs : Date.now(),
+      });
+    },
+  });
+  if (!run) return null;
   if (run.status === "completed") {
-    const finishedAtMs = run.finishedAt ? Date.parse(run.finishedAt) : NaN;
-    markMemoryLearningCompleted(db, {
-      nowMs: Number.isFinite(finishedAtMs) ? finishedAtMs : Date.now(),
-    });
     return {
       message: `Memory learning completed (run ${run.id}, ${run.trigger}).`,
       level: "info",

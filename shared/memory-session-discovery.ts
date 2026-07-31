@@ -15,10 +15,11 @@ import type { DatabaseSync } from "node:sqlite";
 import {
   listMemoryWorkspaceSessionFiles,
   maxMemoryWorkspaceSessionMtimeMs,
+  readMemorySessionHeader,
   type MemorySessionFileInfo,
 } from "./memory-workspace-id.ts";
 import { getSourceSessionCheckpoint } from "./memory-repository.ts";
-import { parseMemoryJsonlLine } from "./memory-session-decode.ts";
+import { deriveMemorySessionFallbackId } from "./memory-session-decode.ts";
 import type { SourceSessionRow } from "./memory-types.ts";
 
 export {
@@ -139,11 +140,9 @@ export function buildMemoryLearningManifest(
 
 /** Resolve the source-session id used consistently for eligibility and checkpoints. */
 function resolveMemoryLearningSessionId(file: MemorySessionFileInfo): string {
-  return (
-    file.sessionId ??
-    deriveSessionIdFromPath(file.path) ??
-    path.basename(file.path, ".jsonl")
-  );
+  if (file.sessionId) return file.sessionId;
+  const header = readMemorySessionHeader(file.path);
+  return deriveMemorySessionFallbackId(file.path, header?.cwd ?? file.cwd);
 }
 
 /**
@@ -167,29 +166,6 @@ export function hasMemoryLearningEligibleSession(
     );
     return !isSessionCheckpointCurrent(checkpoint, file);
   });
-}
-
-function deriveSessionIdFromPath(filePath: string): string | null {
-  // Try reading header id if not already present
-  try {
-    const fd = fs.openSync(filePath, "r");
-    try {
-      const buf = Buffer.allocUnsafe(4096);
-      const n = fs.readSync(fd, buf, 0, buf.length, 0);
-      const text = buf.subarray(0, n).toString("utf8");
-      for (const line of text.split("\n")) {
-        const entry = parseMemoryJsonlLine(line);
-        if (entry?.type === "session" && typeof entry.id === "string") {
-          return entry.id;
-        }
-      }
-    } finally {
-      fs.closeSync(fd);
-    }
-  } catch {
-    // Unreadable session files are treated as missing ids.
-  }
-  return null;
 }
 
 /** Write a run manifest JSON file. */

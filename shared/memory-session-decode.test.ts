@@ -16,6 +16,10 @@ test("parseMemoryJsonlLine tolerates junk", () => {
   assert.equal(parseMemoryJsonlLine(""), null);
   assert.equal(parseMemoryJsonlLine("{"), null);
   assert.equal(parseMemoryJsonlLine('{"type":"model_change"}'), null);
+  assert.equal(parseMemoryJsonlLine("null"), null);
+  assert.equal(parseMemoryJsonlLine("[1,2]"), null);
+  assert.equal(parseMemoryJsonlLine('"hello"'), null);
+  assert.equal(parseMemoryJsonlLine("42"), null);
   const s = parseMemoryJsonlLine(
     '{"type":"session","id":"abc","cwd":"/tmp"}',
   );

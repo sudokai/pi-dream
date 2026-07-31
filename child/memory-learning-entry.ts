@@ -1,12 +1,16 @@
 /**
  * Detached memory learner child extension entry.
- * Registers internal learning tools and finalizes the run on first agent_end.
+ * Registers internal learning tools and finalizes the run on agent_settled
+ * (after retries and compaction have finished).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { DatabaseSync } from "node:sqlite";
 import { openMemoryDatabaseAtPath, closeMemoryDatabase } from "../shared/memory-database.ts";
-import { markMemoryRunRunning } from "../shared/memory-run-claim.ts";
+import {
+  markMemoryRunRunning,
+  releaseMemoryRunClaim,
+} from "../shared/memory-run-claim.ts";
 import { registerMemoryLearningTools } from "./memory-learning-tools.ts";
 import { finalizeMemoryLearningRun } from "./memory-learning-finalize.ts";
 
@@ -29,13 +33,33 @@ export default function memoryLearningChildExtension(pi: ExtensionAPI) {
   const dbPath = requireEnv("PI_DREAM_DB");
   const cwd = process.env.PI_DREAM_CWD ?? process.cwd();
 
-  let db: DatabaseSync;
+  let db: DatabaseSync | null = null;
   try {
     db = openMemoryDatabaseAtPath(dbPath);
     markMemoryRunRunning(db, runId);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     console.error(`Memory learner failed to open DB: ${detail}`);
+    const failureReason = `Memory learner failed to open DB: ${detail}`;
+    try {
+      if (db) {
+        releaseMemoryRunClaim(db, runId, failureReason);
+        closeMemoryDatabase(db);
+      } else {
+        const failDb = openMemoryDatabaseAtPath(dbPath);
+        try {
+          releaseMemoryRunClaim(failDb, runId, failureReason);
+        } finally {
+          closeMemoryDatabase(failDb);
+        }
+      }
+    } catch (releaseErr) {
+      const releaseDetail =
+        releaseErr instanceof Error ? releaseErr.message : String(releaseErr);
+      console.error(
+        `Memory learner could not release claim ${runId}: ${releaseDetail}`,
+      );
+    }
     return;
   }
 
@@ -48,7 +72,7 @@ export default function memoryLearningChildExtension(pi: ExtensionAPI) {
   });
 
   let finalized = false;
-  pi.on("agent_end", () => {
+  pi.on("agent_settled", () => {
     if (finalized) return;
     finalized = true;
     finalizeMemoryLearningRun({

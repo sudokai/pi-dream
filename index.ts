@@ -15,6 +15,7 @@ import {
 } from "./shared/memory-database.ts";
 import {
   defaultMemoryWorkspaceConfig,
+  disabledMemoryWorkspaceConfig,
   loadMemoryConfigForWorkspace,
   type MemoryWorkspaceConfig,
 } from "./shared/memory-config.ts";
@@ -23,6 +24,7 @@ import {
   resolveMemoryWorkspaceId,
 } from "./shared/memory-workspace-id.ts";
 import {
+  MEMORY_AUDIT_CUSTOM_TYPE,
   MEMORY_BRIEFING_CUSTOM_TYPE,
   MEMORY_CHILD_ENV,
 } from "./shared/memory-types.ts";
@@ -66,7 +68,8 @@ export default function piDreamExtension(pi: ExtensionAPI) {
       pinned.config = loaded.config;
       return pinned.config;
     }
-    pinned.config = defaultMemoryWorkspaceConfig();
+    // Unreadable config must fail closed (same as session_start), not re-enable.
+    pinned.config = disabledMemoryWorkspaceConfig();
     return pinned.config;
   };
 
@@ -74,6 +77,20 @@ export default function piDreamExtension(pi: ExtensionAPI) {
     MEMORY_BRIEFING_CUSTOM_TYPE,
     (message, { expanded, outputPad }, theme) => {
       const header = theme.fg("accent", "memory briefing");
+      let text = `${header}\n${message.content}`;
+      if (expanded && message.details) {
+        text += `\n${theme.fg("dim", JSON.stringify(message.details))}`;
+      }
+      const box = new Box(outputPad, 1, (t) => theme.bg("customMessageBg", t));
+      box.addChild(new Text(text, 0, 0));
+      return box;
+    },
+  );
+
+  pi.registerMessageRenderer(
+    MEMORY_AUDIT_CUSTOM_TYPE,
+    (message, { expanded, outputPad }, theme) => {
+      const header = theme.fg("accent", "memory audit");
       let text = `${header}\n${message.content}`;
       if (expanded && message.details) {
         text += `\n${theme.fg("dim", JSON.stringify(message.details))}`;
@@ -124,10 +141,11 @@ export default function piDreamExtension(pi: ExtensionAPI) {
       const loaded = loadMemoryConfigForWorkspace(workspaceId);
       const config = loaded.ok
         ? loaded.config
-        : defaultMemoryWorkspaceConfig();
+        : disabledMemoryWorkspaceConfig();
       if (loaded.ok && loaded.invalidFallback) {
         ctx.ui.notify(
-          "Memory config invalid; using defaults (enabled).",
+          loaded.disabledReason ??
+            "Memory config invalid; memory is disabled until repaired.",
           "warning",
         );
       }
@@ -166,8 +184,14 @@ export default function piDreamExtension(pi: ExtensionAPI) {
     try {
       const notice = consumeMemoryRunNotification(pinned.db);
       if (notice) ctx.ui.notify(notice.message, notice.level);
-    } catch {
-      // Notification failures must not block the agent turn.
+    } catch (err) {
+      // Notification failures must not block the agent turn, but must surface.
+      const detail = err instanceof Error ? err.message : String(err);
+      try {
+        ctx.ui.notify(`Memory run notification error: ${detail}`, "warning");
+      } catch {
+        // UI may be unavailable.
+      }
     }
 
     if (pinned.briefingDone) return;
@@ -217,7 +241,21 @@ export default function piDreamExtension(pi: ExtensionAPI) {
       const notice = consumeMemoryRunNotification(pinned.db);
       if (notice) ctx.ui.notify(notice.message, notice.level);
 
-      const config = reloadConfig();
+      const loaded = loadMemoryConfigForWorkspace(pinned.workspaceId);
+      if (!loaded.ok) {
+        pinned.config = disabledMemoryWorkspaceConfig();
+        ctx.ui.notify(`Memory config error: ${loaded.error}`, "warning");
+      } else {
+        pinned.config = loaded.config;
+        if (loaded.invalidFallback) {
+          ctx.ui.notify(
+            loaded.disabledReason ??
+              "Memory config invalid; memory is disabled until repaired.",
+            "warning",
+          );
+        }
+      }
+      const config = pinned.config;
       const evaluation = evaluateMemoryLearningCadence(pinned.db, {
         cwd: pinned.cwd,
         workspaceId: pinned.workspaceId,
@@ -248,6 +286,12 @@ export default function piDreamExtension(pi: ExtensionAPI) {
         // UI may be unavailable during shutdown.
       }
     }
+  });
+
+  pi.on("model_select", async (_event, ctx) => {
+    if (!pinned) return;
+    pinned.modelRegistry = ctx.modelRegistry;
+    pinned.model = ctx.model;
   });
 
   pi.on("session_shutdown", async () => {

@@ -14,27 +14,6 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "useDefineForClassFields": true,
-    "baseUrl": ".",
-    "paths": {
-      "@earendil-works/pi-coding-agent": [
-        "/Users/user/.local/share/mise/installs/node/24.15.0/lib/node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts"
-      ],
-      "@earendil-works/pi-ai": [
-        "/Users/user/.local/share/mise/installs/node/24.15.0/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.d.ts"
-      ],
-      "@earendil-works/pi-ai/compat": [
-        "/Users/user/.local/share/mise/installs/node/24.15.0/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/compat.d.ts"
-      ],
-      "@earendil-works/pi-tui": [
-        "/Users/user/.local/share/mise/installs/node/24.15.0/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui/dist/index.d.ts"
-      ],
-      "typebox": [
-        "/Users/user/.local/share/mise/installs/node/24.15.0/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/typebox/build/index.d.mts"
-      ]
-    },
-    "typeRoots": [
-      "/Users/user/.local/share/mise/installs/node/24.15.0/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@types"
-    ],
     "types": ["node"]
   },
   "include": ["**/*.ts"],

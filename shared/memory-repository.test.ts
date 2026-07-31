@@ -377,11 +377,17 @@ test("forget soft-retires and preserves observations", async () => {
       },
     });
     const m = listActiveMemories(db)[0]!;
+    assert.ok(searchMemoryBm25(db, "emoji").length > 0);
     retireMemoryNode(db, `M:${m.id}`);
     assert.equal(getMemoryById(db, m.id)!.state, "retired");
     assert.equal(listActiveMemories(db).length, 0);
     assert.ok(listObservationsForMemory(db, m.id).length >= 1);
     assert.equal(getSourceSessionCheckpoint(db, "s1")?.sessionId, "s1");
+    assert.equal(searchMemoryBm25(db, "emoji").length, 0);
+    const fts = db
+      .prepare(`SELECT COUNT(*) AS n FROM search_fts`)
+      .get() as { n: number };
+    assert.equal(Number(fts.n), 0);
   });
 });
 

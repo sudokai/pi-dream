@@ -27,6 +27,7 @@ import {
   type MemoryEmbedFn,
 } from "./memory-embedding.ts";
 import { rebuildMemorySearchDocuments } from "./memory-database.ts";
+import { isMemoryQueryBlank } from "./memory-abort.ts";
 
 export interface MemoryBm25Hit {
   nodeType: MemorySearchableNodeType;
@@ -176,17 +177,30 @@ export async function searchMemoryHybrid(
   semanticDegraded: boolean;
   semanticError?: string;
 }> {
+  if (isMemoryQueryBlank(query)) {
+    return { candidates: [], semanticDegraded: false };
+  }
+
   const limit = opts.limit ?? MEMORY_HYBRID_POOL_SIZE;
   const rrfK = opts.rrfK ?? MEMORY_RRF_K;
+  if (opts.signal?.aborted) {
+    return { candidates: [], semanticDegraded: true, semanticError: "aborted" };
+  }
 
   const bm25 = searchMemoryBm25(db, query, limit);
-  const semanticResult = await searchMemorySemantic(db, query, {
-    embed: opts.embed,
-    modelId: opts.modelId,
-    floor: opts.semanticFloor,
-    limit,
-    signal: opts.signal,
-  });
+  let semanticResult: Awaited<ReturnType<typeof searchMemorySemantic>>;
+  try {
+    semanticResult = await searchMemorySemantic(db, query, {
+      embed: opts.embed,
+      modelId: opts.modelId,
+      floor: opts.semanticFloor,
+      limit,
+      signal: opts.signal,
+    });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    semanticResult = { hits: [], degraded: true, error: detail };
+  }
   const semanticRanks = semanticResult.hits.map((h, i) => ({
     nodeType: h.nodeType,
     nodeId: h.nodeId,

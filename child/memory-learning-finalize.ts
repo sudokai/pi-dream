@@ -1,7 +1,7 @@
 /**
  * Child-owned bookkeeping after a memory learning run.
  * Per-session commits own checkpoints. Finalization releases the claim and
- * removes temporary run state; successful sessions remain committed after later failure.
+ * removes temporary run state only after durable terminal bookkeeping.
  */
 
 import * as fs from "node:fs";
@@ -17,6 +17,13 @@ export interface FinalizeMemoryLearningRunInput {
   manifestPath: string;
   /** When set, mark failed with this error instead of completed. */
   errorText?: string | null;
+}
+
+export interface FinalizeMemoryLearningRunResult {
+  finalized: boolean;
+  status: "completed" | "failed" | "unchanged";
+  errorText?: string | null;
+  runDirRetained: boolean;
 }
 
 /**
@@ -44,11 +51,12 @@ function findMemoryLearningCompletionError(
 }
 
 /**
- * Finalize a learner only after every manifest session is checkpointed; failures release retryable claims.
+ * Finalize a learner only after every manifest session is checkpointed.
+ * Retains the run directory when terminal bookkeeping cannot be written.
  */
 export function finalizeMemoryLearningRun(
   input: FinalizeMemoryLearningRunInput,
-): void {
+): FinalizeMemoryLearningRunResult {
   let errorText = input.errorText ?? null;
   if (!errorText) {
     try {
@@ -58,24 +66,41 @@ export function finalizeMemoryLearningRun(
       errorText = `Memory learning manifest verification failed: ${detail}`;
     }
   }
+
+  const status = errorText ? "failed" : "completed";
+  let finalized = false;
   try {
-    if (errorText) {
-      finalizeMemoryRun(input.db, input.runId, {
-        status: "failed",
-        errorText,
-      });
-    } else {
-      finalizeMemoryRun(input.db, input.runId, { status: "completed" });
+    finalized = finalizeMemoryRun(input.db, input.runId, {
+      status,
+      errorText: errorText ?? null,
+    });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error(
+      `Memory learning finalizeMemoryRun failed for run ${input.runId}: ${detail}`,
+    );
+    finalized = false;
+    if (!errorText) {
+      errorText = `Memory learning finalization failed: ${detail}`;
     }
-  } catch {
-    // Finalization is best-effort so agent_end always returns.
   }
+
+  if (!finalized) {
+    return {
+      finalized: false,
+      status: "unchanged",
+      errorText: errorText ?? "Memory learning finalization failed",
+      runDirRetained: true,
+    };
+  }
+
   try {
     fs.rmSync(path.dirname(input.manifestPath), {
       recursive: true,
       force: true,
     });
+    return { finalized: true, status, errorText, runDirRetained: false };
   } catch {
-    // Finalization is best-effort so agent_end always returns.
+    return { finalized: true, status, errorText, runDirRetained: true };
   }
 }

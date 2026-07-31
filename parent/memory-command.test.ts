@@ -20,6 +20,7 @@ import {
 } from "../shared/memory-repository.ts";
 import {
   acquireMemoryRunClaim,
+  consumeOneUnreportedMemoryRun,
   finalizeMemoryRun,
 } from "../shared/memory-run-claim.ts";
 import { consumeMemoryRunNotification } from "./memory-session-lifecycle.ts";
@@ -191,6 +192,41 @@ test("completed runs reset cadence with success time and processed watermark", (
     assert.ok(state.lastSuccessfulRunAtMs >= 222);
     // No processed sessions yet → watermark falls back to null (nothing consumed).
     assert.equal(state.lastObservedTranscriptMtimeMs, null);
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
+test("consume rolls back reported flag when cadence reset throws", () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "auto");
+    assert.equal(claim.acquired, true);
+    finalizeMemoryRun(db, claim.runId!, { status: "completed" });
+    updateMemoryCadenceState(db, {
+      turnsSinceLastRun: 9,
+      lastSuccessfulRunAtMs: 100,
+      lastObservedTranscriptMtimeMs: 40,
+    });
+
+    assert.throws(() =>
+      consumeOneUnreportedMemoryRun(db, {
+        beforeCommit: () => {
+          throw new Error("cadence boom");
+        },
+      }),
+    );
+
+    const row = db
+      .prepare(
+        `SELECT reported_to_parent, status FROM learning_runs WHERE id = ?`,
+      )
+      .get(claim.runId!) as { reported_to_parent: number; status: string };
+    assert.equal(row.reported_to_parent, 0, "failed beforeCommit must roll back");
+    assert.equal(row.status, "completed");
+    const state = getMemoryWorkspaceState(db);
+    assert.equal(state.turnsSinceLastRun, 9);
+    assert.equal(state.lastSuccessfulRunAtMs, 100);
   } finally {
     closeMemoryDatabase(db);
   }

@@ -5,8 +5,10 @@ Adaptive **workspace memory** for [pi](https://pi.dev): learns durable user pref
 ## Install
 
 ```bash
-pi install /Users/user/Developer/pi-dream
-# development:
+pi install git:https://github.com/<your-org>/pi-dream
+# local development from a checkout:
+pi install .
+# or load directly:
 pi -e ./index.ts
 ```
 
@@ -19,7 +21,7 @@ Requires **Node 24+** (native `node:sqlite`).
 | First turn | Hybrid BM25 + MiniLM search → LLM briefing planner → visible `pi-dream-briefing` custom message with stable IDs and exact stored text |
 | `memory_search` | Same hybrid + LLM gate; records recall for returned nodes only |
 | `memory_open` | Exact target + one deeper level + lateral IDs; never truncates a node |
-| `/memory` | `status`, `list [query]`, `open <id>`, `learn`, `pause`, `resume`, `forget <id>` |
+| `/memory` | `status`, `list [query]`, `open <id>`, `learn`, `pause`, `resume`, `forget <id>`; learn/forget also append a visible `pi-dream-audit` entry |
 | Automatic learning | After ≥10 settled turns, ≥120 minutes, and advanced transcripts → detached `--no-session` learner |
 
 **Never** edits `AGENTS.md`, injects hidden system-prompt memory, or physically deletes history on forget (soft retirement only).
@@ -51,7 +53,7 @@ Override storage root in tests with `PI_DREAM_STORAGE_ROOT`.
 }
 ```
 
-Omit model fields to use the **current session model**. Invalid configured models fail that operation closed (no silent fallback). Use `/memory pause` and `/memory resume` to toggle `enabled`.
+Omit model fields to use the **current session model**. Invalid configured models fail that operation closed (no silent fallback). Invalid or unreadable `config.json` disables memory for the workspace until the file is repaired. Use `/memory pause` and `/memory resume` to toggle `enabled`.
 
 ## Commands
 

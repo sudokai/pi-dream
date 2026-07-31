@@ -7,6 +7,8 @@ import {
   formatMemoryNodeId,
   formatObservationNodeId,
   formatSummaryNodeId,
+  MEMORY_OPEN_CHILDREN_MAX,
+  MEMORY_OPEN_PAGE_DEFAULT,
   parsePrefixedNodeId,
   type GraphEdgeRow,
   type MemoryKnowledgeKind,
@@ -21,6 +23,7 @@ import {
   computeMemoryRowHeat,
   computeSummaryRowHeat,
 } from "./memory-heat.ts";
+import { deleteMemorySearchDocument } from "./memory-database.ts";
 
 export function getMemoryActivityGeneration(db: DatabaseSync): number {
   const row = db
@@ -392,8 +395,6 @@ export interface MemoryOpenResult {
   continuationCursor: string | null;
 }
 
-const DEFAULT_OPEN_PAGE = 20;
-
 /**
  * Exact one-level open: target + children + lateral link IDs.
  * Pagination never splits a node; returns complete nodes + cursor.
@@ -407,7 +408,11 @@ export function openMemoryNodeExact(
   if (!parsed.ok) {
     throw new Error(parsed.error);
   }
-  const pageSize = opts?.pageSize ?? DEFAULT_OPEN_PAGE;
+  const rawPage = opts?.pageSize ?? MEMORY_OPEN_PAGE_DEFAULT;
+  const pageSize = Math.min(
+    Math.max(1, rawPage),
+    MEMORY_OPEN_CHILDREN_MAX,
+  );
   const offset = opts?.cursor ? Number.parseInt(opts.cursor, 10) || 0 : 0;
   const generation = getMemoryActivityGeneration(db);
 
@@ -645,22 +650,15 @@ export function retireMemoryNode(
     if (parsed.type === "memory") {
       const row = getMemoryById(db, parsed.id);
       if (!row) throw new Error(`Memory not found: ${prefixedId}`);
-      db.prepare(
-        `UPDATE memories SET state = 'retired', updated_at = datetime('now') WHERE id = ?`,
-      ).run(parsed.id);
     } else {
       const row = getSummaryById(db, parsed.id);
       if (!row) throw new Error(`Summary not found: ${prefixedId}`);
-      db.prepare(
-        `UPDATE summaries SET state = 'retired', updated_at = datetime('now') WHERE id = ?`,
-      ).run(parsed.id);
     }
     db.prepare(
-      `DELETE FROM search_documents WHERE node_type = ? AND node_id = ?`,
-    ).run(parsed.type, parsed.id);
-    db.prepare(
-      `DELETE FROM embeddings WHERE node_type = ? AND node_id = ?`,
-    ).run(parsed.type, parsed.id);
+      `UPDATE ${parsed.type === "memory" ? "memories" : "summaries"}
+       SET state = 'retired', updated_at = datetime('now') WHERE id = ?`,
+    ).run(parsed.id);
+    deleteMemorySearchDocument(db, parsed.type, parsed.id);
     db.exec("COMMIT");
     return { nodeType: parsed.type, nodeId: parsed.id };
   } catch (err) {

@@ -20,16 +20,23 @@ import {
 import * as os from "node:os";
 import * as path from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { MEMORY_STORAGE_ROOT_ENV } from "./memory-types.ts";
+import { MEMORY_STORAGE_ROOT_ENV, MEMORY_PI_SESSION_DIR_ENV } from "./memory-types.ts";
+import { ensureMemorySecureDir } from "./memory-fs.ts";
 
 /** Environment flag for the pi sessions root (tests only). */
 export const MEMORY_SESSIONS_ROOT_ENV = "PI_DREAM_SESSIONS_ROOT";
 
 /** Root of pi session JSONL transcripts. */
 export function memorySessionsRoot(): string {
-  const override = process.env[MEMORY_SESSIONS_ROOT_ENV];
-  if (override && override.trim()) {
-    return path.resolve(override.trim());
+  const testOverride = process.env[MEMORY_SESSIONS_ROOT_ENV];
+  if (testOverride && testOverride.trim()) {
+    return path.resolve(testOverride.trim());
+  }
+  const piOverride = process.env[MEMORY_PI_SESSION_DIR_ENV];
+  if (piOverride && piOverride.trim()) {
+    return path.resolve(
+      piOverride.trim().replace(/^~(?=$|[\\/])/, os.homedir()),
+    );
   }
   return path.join(os.homedir(), ".pi", "agent", "sessions");
 }
@@ -187,12 +194,10 @@ export function memoryWorkspaceRunsDir(workspaceId: string): string {
   return path.join(memoryWorkspaceDataDir(workspaceId), "runs");
 }
 
-/** Ensure the workspace data directory exists. */
+/** Ensure the workspace data directory exists with restrictive permissions. */
 export function ensureMemoryWorkspaceDataDir(workspaceId: string): string {
   const dir = memoryWorkspaceDataDir(workspaceId);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
+  ensureMemorySecureDir(dir);
   return dir;
 }
 
@@ -342,8 +347,14 @@ export function listMemoryWorkspaceSessionFiles(
     const header = readMemorySessionHeader(filePath);
     if (!header) return;
 
+    const sessionDirName = path.basename(path.dirname(filePath));
+    const headerCwd = normalizeMemoryCwd(header.cwd);
+    if (sessionDirName !== encodeMemorySessionDirName(headerCwd)) {
+      return;
+    }
+
     if (!git) {
-      if (normalizeMemoryCwd(header.cwd) !== normalizedCwd) return;
+      if (headerCwd !== normalizedCwd) return;
     } else if (resolveMemoryWorkspaceId(header.cwd) !== targetId) {
       return;
     }
@@ -376,6 +387,10 @@ export function listMemoryWorkspaceSessionFiles(
     } catch {
       topEntries = [];
     }
+    const allowedForeignCwds = new Set<string>();
+    for (const wt of listMemoryGitWorktreePaths(cwd)) {
+      allowedForeignCwds.add(normalizeMemoryCwd(wt));
+    }
     for (const entry of topEntries) {
       if (!entry.isDirectory()) continue;
       if (hintDirNames.has(entry.name)) continue;
@@ -387,6 +402,9 @@ export function listMemoryWorkspaceSessionFiles(
       for (const f of files) {
         const header = readMemorySessionHeader(f);
         if (!header) continue;
+        const headerCwd = normalizeMemoryCwd(header.cwd);
+        if (entry.name !== encodeMemorySessionDirName(headerCwd)) continue;
+        if (!allowedForeignCwds.has(headerCwd)) continue;
         dirMatches = resolveMemoryWorkspaceId(header.cwd) === targetId;
         break;
       }

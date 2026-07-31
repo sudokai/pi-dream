@@ -60,12 +60,50 @@ test("loadMemoryWorkspaceConfig missing file defaults enabled", () => {
   }
 });
 
+test("loadMemoryWorkspaceConfig invalid JSON disables memory", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-cfg-bad-"));
+  try {
+    const p = path.join(dir, "config.json");
+    fs.writeFileSync(p, "{bad", "utf-8");
+    const r = loadMemoryWorkspaceConfig(p);
+    assert.equal(r.ok, true);
+    if (r.ok) {
+      assert.equal(r.config.enabled, false);
+      assert.equal(r.invalidFallback, true);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadMemoryWorkspaceConfig unreadable file fails closed", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-cfg-unreadable-"));
+  try {
+    const p = path.join(dir, "config.json");
+    fs.writeFileSync(p, '{"version":1,"enabled":false}', "utf-8");
+    fs.chmodSync(p, 0);
+    const r = loadMemoryWorkspaceConfig(p);
+    assert.equal(r.ok, false);
+    if (!r.ok) {
+      assert.match(r.error, /Cannot read memory config/);
+    }
+  } finally {
+    try {
+      fs.chmodSync(path.join(dir, "config.json"), 0o600);
+    } catch {
+      // Best-effort restore for cleanup on platforms that ignore chmod.
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("save/load round-trip", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-cfg-rt-"));
   try {
     const p = path.join(dir, "nested", "config.json");
     const config = { ...defaultMemoryWorkspaceConfig(), enabled: false };
     saveMemoryWorkspaceConfig(p, config);
+    assert.equal(fs.statSync(p).mode & 0o777, 0o600);
     const r = loadMemoryWorkspaceConfig(p);
     assert.equal(r.ok, true);
     if (r.ok) {

@@ -20,6 +20,11 @@ import type {
 } from "./memory-model.ts";
 import type { MemoryThinkingLevel } from "./memory-config.ts";
 import { extractMemoryModelText } from "./memory-model.ts";
+import {
+  MEMORY_AUTH_TIMEOUT_MS,
+  MEMORY_COMPLETION_TIMEOUT_MS,
+} from "./memory-types.ts";
+import { raceMemoryOperation } from "./memory-abort.ts";
 
 export interface MemoryCompletionInput {
   system: string;
@@ -62,7 +67,11 @@ export async function completeMemoryModelCall(
 
   let auth: MemoryAuthResultLike | undefined;
   if (typeof registry.getApiKeyAndHeaders === "function") {
-    auth = await registry.getApiKeyAndHeaders(resolved.model);
+    auth = await raceMemoryOperation(
+      registry.getApiKeyAndHeaders(resolved.model),
+      input.signal,
+      MEMORY_AUTH_TIMEOUT_MS,
+    );
     if (auth && !auth.ok) {
       throw new Error(
         `No API key for recall model ${resolved.modelId}: ${auth.error}`,
@@ -96,7 +105,11 @@ export async function completeMemoryModelCall(
     );
   }
 
-  const message = await stream.result();
+  const message = await raceMemoryOperation(
+    stream.result(),
+    input.signal,
+    MEMORY_COMPLETION_TIMEOUT_MS,
+  );
   if (message.errorMessage) {
     throw new Error(message.errorMessage);
   }

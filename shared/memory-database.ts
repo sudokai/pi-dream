@@ -13,6 +13,7 @@ import {
   ensureMemoryWorkspaceDataDir,
   memoryWorkspaceDbPath,
 } from "./memory-workspace-id.ts";
+import { ensureMemorySecureDir } from "./memory-fs.ts";
 
 export const MEMORY_SCHEMA_VERSION = 1;
 
@@ -187,20 +188,52 @@ function createFreshSchema(db: DatabaseSync): void {
   }
 }
 
+const REQUIRED_TABLES = [
+  "workspace_state",
+  "source_sessions",
+  "learning_runs",
+  "observations",
+  "memories",
+  "memory_versions",
+  "memory_observations",
+  "summaries",
+  "summary_versions",
+  "graph_edges",
+  "recall_events",
+  "search_documents",
+  "search_fts",
+  "embeddings",
+] as const;
+
+function validateMemorySchema(db: DatabaseSync): void {
+  for (const name of REQUIRED_TABLES) {
+    if (!tableExists(db, name)) {
+      throw new Error(`Memory database missing required table: ${name}`);
+    }
+  }
+}
+
 function ensureSchema(db: DatabaseSync): void {
   const version = Number(
     (db.prepare("PRAGMA user_version").get() as { user_version: number })
       .user_version,
   );
-  if (
-    version === MEMORY_SCHEMA_VERSION &&
-    tableExists(db, "workspace_state") &&
-    tableExists(db, "memories")
-  ) {
-    return;
-  }
   if (version === 0 && !tableExists(db, "workspace_state")) {
     createFreshSchema(db);
+    return;
+  }
+  if (version > MEMORY_SCHEMA_VERSION) {
+    throw new Error(
+      `Memory database version ${version} is newer than this extension (${MEMORY_SCHEMA_VERSION}); upgrade pi-dream before opening this workspace.`,
+    );
+  }
+  if (version === MEMORY_SCHEMA_VERSION) {
+    validateMemorySchema(db);
+    return;
+  }
+  if (version === 0 && tableExists(db, "workspace_state")) {
+    validateMemorySchema(db);
+    db.exec(`PRAGMA user_version = ${MEMORY_SCHEMA_VERSION}`);
     return;
   }
   throw new Error(
@@ -229,6 +262,7 @@ export function openMemoryDatabase(
       return memoryWorkspaceDbPath(workspaceId);
     })();
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  ensureMemorySecureDir(path.dirname(dbPath));
   const db = new DatabaseSync(dbPath);
   db.exec("PRAGMA foreign_keys = ON");
   db.exec("PRAGMA journal_mode = WAL");
@@ -249,6 +283,7 @@ export function openMemoryDatabaseAtPath(
 ): DatabaseSync {
   if (dbPath !== ":memory:") {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    ensureMemorySecureDir(path.dirname(dbPath));
   }
   const db = new DatabaseSync(dbPath);
   db.exec("PRAGMA foreign_keys = ON");
@@ -321,7 +356,7 @@ export function upsertMemorySearchDocument(
   }
 }
 
-/** Remove a node from the derived search index. */
+/** Remove a node from the derived search index (FTS, documents, embeddings). */
 export function deleteMemorySearchDocument(
   db: DatabaseSync,
   nodeType: "memory" | "summary",
@@ -332,6 +367,9 @@ export function deleteMemorySearchDocument(
   ).run(nodeType, nodeId);
   db.prepare(
     "DELETE FROM search_documents WHERE node_type = ? AND node_id = ?",
+  ).run(nodeType, nodeId);
+  db.prepare(
+    "DELETE FROM embeddings WHERE node_type = ? AND node_id = ?",
   ).run(nodeType, nodeId);
 }
 

@@ -9,6 +9,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { MemoryWorkspaceConfig } from "../shared/memory-config.ts";
 import {
   acquireMemoryRunClaim,
+  isMemoryRunTerminal,
   releaseMemoryRunClaim,
 } from "../shared/memory-run-claim.ts";
 import {
@@ -25,10 +26,15 @@ import {
   getMemoryPiInvocation,
 } from "../shared/pi-process-invocation.ts";
 import {
+  closeMemoryDatabase,
+  openMemoryDatabaseAtPath,
+} from "../shared/memory-database.ts";
+import {
   ensureMemoryWorkspaceDataDir,
   memoryWorkspaceDbPath,
   memoryWorkspaceRunsDir,
 } from "../shared/memory-workspace-id.ts";
+import { ensureMemorySecureDir } from "../shared/memory-fs.ts";
 
 export interface LaunchMemoryLearningInput {
   db: DatabaseSync;
@@ -79,7 +85,7 @@ export function launchMemoryLearningRun(
   try {
     ensureMemoryWorkspaceDataDir(input.workspaceId);
     runDir = path.join(memoryWorkspaceRunsDir(input.workspaceId), runId);
-    fs.mkdirSync(runDir, { recursive: true });
+    ensureMemorySecureDir(runDir);
     // Snapshot every eligible session into the run dir at discovery time so
     // the detached learner mines immutable bytes, not live appends.
     const manifest = buildMemoryLearningManifest(
@@ -102,6 +108,7 @@ export function launchMemoryLearningRun(
     writeMemoryLearningManifest(manifestPath, manifest);
 
     const dbPath = memoryWorkspaceDbPath(input.workspaceId);
+    const stderrPath = path.join(runDir, "child.stderr.log");
     const { args, env } = buildMemoryLearnerSpawnArgs({
       cwd: input.cwd,
       workspaceId: input.workspaceId,
@@ -113,26 +120,27 @@ export function launchMemoryLearningRun(
     });
 
     const invocation = getMemoryPiInvocation(args);
+    const stderrFd = fs.openSync(stderrPath, "a", 0o600);
     const child = spawn(invocation.command, invocation.args, {
       cwd: input.cwd,
       env,
       detached: true,
-      stdio: ["ignore", "ignore", "ignore"],
+      stdio: ["ignore", "ignore", stderrFd],
     });
+    fs.closeSync(stderrFd);
+
     const releaseMemoryLearningRunAfterChildExit = (reason: string): void => {
+      let freshDb: DatabaseSync | null = null;
       try {
-        // This changes only a still claimed/running run; a child that finalized
-        // successfully remains completed when its process exits normally.
-        releaseMemoryRunClaim(input.db, runId, reason);
+        freshDb = openMemoryDatabaseAtPath(dbPath);
+        if (isMemoryRunTerminal(freshDb, runId)) {
+          return;
+        }
+        releaseMemoryRunClaim(freshDb, runId, reason);
       } catch {
         // Claim release is best-effort after child process failure.
-      }
-      if (runDir) {
-        try {
-          fs.rmSync(runDir, { recursive: true, force: true });
-        } catch {
-          // Temporary run dir cleanup is best-effort.
-        }
+      } finally {
+        closeMemoryDatabase(freshDb);
       }
     };
     child.once("error", () => {

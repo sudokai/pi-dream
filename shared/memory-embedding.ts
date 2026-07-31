@@ -12,9 +12,22 @@ import {
 
 export type MemoryEmbedFn = (texts: string[]) => Promise<Float32Array[]>;
 
-let cachedEmbedder: MemoryEmbedFn | null = null;
-let embedderLoadError: string | null = null;
-let embedderLoading: Promise<MemoryEmbedFn | null> | null = null;
+interface MemoryEmbedderCacheEntry {
+  embedder: MemoryEmbedFn | null;
+  loadError: string | null;
+  loading: Promise<MemoryEmbedFn | null> | null;
+}
+
+const memoryEmbedderCache = new Map<string, MemoryEmbedderCacheEntry>();
+
+function getMemoryEmbedderCacheEntry(modelId: string): MemoryEmbedderCacheEntry {
+  let entry = memoryEmbedderCache.get(modelId);
+  if (!entry) {
+    entry = { embedder: null, loadError: null, loading: null };
+    memoryEmbedderCache.set(modelId, entry);
+  }
+  return entry;
+}
 
 /** Factory seam for deterministic embedder-load cancellation tests. */
 export type MemoryEmbedderFactory = (
@@ -230,49 +243,55 @@ export async function loadMemoryEmbedder(
   signal?: AbortSignal,
 ): Promise<MemoryEmbedFn | null> {
   if (signal?.aborted) return null;
-  if (cachedEmbedder) return cachedEmbedder;
-  if (embedderLoadError) return null;
+  const entry = getMemoryEmbedderCacheEntry(modelId);
+  if (entry.embedder) return entry.embedder;
+  if (entry.loadError) return null;
 
-  if (!embedderLoading) {
-    embedderLoading = createMemoryEmbedder(modelId)
+  if (!entry.loading) {
+    entry.loading = createMemoryEmbedder(modelId)
       .then((embedder) => {
-        cachedEmbedder = embedder;
-        embedderLoadError = null;
+        entry.embedder = embedder;
+        entry.loadError = null;
         return embedder;
       })
       .catch((err: unknown) => {
-        embedderLoadError =
+        entry.loadError =
           err instanceof Error ? err.message : String(err);
-        cachedEmbedder = null;
+        entry.embedder = null;
         return null;
       })
       .finally(() => {
-        embedderLoading = null;
+        entry.loading = null;
       });
   }
 
-  return waitForMemoryEmbedderLoad(embedderLoading, signal);
+  return waitForMemoryEmbedderLoad(entry.loading, signal);
 }
 
-/** Whether semantic indexing is currently degraded. */
-export function memoryEmbeddingStatus(): {
+/** Whether semantic indexing is currently degraded for a model. */
+export function memoryEmbeddingStatus(modelId: string = MEMORY_EMBEDDING_MODEL_ID): {
   available: boolean;
   error: string | null;
   modelId: string;
 } {
+  const entry = getMemoryEmbedderCacheEntry(modelId);
   return {
-    available: cachedEmbedder !== null && embedderLoadError === null,
-    error: embedderLoadError,
-    modelId: MEMORY_EMBEDDING_MODEL_ID,
+    available: entry.embedder !== null && entry.loadError === null,
+    error: entry.loadError,
+    modelId,
   };
 }
 
 /** Inject a fake embedder (tests). */
-export function setMemoryEmbedderForTests(fn: MemoryEmbedFn | null): void {
+export function setMemoryEmbedderForTests(
+  fn: MemoryEmbedFn | null,
+  modelId: string = MEMORY_EMBEDDING_MODEL_ID,
+): void {
   memoryEmbedderFactoryForTests = null;
-  cachedEmbedder = fn;
-  embedderLoadError = fn ? null : "test: embedder disabled";
-  embedderLoading = null;
+  const entry = getMemoryEmbedderCacheEntry(modelId);
+  entry.embedder = fn;
+  entry.loadError = fn ? null : "test: embedder disabled";
+  entry.loading = null;
 }
 
 /** Inject a deferred embedder factory for load/cancellation tests. */
@@ -280,17 +299,24 @@ export function setMemoryEmbedderFactoryForTests(
   factory: MemoryEmbedderFactory | null,
 ): void {
   memoryEmbedderFactoryForTests = factory;
-  cachedEmbedder = null;
-  embedderLoadError = null;
-  embedderLoading = null;
+  memoryEmbedderCache.clear();
 }
 
 /** Reset embedder cache (tests). */
 export function resetMemoryEmbedderForTests(): void {
   memoryEmbedderFactoryForTests = null;
-  cachedEmbedder = null;
-  embedderLoadError = null;
-  embedderLoading = null;
+  memoryEmbedderCache.clear();
+}
+
+function deleteMemoryEmbeddingRow(
+  db: DatabaseSync,
+  nodeType: string,
+  nodeId: number,
+  modelId: string,
+): void {
+  db.prepare(
+    `DELETE FROM embeddings WHERE node_type = ? AND node_id = ? AND model_id = ?`,
+  ).run(nodeType, nodeId, modelId);
 }
 
 /**
@@ -329,7 +355,8 @@ export async function ensureMemoryEmbeddings(
       degraded: true,
       error: signal?.aborted
         ? "aborted"
-        : (embedderLoadError ?? "Semantic embedder unavailable"),
+        : (getMemoryEmbedderCacheEntry(modelId).loadError ??
+          "Semantic embedder unavailable"),
     };
   }
 
@@ -349,11 +376,23 @@ export async function ensureMemoryEmbeddings(
       | undefined;
     if (existing?.content_hash === contentHash) continue;
 
-    const [vector] = await embed([doc.text]);
+    let vector: Float32Array | undefined;
+    try {
+      const vectors = await embed([doc.text]);
+      vector = vectors[0];
+    } catch (err) {
+      // Failed re-embed must not leave a stale vector for the old content hash.
+      deleteMemoryEmbeddingRow(db, doc.node_type, doc.node_id, modelId);
+      const detail = err instanceof Error ? err.message : String(err);
+      return { updated, degraded: true, error: detail };
+    }
     if (signal?.aborted) {
       return { updated, degraded: true, error: "aborted" };
     }
-    if (!vector) continue;
+    if (!vector) {
+      deleteMemoryEmbeddingRow(db, doc.node_type, doc.node_id, modelId);
+      continue;
+    }
     db.prepare(
       `INSERT INTO embeddings (node_type, node_id, model_id, content_hash, vector, updated_at)
        VALUES (?, ?, ?, ?, ?, datetime('now'))
@@ -418,7 +457,8 @@ export async function searchMemorySemantic(
       degraded: true,
       error: signal?.aborted
         ? "aborted"
-        : (embedderLoadError ?? "Semantic embedder unavailable"),
+        : (getMemoryEmbedderCacheEntry(modelId).loadError ??
+          "Semantic embedder unavailable"),
     };
   }
 
@@ -468,6 +508,7 @@ export async function searchMemorySemantic(
     if (signal?.aborted) {
       return { hits: [], degraded: true, error: "aborted" };
     }
-    throw err;
+    const detail = err instanceof Error ? err.message : String(err);
+    return { hits: [], degraded: true, error: detail };
   }
 }

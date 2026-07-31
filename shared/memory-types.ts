@@ -113,6 +113,33 @@ export const MEMORY_CHILD_ENV = "PI_DREAM_CHILD";
 /** Test-only override for the storage root under ~/.pi/agent/dream. */
 export const MEMORY_STORAGE_ROOT_ENV = "PI_DREAM_STORAGE_ROOT";
 
+/** Pi session-dir override (same env as pi-coding-agent). */
+export const MEMORY_PI_SESSION_DIR_ENV = "PI_CODING_AGENT_SESSION_DIR";
+
+/** Opening briefing / memory_search operation timeout (ms). */
+export const MEMORY_RECALL_OPERATION_TIMEOUT_MS = 15_000;
+
+/** Provider auth resolution timeout (ms). */
+export const MEMORY_AUTH_TIMEOUT_MS = 10_000;
+
+/** Planner completion timeout (ms). */
+export const MEMORY_COMPLETION_TIMEOUT_MS = 30_000;
+
+/** Maximum session JSONL bytes read for discovery/header checks. */
+export const MEMORY_SESSION_MAX_BYTES = 64 * 1024 * 1024;
+
+/** Default page size for learner session paging. */
+export const MEMORY_SESSION_PAGE_DEFAULT = 40;
+
+/** Maximum page size for learner session paging. */
+export const MEMORY_SESSION_PAGE_MAX = 200;
+
+/** Default page size for memory_open /memory open children. */
+export const MEMORY_OPEN_PAGE_DEFAULT = 40;
+
+/** Maximum graph children returned per memory_open page. */
+export const MEMORY_OPEN_CHILDREN_MAX = 50;
+
 export interface MemoryObservationRow {
   id: number;
   kind: MemoryKnowledgeKind;
@@ -294,7 +321,7 @@ export type MemoryLearnerOperation =
       memoryId: MemoryNodeId;
       observationText: string;
       memoryText: string;
-      expectedVersionId?: number;
+      expectedVersionId: number;
     }
   | {
       op: "supersede";

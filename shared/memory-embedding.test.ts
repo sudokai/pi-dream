@@ -1,11 +1,16 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import {
+  ensureMemoryEmbeddings,
   loadMemoryEmbedder,
   resetMemoryEmbedderForTests,
   setMemoryEmbedderFactoryForTests,
   type MemoryEmbedFn,
 } from "./memory-embedding.ts";
+import {
+  closeMemoryDatabase,
+  openMemoryDatabaseAtPath,
+} from "./memory-database.ts";
 
 function deferredMemoryEmbedder(): {
   promise: Promise<MemoryEmbedFn>;
@@ -87,6 +92,63 @@ test("many cancelled embedder waiters do not block a later active waiter", async
     deferred.resolve(fakeEmbed);
     assert.ok(await activeLoad);
   } finally {
+    resetMemoryEmbedderForTests();
+  }
+});
+
+test("distinct embedding model ids keep independent caches", async () => {
+  const calls: string[] = [];
+  setMemoryEmbedderFactoryForTests(async (modelId) => {
+    calls.push(modelId);
+    const seed = modelId.endsWith("/a") ? 0.1 : 0.9;
+    const embed: MemoryEmbedFn = async (texts) =>
+      texts.map(() => new Float32Array([seed]));
+    return embed;
+  });
+  try {
+    const a = await loadMemoryEmbedder("model/a");
+    const b = await loadMemoryEmbedder("model/b");
+    assert.ok(a);
+    assert.ok(b);
+    assert.deepEqual(calls.sort(), ["model/a", "model/b"]);
+    assert.notDeepEqual(
+      Array.from((await a!(["x"]))[0]!),
+      Array.from((await b!(["x"]))[0]!),
+    );
+  } finally {
+    resetMemoryEmbedderForTests();
+  }
+});
+
+test("failed re-embed deletes the stale vector row", async () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    db.prepare(
+      `INSERT INTO search_documents (node_type, node_id, text, kind, state, updated_at)
+       VALUES ('memory', 1, 'new text', 'fact', 'active', datetime('now'))`,
+    ).run();
+    db.prepare(
+      `INSERT INTO embeddings (node_type, node_id, model_id, content_hash, vector, updated_at)
+       VALUES ('memory', 1, 'test/model', 'old-hash', ?, datetime('now'))`,
+    ).run(Buffer.from(new Float32Array([1, 0, 0]).buffer));
+
+    const result = await ensureMemoryEmbeddings(db, {
+      modelId: "test/model",
+      embed: async () => {
+        throw new Error("embed boom");
+      },
+    });
+    assert.equal(result.degraded, true);
+    assert.match(result.error ?? "", /embed boom/);
+    const row = db
+      .prepare(
+        `SELECT content_hash FROM embeddings
+         WHERE node_type = 'memory' AND node_id = 1 AND model_id = 'test/model'`,
+      )
+      .get();
+    assert.equal(row, undefined, "stale embedding must be deleted after throw");
+  } finally {
+    closeMemoryDatabase(db);
     resetMemoryEmbedderForTests();
   }
 });

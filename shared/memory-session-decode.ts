@@ -6,6 +6,13 @@
 
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
+import * as path from "node:path";
+import {
+  MEMORY_SESSION_MAX_BYTES,
+  MEMORY_SESSION_PAGE_DEFAULT,
+  MEMORY_SESSION_PAGE_MAX,
+} from "./memory-types.ts";
+import { redactMemorySensitiveText } from "./memory-redaction.ts";
 
 export interface MemoryRawMessage {
   role: string;
@@ -49,12 +56,16 @@ const RECOGNIZED_TYPES: ReadonlySet<string> = new Set([
 export function parseMemoryJsonlLine(line: string): MemoryRawEntry | null {
   const trimmed = line.trim();
   if (!trimmed) return null;
-  let obj: Record<string, unknown>;
+  let parsed: unknown;
   try {
-    obj = JSON.parse(trimmed) as Record<string, unknown>;
+    parsed = JSON.parse(trimmed);
   } catch {
     return null;
   }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+  const obj = parsed as Record<string, unknown>;
   const type = obj.type;
   if (typeof type !== "string" || !RECOGNIZED_TYPES.has(type)) return null;
   return obj as unknown as MemoryRawEntry;
@@ -62,18 +73,35 @@ export function parseMemoryJsonlLine(line: string): MemoryRawEntry | null {
 
 /** Parse a full session JSONL file (malformed lines skipped). */
 export function parseMemorySessionJsonl(filePath: string): MemoryRawEntry[] {
-  let text: string;
+  let bytes: Buffer;
   try {
-    text = fs.readFileSync(filePath, "utf-8");
-  } catch {
+    const stat = fs.statSync(filePath);
+    if (stat.size > MEMORY_SESSION_MAX_BYTES) {
+      throw new Error(
+        `Session file exceeds ${MEMORY_SESSION_MAX_BYTES} bytes: ${filePath}`,
+      );
+    }
+    bytes = fs.readFileSync(filePath);
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("exceeds")) throw err;
     return [];
   }
   const entries: MemoryRawEntry[] = [];
-  for (const line of text.split("\n")) {
+  for (const line of bytes.toString("utf-8").split("\n")) {
     const entry = parseMemoryJsonlLine(line);
     if (entry) entries.push(entry);
   }
   return entries;
+}
+
+/** Stable fallback source-session id when the header omits an id. */
+export function deriveMemorySessionFallbackId(
+  sessionPath: string,
+  cwd: string | null,
+): string {
+  const canonical = path.resolve(sessionPath);
+  const material = `${canonical}\0${cwd ?? ""}`;
+  return `path:${createHash("sha256").update(material).digest("hex").slice(0, 24)}`;
 }
 
 export type MemoryDecodedRole =
@@ -312,6 +340,10 @@ export function loadVerifiedMemorySessionSnapshot(
 ): MemoryDecodedSession {
   let bytes: Buffer;
   try {
+    const stat = fs.statSync(snapshotPath);
+    if (stat.size > MEMORY_SESSION_MAX_BYTES) {
+      throw new Error(`Memory snapshot exceeds safe size: ${snapshotPath}`);
+    }
     bytes = fs.readFileSync(snapshotPath);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
@@ -386,8 +418,12 @@ export function formatMemorySessionPage(
   messages: Array<{ index: number; role: string; text: string }>;
   nextOffset: number | null;
 } {
-  const offset = opts?.offset ?? 0;
-  const limit = opts?.limit ?? 40;
+  const offset = Math.max(0, opts?.offset ?? 0);
+  const rawLimit = opts?.limit ?? MEMORY_SESSION_PAGE_DEFAULT;
+  const limit = Math.min(
+    Math.max(1, rawLimit),
+    MEMORY_SESSION_PAGE_MAX,
+  );
   const visible = session.messages
     .map((message) => {
       const parts = filterMemoryLearnerEvidenceParts(message);
@@ -397,16 +433,18 @@ export function formatMemorySessionPage(
   const total = visible.length;
   const slice = visible.slice(offset, offset + limit);
   const messages = slice.map((m, i) => {
-    const text = m.parts
-      .map((p) => {
-        if (p.type === "text") return p.text ?? "";
-        if (p.type === "toolCall") {
-          return `[toolCall ${p.tool ?? "?"} ${p.input ?? ""}]`;
-        }
-        return `[toolResult ${p.tool ?? "?"} ${p.isError ? "ERROR " : ""}${p.text ?? ""}]`;
-      })
-      .join("\n")
-      .trim();
+    const text = redactMemorySensitiveText(
+      m.parts
+        .map((p) => {
+          if (p.type === "text") return p.text ?? "";
+          if (p.type === "toolCall") {
+            return `[toolCall ${p.tool ?? "?"} ${p.input ?? ""}]`;
+          }
+          return `[toolResult ${p.tool ?? "?"} ${p.isError ? "ERROR " : ""}${p.text ?? ""}]`;
+        })
+        .join("\n")
+        .trim(),
+    );
     return {
       index: offset + i,
       role: String(m.role),

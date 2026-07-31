@@ -232,13 +232,18 @@ function reviseMemoryText(
   db: DatabaseSync,
   memoryId: number,
   text: string,
-  expectedVersionId?: number,
+  expectedVersionId: number,
 ): void {
   const err = validateMemoryBodyText(text, MEMORY_MAX_TEXT_CHARS);
   if (err) throw new Error(err);
   const mem = getMemoryById(db, memoryId);
   if (!mem) throw new Error(`Memory not found: ${formatMemoryNodeId(memoryId)}`);
-  if (expectedVersionId !== undefined && mem.currentVersionId !== expectedVersionId) {
+  if (!Number.isSafeInteger(expectedVersionId) || expectedVersionId <= 0) {
+    throw new Error(
+      `Memory ${formatMemoryNodeId(memoryId)} revision requires a positive expectedVersionId`,
+    );
+  }
+  if (mem.currentVersionId !== expectedVersionId) {
     throw new Error(
       `Memory ${formatMemoryNodeId(memoryId)} version is stale (expected ${expectedVersionId}, have ${mem.currentVersionId})`,
     );
@@ -250,9 +255,18 @@ function reviseMemoryText(
     )
     .run(memoryId, text.trim(), mem.currentVersionId);
   const versionId = Number(verResult.lastInsertRowid);
-  db.prepare(
-    `UPDATE memories SET current_version_id = ?, updated_at = datetime('now') WHERE id = ?`,
-  ).run(versionId, memoryId);
+  const updated = db
+    .prepare(
+      `UPDATE memories
+       SET current_version_id = ?, updated_at = datetime('now')
+       WHERE id = ? AND current_version_id = ?`,
+    )
+    .run(versionId, memoryId, expectedVersionId);
+  if (Number(updated.changes) !== 1) {
+    throw new Error(
+      `Memory ${formatMemoryNodeId(memoryId)} changed while its revision was committing`,
+    );
+  }
   if (mem.state === "active") {
     upsertMemorySearchDocument(db, {
       nodeType: "memory",
@@ -264,6 +278,27 @@ function reviseMemoryText(
   }
 }
 
+function assertGraphEdgeEndpointsExist(
+  db: DatabaseSync,
+  fromType: MemorySearchableNodeType,
+  fromId: number,
+  toType: MemorySearchableNodeType,
+  toId: number,
+): void {
+  if (fromType === "memory" && !getMemoryById(db, fromId)) {
+    throw new Error(`Graph edge from memory not found: ${formatMemoryNodeId(fromId)}`);
+  }
+  if (fromType === "summary" && !getSummaryById(db, fromId)) {
+    throw new Error(`Graph edge from summary not found: ${formatSummaryNodeId(fromId)}`);
+  }
+  if (toType === "memory" && !getMemoryById(db, toId)) {
+    throw new Error(`Graph edge to memory not found: ${formatMemoryNodeId(toId)}`);
+  }
+  if (toType === "summary" && !getSummaryById(db, toId)) {
+    throw new Error(`Graph edge to summary not found: ${formatSummaryNodeId(toId)}`);
+  }
+}
+
 function insertEdge(
   db: DatabaseSync,
   relation: string,
@@ -272,6 +307,10 @@ function insertEdge(
   toType: MemorySearchableNodeType,
   toId: number,
 ): void {
+  if (fromType === toType && fromId === toId) {
+    throw new Error(`Graph edge cannot link a node to itself: ${fromType}:${fromId}`);
+  }
+  assertGraphEdgeEndpointsExist(db, fromType, fromId, toType, toId);
   if (relation === "contains") {
     if (wouldMemoryContainsEdgeCycle(db, fromType, fromId, toType, toId)) {
       throw new Error(
@@ -361,6 +400,14 @@ function applyOperation(
         creationGeneration: ctx.generation,
       });
       linkObservation(db, parsed.id, obsId);
+      if (
+        !Number.isSafeInteger(op.expectedVersionId) ||
+        op.expectedVersionId <= 0
+      ) {
+        throw new Error(
+          `revise on ${op.memoryId} requires a positive expectedVersionId`,
+        );
+      }
       reviseMemoryText(db, parsed.id, op.memoryText, op.expectedVersionId);
       return;
     }
@@ -608,6 +655,12 @@ function applyOperation(
           memberType = p.type;
           memberId = p.id;
         }
+        if (memberType === "memory" && !getMemoryById(db, memberId)) {
+          throw new Error(`summarize member not found: ${member}`);
+        }
+        if (memberType === "summary" && !getSummaryById(db, memberId)) {
+          throw new Error(`summarize member not found: ${member}`);
+        }
         insertEdge(db, "contains", "summary", summaryId, memberType, memberId);
       }
       return;
@@ -617,44 +670,6 @@ function applyOperation(
       const _exhaustive: never = op;
       throw new Error(`Unknown learner operation: ${JSON.stringify(_exhaustive)}`);
     }
-  }
-}
-
-/**
- * Advance an unchanged snapshot's source mtime without replaying its operations.
- * This consumes metadata-only mtime changes so cadence does not relaunch the same bytes.
- */
-function advanceMemorySourceSessionCheckpointMtime(
-  db: DatabaseSync,
-  input: MemoryLearningCommitInput,
-): void {
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    if (!memoryRunOwnsClaim(db, input.runId)) {
-      throw new Error("Memory learning run no longer owns the workspace claim");
-    }
-    db.prepare(
-      `UPDATE source_sessions
-       SET session_path = ?,
-           cwd = ?,
-           processed_mtime_ms = MAX(processed_mtime_ms, ?),
-           completed_at = datetime('now')
-       WHERE session_id = ? AND content_hash = ?`,
-    ).run(
-      input.sessionPath,
-      normalizeMemoryCwd(input.cwd),
-      input.processedMtimeMs,
-      input.sourceSessionId,
-      input.contentHash,
-    );
-    db.exec("COMMIT");
-  } catch (err) {
-    try {
-      db.exec("ROLLBACK");
-    } catch {
-      // Nested rollback failure is ignored.
-    }
-    throw err;
   }
 }
 
@@ -671,31 +686,7 @@ export function commitMemoryLearningSession(
     throw new Error("Memory learning run no longer owns the workspace claim");
   }
 
-  const existing = getSourceSessionCheckpoint(db, input.sourceSessionId);
-  if (existing) {
-    // Content-based replay detection: the manifest's snapshot hash covers the
-    // exact bytes the learner processed, so identical content is a no-op
-    // regardless of mtime.
-    const hashMatch =
-      input.contentHash !== null &&
-      existing.contentHash !== null &&
-      existing.contentHash === input.contentHash;
-    const mtimeNotNewer = existing.processedMtimeMs >= input.processedMtimeMs;
-    if (hashMatch) {
-      advanceMemorySourceSessionCheckpointMtime(db, input);
-      return { applied: false, reason: "already checkpointed" };
-    }
-    // Without comparable hashes (legacy/unhashable checkpoints) the mtime
-    // gate is the only signal. With comparable hashes a mismatch means the
-    // transcript changed — reprocess even when the mtime was preserved, so
-    // same-mtime edits are never silently skipped.
-    if (mtimeNotNewer && (input.contentHash === null || existing.contentHash === null)) {
-      return { applied: false, reason: "already checkpointed" };
-    }
-  }
-
   const operations = input.plan.operations ?? [];
-  // Pure no_op plan still checkpoints.
   const generation = getMemoryActivityGeneration(db);
   const noveltyUntil = generation + MEMORY_NOVELTY_GENERATIONS;
 
@@ -703,6 +694,40 @@ export function commitMemoryLearningSession(
   try {
     if (!memoryRunOwnsClaim(db, input.runId)) {
       throw new Error("Memory learning run no longer owns the workspace claim");
+    }
+
+    const existing = getSourceSessionCheckpoint(db, input.sourceSessionId);
+    if (existing) {
+      const hashMatch =
+        input.contentHash !== null &&
+        existing.contentHash !== null &&
+        existing.contentHash === input.contentHash;
+      const mtimeNotNewer = existing.processedMtimeMs >= input.processedMtimeMs;
+      if (hashMatch) {
+        db.prepare(
+          `UPDATE source_sessions
+           SET session_path = ?,
+               cwd = ?,
+               processed_mtime_ms = MAX(processed_mtime_ms, ?),
+               completed_at = datetime('now')
+           WHERE session_id = ? AND content_hash = ?`,
+        ).run(
+          input.sessionPath,
+          normalizeMemoryCwd(input.cwd),
+          input.processedMtimeMs,
+          input.sourceSessionId,
+          input.contentHash,
+        );
+        db.exec("COMMIT");
+        return { applied: false, reason: "already checkpointed" };
+      }
+      if (
+        mtimeNotNewer &&
+        (input.contentHash === null || existing.contentHash === null)
+      ) {
+        db.exec("ROLLBACK");
+        return { applied: false, reason: "already checkpointed" };
+      }
     }
 
     const tempRefs = new Map<string, number>();

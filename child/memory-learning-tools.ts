@@ -148,7 +148,9 @@ export function registerMemoryLearningTools(
         ),
         "",
         "# Active summaries",
-        ...snapshot.summaries.map((s) => `- ${s.id}: ${s.text}`),
+        ...snapshot.summaries.map(
+          (s) => `- ${s.id} v=${s.currentVersionId}: ${s.text}`,
+        ),
       ];
       return {
         content: [{ type: "text" as const, text: lines.join("\n") }],

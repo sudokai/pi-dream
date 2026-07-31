@@ -160,6 +160,7 @@ export interface HybridMemorySearchOptions {
   embed?: MemoryEmbedFn | null;
   modelId?: string;
   semanticFloor?: number;
+  signal?: AbortSignal;
 }
 
 /**
@@ -184,6 +185,7 @@ export async function searchMemoryHybrid(
     modelId: opts.modelId,
     floor: opts.semanticFloor,
     limit,
+    signal: opts.signal,
   });
   const semanticRanks = semanticResult.hits.map((h, i) => ({
     nodeType: h.nodeType,

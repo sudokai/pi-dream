@@ -19,6 +19,7 @@ import {
 } from "./memory-workspace-id.ts";
 import { getSourceSessionCheckpoint } from "./memory-repository.ts";
 import { parseMemoryJsonlLine } from "./memory-session-decode.ts";
+import type { SourceSessionRow } from "./memory-types.ts";
 
 export {
   listMemoryWorkspaceSessionFiles,
@@ -63,8 +64,37 @@ function snapshotSessionFile(
   }
 }
 
+/** sha256 of a session file's bytes, or null when unreadable. */
+function hashSessionFile(filePath: string): string | null {
+  try {
+    return createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Build a list of sessions eligible for mining: missing checkpoint or newer mtime.
+ * Whether a session still needs learning, judged by checkpoint state.
+ * A newer mtime wins without hashing (the common append case). When the
+ * mtime is not newer, the stored content hash is the tiebreaker: changed
+ * bytes with a preserved mtime must still be discovered, while identical
+ * bytes stay skipped. Legacy checkpoints without a content hash fall back
+ * to the mtime gate alone.
+ */
+function isSessionCheckpointCurrent(
+  checkpoint: SourceSessionRow | null,
+  file: MemorySessionFileInfo,
+): boolean {
+  if (!checkpoint) return false;
+  if (checkpoint.processedMtimeMs < file.mtimeMs) return false;
+  if (checkpoint.contentHash === null) return true;
+  const currentHash = hashSessionFile(file.path);
+  return currentHash !== null && currentHash === checkpoint.contentHash;
+}
+
+/**
+ * Build a list of sessions eligible for mining: missing checkpoint, newer mtime,
+ * or content that differs from the checkpoint hash (even under a preserved mtime).
  * Each entry carries an immutable byte snapshot + content hash taken now, so the
  * learner processes exactly this point-in-time content (never live appends).
  * Files that cannot be snapshotted are skipped.
@@ -85,7 +115,7 @@ export function buildMemoryLearningManifest(
     if (eligible.length >= cap) break;
     const sessionId = resolveMemoryLearningSessionId(file);
     const checkpoint = getSourceSessionCheckpoint(db, sessionId);
-    if (checkpoint && checkpoint.processedMtimeMs >= file.mtimeMs) {
+    if (isSessionCheckpointCurrent(checkpoint, file)) {
       continue;
     }
     const snap = snapshotSessionFile(
@@ -119,7 +149,8 @@ function resolveMemoryLearningSessionId(file: MemorySessionFileInfo): string {
 /**
  * Return whether any workspace transcript still needs a learning checkpoint.
  * This examines every eligible source, not just the newest mtime, so capped runs
- * cannot strand older transcripts behind a global watermark.
+ * cannot strand older transcripts behind a global watermark. Content changes
+ * under a preserved mtime are detected via the checkpoint content hash.
  */
 export function hasMemoryLearningEligibleSession(
   db: DatabaseSync,
@@ -134,7 +165,7 @@ export function hasMemoryLearningEligibleSession(
       db,
       resolveMemoryLearningSessionId(file),
     );
-    return !checkpoint || checkpoint.processedMtimeMs < file.mtimeMs;
+    return !isSessionCheckpointCurrent(checkpoint, file);
   });
 }
 

@@ -14,6 +14,8 @@ export interface MemoryRawMessage {
   toolName?: string;
   isError?: boolean;
   timestamp?: unknown;
+  /** Provenance: customType of a custom_message entry, when present. */
+  customType?: string;
 }
 
 export type MemoryRawEntryType =
@@ -31,6 +33,8 @@ export interface MemoryRawEntry {
   message?: MemoryRawMessage;
   summary?: string;
   content?: string;
+  /** Provenance for custom_message entries. */
+  customType?: string;
 }
 
 const RECOGNIZED_TYPES: ReadonlySet<string> = new Set([
@@ -78,6 +82,7 @@ export type MemoryDecodedRole =
   | "toolResult"
   | "branch"
   | "compaction"
+  | "custom"
   | string;
 
 export interface MemoryDecodedPart {
@@ -93,6 +98,8 @@ export interface MemoryDecodedMessage {
   role: MemoryDecodedRole;
   ts: number | null;
   parts: MemoryDecodedPart[];
+  /** Provenance for custom_message entries (e.g. pi-dream-briefing). */
+  customType?: string;
 }
 
 export interface MemoryDecodedSession {
@@ -146,6 +153,8 @@ function mapRole(role: string): MemoryDecodedRole {
       return "branch";
     case "compactionSummary":
       return "compaction";
+    case "custom":
+      return "custom";
     default:
       return role;
   }
@@ -260,9 +269,16 @@ export function decodeMemorySession(
       });
     }
     if (entry.type === "custom_message" && entry.content) {
-      rawMessages.push({ role: "user", content: String(entry.content) });
+      // Extension-generated messages (briefings, audit entries) are NOT user
+      // speech: keep them with their customType provenance and a dedicated
+      // role so learner input can exclude them.
+      rawMessages.push({
+        role: "custom",
+        content: entry.content,
+        customType: entry.customType,
+      });
       messageMeta.push({
-        role: "user",
+        role: "custom",
         ts: memoryTimestampToEpochMs(entry.timestamp),
       });
     }
@@ -273,6 +289,7 @@ export function decodeMemorySession(
     role: mapRole(messageMeta[i]?.role ?? m.role),
     ts: messageMeta[i]?.ts ?? null,
     parts: decodeParts(m, toolMap),
+    customType: m.customType,
   }));
 
   return { sessionId, cwd, messages };
@@ -313,7 +330,42 @@ export function loadVerifiedMemorySessionSnapshot(
 }
 
 /**
+ * Tool calls/results produced by dream's own memory tools echo stored memory
+ * text back into the transcript. They are not user evidence and must not be
+ * mined as observations.
+ */
+const MEMORY_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "memory_search",
+  "memory_open",
+  "memory_list_sessions",
+  "memory_read_session",
+  "memory_inspect_graph",
+  "memory_commit_session",
+]);
+
+/**
+ * Whether a decoded message counts as user evidence for the learner.
+ * Custom messages (extension-generated) and dream's own memory tool
+ * calls/results are excluded; ordinary tool results stay visible.
+ */
+export function isMemoryLearnerEvidence(m: MemoryDecodedMessage): boolean {
+  if (m.role === "custom") return false;
+  for (const p of m.parts) {
+    if (
+      (p.type === "toolResult" || p.type === "toolCall") &&
+      p.tool !== undefined &&
+      MEMORY_TOOL_NAMES.has(p.tool)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
  * Format a page of decoded messages as plain text for the learner.
+ * Only user evidence passes: generated briefings and memory-tool output are
+ * excluded, so the learner cannot mine its own generated memory.
  */
 export function formatMemorySessionPage(
   session: MemoryDecodedSession,
@@ -326,8 +378,9 @@ export function formatMemorySessionPage(
 } {
   const offset = opts?.offset ?? 0;
   const limit = opts?.limit ?? 40;
-  const total = session.messages.length;
-  const slice = session.messages.slice(offset, offset + limit);
+  const visible = session.messages.filter(isMemoryLearnerEvidence);
+  const total = visible.length;
+  const slice = visible.slice(offset, offset + limit);
   const messages = slice.map((m, i) => {
     const text = m.parts
       .map((p) => {

@@ -10,8 +10,8 @@ import {
   refreshMemoryBriefingPlanNodes,
 } from "../shared/memory-recall-planner.ts";
 import { searchMemoryHybrid } from "../shared/memory-search-index.ts";
+import { completeMemoryModelCall } from "../shared/memory-completion.ts";
 import {
-  extractMemoryModelText,
   formatSessionModelId,
   resolveMemoryModel,
   type MemoryModelRegistryLike,
@@ -35,12 +35,14 @@ export interface BuildMemoryBriefingInput {
   currentSessionModel?: { provider?: string; id?: string } | null;
   piSessionId?: string | null;
   signal?: AbortSignal;
-  /** Injected complete for tests. */
+  /** Injected complete for tests; defaults to the pi-ai provider adapter. */
   complete?: (input: {
     system: string;
     user: string;
     signal?: AbortSignal;
   }) => Promise<{ text: string; usage?: unknown }>;
+  /** Injected embedder for tests; defaults to the local MiniLM pipeline. */
+  embed?: (texts: string[]) => Promise<Float32Array[]>;
 }
 
 export type BuildMemoryBriefingResult =
@@ -100,6 +102,8 @@ export async function buildMemorySessionBriefing(
     rrfK: input.config.rrfK,
     modelId: input.config.embeddingModel,
     semanticFloor: input.config.semanticFloor,
+    embed: input.embed,
+    signal: input.signal,
   });
 
   if (hybrid.candidates.length === 0) {
@@ -125,25 +129,12 @@ export async function buildMemorySessionBriefing(
 
   const complete =
     input.complete ??
-    (async ({ system, user, signal }) => {
-      const registry = input.modelRegistry;
-      if (typeof registry.completeSimple !== "function") {
-        throw new Error("Model registry does not support completeSimple");
-      }
-      const result = await registry.completeSimple(
-        resolved.resolved.model,
-        {
-          system,
-          messages: [{ role: "user", content: user }],
-        },
-        {
-          signal,
-          thinking: resolved.resolved.thinking,
-        },
-      );
-      const text = extractMemoryModelText(result);
-      return { text, usage: result.usage };
-    });
+    (({ system, user, signal }) =>
+      completeMemoryModelCall(input.modelRegistry, resolved.resolved, {
+        system,
+        user,
+        signal,
+      }));
 
   const planned = await planRelevantMemoryBriefing({
     query: input.query,

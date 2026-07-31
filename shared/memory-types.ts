@@ -253,6 +253,29 @@ export interface MemoryBriefingPlan {
   selectedIds: Array<MemoryNodeId | SummaryNodeId>;
 }
 
+/** Structured summary create/update operation; updates carry the observed version. */
+export type MemoryLearnerSummaryOperation =
+  | {
+      op: "summarize";
+      /** Create a summary and optionally expose it to later in-commit operations. */
+      tempRef?: string;
+      summaryId?: undefined;
+      expectedVersionId?: undefined;
+      text: string;
+      /** Prefixed M:/S: ids or in-commit temp refs from create/summarize. */
+      memberIds: string[];
+    }
+  | {
+      op: "summarize";
+      /** Update this active summary only when its observed version still matches. */
+      summaryId: SummaryNodeId;
+      expectedVersionId: number;
+      tempRef?: undefined;
+      text: string;
+      /** Prefixed M:/S: ids or in-commit temp refs from create/summarize. */
+      memberIds: string[];
+    };
+
 export type MemoryLearnerOperation =
   | {
       op: "create";
@@ -293,14 +316,7 @@ export type MemoryLearnerOperation =
       fromId: string;
       toId: string;
     }
-  | {
-      op: "summarize";
-      tempRef?: string;
-      summaryId?: SummaryNodeId;
-      text: string;
-      /** Prefixed M:/S: ids or in-commit temp refs from create/summarize. */
-      memberIds: string[];
-    }
+  | MemoryLearnerSummaryOperation
   | { op: "no_op"; reason?: string };
 
 export interface MemoryLearningSessionPlan {

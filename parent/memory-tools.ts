@@ -12,11 +12,11 @@ import {
   refreshMemoryBriefingPlanNodes,
 } from "../shared/memory-recall-planner.ts";
 import {
-  extractMemoryModelText,
   formatSessionModelId,
   resolveMemoryModel,
   type MemoryModelRegistryLike,
 } from "../shared/memory-model.ts";
+import { completeMemoryModelCall } from "../shared/memory-completion.ts";
 import {
   openMemoryNodeExact,
   recordMemoryRecallEvent,
@@ -112,6 +112,7 @@ export function registerMemoryAgentTools(
         rrfK: config.rrfK,
         modelId: config.embeddingModel,
         semanticFloor: config.semanticFloor,
+        signal: signal ?? undefined,
       });
 
       if (hybrid.candidates.length === 0) {
@@ -146,26 +147,12 @@ export function registerMemoryAgentTools(
         signal: signal ?? undefined,
         db,
         plannerPrompt: loadBriefingPlannerPrompt(),
-        complete: async ({ system, user, signal: s }) => {
-          if (typeof registry.completeSimple !== "function") {
-            throw new Error("Model registry does not support completeSimple");
-          }
-          const result = await registry.completeSimple(
-            resolved.resolved.model,
-            {
-              system,
-              messages: [{ role: "user", content: user }],
-            },
-            {
-              signal: s,
-              thinking: resolved.resolved.thinking,
-            },
-          );
-          return {
-            text: extractMemoryModelText(result),
-            usage: result.usage,
-          };
-        },
+        complete: ({ system, user, signal: s }) =>
+          completeMemoryModelCall(registry, resolved.resolved, {
+            system,
+            user,
+            signal: s,
+          }),
       });
 
       if (!planned.ok) {

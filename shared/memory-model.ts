@@ -2,6 +2,11 @@
  * Model resolution helpers for learning and recall.
  */
 
+import type {
+  Api,
+  Model,
+  Provider,
+} from "@earendil-works/pi-ai";
 import {
   resolveEffectiveMemoryModelId,
   splitMemoryModelId,
@@ -9,20 +14,37 @@ import {
   validateOptionalMemoryModel,
 } from "./memory-config.ts";
 
+/** Resolved auth for one model (extension ModelRegistry.getApiKeyAndHeaders). */
+export type MemoryAuthResultLike =
+  | {
+      ok: true;
+      apiKey?: string;
+      headers?: Record<string, string>;
+      env?: Record<string, string>;
+    }
+  | { ok: false; error: string };
+
+/** The supported pi-ai streamSimple capability exposed by ModelRegistry. */
+export type MemoryCompletionProviderLike = Pick<Provider, "streamSimple">;
+
+/**
+ * Extension-facing model registry surface used by recall/learning paths.
+ * Matches pi 0.83's extension ModelRegistry: a synchronous facade exposing
+ * find/getProvider/getApiKeyAndHeaders — not internal completeSimple.
+ */
 export interface MemoryModelRegistryLike {
-  find(provider: string, modelId: string): unknown;
-  completeSimple?: (
-    model: unknown,
-    context: { system?: string; messages: Array<{ role: string; content: string }> },
-    options?: { signal?: AbortSignal; thinking?: string },
-  ) => Promise<{ content?: unknown; usage?: unknown; text?: string; errorMessage?: string }>;
+  find(provider: string, modelId: string): Model<Api> | undefined;
+  /** Effective pi-ai provider for a provider id. */
+  getProvider?(providerId: string): MemoryCompletionProviderLike | undefined;
+  /** Resolved API key/headers/env for a model. */
+  getApiKeyAndHeaders?(model: Model<Api>): Promise<MemoryAuthResultLike>;
 }
 
 export interface ResolvedMemoryModel {
   modelId: string;
   provider: string;
   modelKey: string;
-  model: unknown;
+  model: Model<Api>;
   thinking?: MemoryThinkingLevel;
 }
 

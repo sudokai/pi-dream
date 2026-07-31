@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -180,6 +181,92 @@ test("capped manifests leave older checkpoint-missing sessions eligible", () => 
         hasMemoryLearningEligibleSession(db, cwd, "ws-any"),
         true,
         "the session outside the newest-first cap remains eligible",
+      );
+    } finally {
+      closeMemoryDatabase(db);
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(snapshotDir, { recursive: true, force: true });
+    }
+  });
+});
+
+test("content changes under a preserved mtime are still discovered", () => {
+  withSessionRoot((root) => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "dream-cwd-"));
+    const snapshotDir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-snap-"));
+    const db = openMemoryDatabaseAtPath(":memory:");
+    try {
+      const filePath = writeSessionFile(root, cwd, [
+        JSON.stringify({ type: "session", id: "sess-1", cwd }),
+        JSON.stringify({
+          type: "message",
+          message: { role: "user", content: "first" },
+        }),
+      ]);
+      const mtimeMs = 1234;
+      fs.utimesSync(filePath, mtimeMs / 1000, mtimeMs / 1000);
+
+      const claim = acquireMemoryRunClaim(db, "manual");
+      const v1Hash = createHash("sha256")
+        .update(fs.readFileSync(filePath))
+        .digest("hex");
+      commitMemoryLearningSession(db, {
+        runId: claim.runId!,
+        sourceSessionId: "sess-1",
+        sessionPath: filePath,
+        cwd,
+        processedMtimeMs: mtimeMs,
+        contentHash: v1Hash,
+        plan: { operations: [{ op: "no_op", reason: "checkpoint" }] },
+      });
+
+      assert.equal(hasMemoryLearningEligibleSession(db, cwd, "ws-any"), false);
+      assert.equal(
+        buildMemoryLearningManifest(db, cwd, "ws-any", { snapshotDir }).length,
+        0,
+      );
+
+      // Rewrite the transcript with different bytes but the SAME mtime:
+      // the mtime gate alone must not hide the change.
+      fs.writeFileSync(
+        filePath,
+        [
+          JSON.stringify({ type: "session", id: "sess-1", cwd }),
+          JSON.stringify({
+            type: "message",
+            message: { role: "user", content: "second" },
+          }),
+        ].join("\n") + "\n",
+        "utf8",
+      );
+      fs.utimesSync(filePath, mtimeMs / 1000, mtimeMs / 1000);
+
+      assert.equal(
+        hasMemoryLearningEligibleSession(db, cwd, "ws-any"),
+        true,
+        "a same-mtime content change must remain eligible",
+      );
+      const manifest = buildMemoryLearningManifest(db, cwd, "ws-any", {
+        snapshotDir,
+      });
+      assert.equal(manifest.length, 1);
+      assert.equal(manifest[0]!.sessionId, "sess-1");
+      assert.notEqual(manifest[0]!.contentHash, v1Hash);
+
+      // Identical bytes under the preserved mtime stay skipped.
+      commitMemoryLearningSession(db, {
+        runId: claim.runId!,
+        sourceSessionId: "sess-1",
+        sessionPath: filePath,
+        cwd,
+        processedMtimeMs: mtimeMs,
+        contentHash: manifest[0]!.contentHash,
+        plan: { operations: [{ op: "no_op", reason: "recheckpoint" }] },
+      });
+      assert.equal(hasMemoryLearningEligibleSession(db, cwd, "ws-any"), false);
+      assert.equal(
+        buildMemoryLearningManifest(db, cwd, "ws-any", { snapshotDir }).length,
+        0,
       );
     } finally {
       closeMemoryDatabase(db);

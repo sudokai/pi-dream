@@ -180,6 +180,7 @@ export default function piDreamExtension(pi: ExtensionAPI) {
         modelRegistry: ctx.modelRegistry as never,
         currentSessionModel: ctx.model as never,
         piSessionId: ctx.sessionManager.getSessionId(),
+        signal: ctx.signal,
       });
 
       if (!result.ok) {

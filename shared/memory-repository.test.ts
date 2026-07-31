@@ -10,6 +10,7 @@ import {
 import {
   commitMemoryLearningSession,
   getSourceSessionCheckpoint,
+  listMemoryGraphSnapshot,
 } from "./memory-repository.ts";
 import {
   getMemoryById,
@@ -251,6 +252,7 @@ test("openMemoryNodeExact exposes summary revision history", async () => {
           {
             op: "summarize",
             summaryId: "S:1",
+            expectedVersionId: 1,
             text: "Updated build summary",
             memberIds: ["M:1"],
           },
@@ -535,4 +537,262 @@ test("single-flight claim rejects second acquirer", () => {
   } finally {
     closeMemoryDatabase(db);
   }
+});
+
+test("summarize never resurrects a forgotten summary", async () => {
+  await withClaimedDb((db, runId) => {
+    commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "s1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1,
+      contentHash: "h1",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "m1",
+            kind: "fact",
+            observationText: "Build uses pnpm",
+            memoryText: "The build uses pnpm",
+          },
+          {
+            op: "summarize",
+            tempRef: "s1",
+            text: "Tooling overview",
+            memberIds: ["m1"],
+          },
+        ],
+      },
+    });
+    retireMemoryNode(db, "S:1");
+
+    // A later learner run updating the forgotten summary must fail closed.
+    assert.throws(
+      () =>
+        commitMemoryLearningSession(db, {
+          runId,
+          sourceSessionId: "s2",
+          sessionPath: "/tmp/s2.jsonl",
+          cwd: "/tmp",
+          processedMtimeMs: 2,
+          contentHash: "h2",
+          plan: {
+            operations: [
+              {
+                op: "summarize",
+                summaryId: "S:1",
+                expectedVersionId: 1,
+                text: "Updated tooling overview",
+                memberIds: ["M:1"],
+              },
+            ],
+          },
+        }),
+      /only active summaries can be updated/,
+    );
+    assert.equal(getMemoryById(db, 1)!.state, "active");
+    // The summary stays retired and its text is untouched.
+    const opened = openMemoryNodeExact(db, "S:1");
+    assert.equal(opened.target.state, "retired");
+    assert.equal(opened.target.text, "Tooling overview");
+  });
+});
+
+test("summarize update honors the expectedVersionId CAS guard", async () => {
+  await withClaimedDb((db, runId) => {
+    commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "s1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1,
+      contentHash: "h1",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "m1",
+            kind: "fact",
+            observationText: "Build uses pnpm",
+            memoryText: "The build uses pnpm",
+          },
+          {
+            op: "summarize",
+            tempRef: "s1",
+            text: "Tooling overview",
+            memberIds: ["m1"],
+          },
+        ],
+      },
+    });
+    const snapshot = listMemoryGraphSnapshot(db);
+    assert.deepEqual(snapshot.summaries, [
+      {
+        id: "S:1",
+        state: "active",
+        currentVersionId: 1,
+        text: "Tooling overview",
+      },
+    ]);
+
+    // Runtime validation still rejects untyped tool input that omits CAS.
+    assert.throws(
+      () =>
+        commitMemoryLearningSession(db, {
+          runId,
+          sourceSessionId: "s-missing-version",
+          sessionPath: "/tmp/s-missing-version.jsonl",
+          cwd: "/tmp",
+          processedMtimeMs: 2,
+          contentHash: "h-missing-version",
+          plan: {
+            operations: [
+              {
+                op: "summarize",
+                summaryId: "S:1",
+                text: "Missing CAS update",
+                memberIds: ["M:1"],
+              },
+            ] as never,
+          },
+        }),
+      /update requires a positive expectedVersionId/,
+    );
+
+    // Version 1 exists; a stale expectedVersionId must fail closed.
+    assert.throws(
+      () =>
+        commitMemoryLearningSession(db, {
+          runId,
+          sourceSessionId: "s2",
+          sessionPath: "/tmp/s2.jsonl",
+          cwd: "/tmp",
+          processedMtimeMs: 2,
+          contentHash: "h2",
+          plan: {
+            operations: [
+              {
+                op: "summarize",
+                summaryId: "S:1",
+                expectedVersionId: 999,
+                text: "Stale update",
+                memberIds: ["M:1"],
+              },
+            ],
+          },
+        }),
+      /version is stale/,
+    );
+    // A matching CAS version succeeds.
+    const applied = commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "s3",
+      sessionPath: "/tmp/s3.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 3,
+      contentHash: "h3",
+      plan: {
+        operations: [
+          {
+            op: "summarize",
+            summaryId: "S:1",
+            expectedVersionId: 1,
+            text: "Tooling overview (revised)",
+            memberIds: ["M:1"],
+          },
+        ],
+      },
+    });
+    assert.equal(applied.applied, true);
+    const opened = openMemoryNodeExact(db, "S:1");
+    assert.equal(opened.target.state, "active");
+    assert.equal(opened.target.text, "Tooling overview (revised)");
+  });
+});
+
+test("changed content with a preserved mtime is reprocessed, not skipped", async () => {
+  await withClaimedDb((db, runId) => {
+    const r1 = commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "s1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1000,
+      contentHash: "hash-v1",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "t",
+            kind: "fact",
+            observationText: "X is 1",
+            memoryText: "X is 1",
+          },
+        ],
+      },
+    });
+    assert.equal(r1.applied, true);
+    assert.equal(listActiveMemories(db).length, 1);
+
+    // Same mtime (preserved), different content hash: must re-process.
+    const r2 = commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "s1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1000,
+      contentHash: "hash-v2",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "t",
+            kind: "fact",
+            observationText: "X is 2",
+            memoryText: "X is 2",
+          },
+        ],
+      },
+    });
+    assert.equal(r2.applied, true);
+    assert.equal(listActiveMemories(db).length, 2);
+
+    // Identical content hash + non-newer mtime remains a no-op.
+    const r3 = commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "s1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 900,
+      contentHash: "hash-v2",
+      plan: { operations: [] },
+    });
+    assert.equal(r3.applied, false);
+    assert.equal(r3.reason, "already checkpointed");
+
+    // Legacy checkpoints without a stored hash still honor the mtime gate.
+    const legacy = commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "legacy",
+      sessionPath: "/tmp/legacy.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 500,
+      contentHash: null,
+      plan: { operations: [{ op: "no_op", reason: "seed" }] },
+    });
+    assert.equal(legacy.applied, true);
+    const r4 = commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "legacy",
+      sessionPath: "/tmp/legacy.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 400,
+      contentHash: null,
+      plan: { operations: [{ op: "no_op", reason: "again" }] },
+    });
+    assert.equal(r4.applied, false);
+    assert.equal(r4.reason, "already checkpointed");
+  });
 });

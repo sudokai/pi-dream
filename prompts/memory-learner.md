@@ -45,7 +45,7 @@ Submit only these ops in `memory_commit_session.operations`:
 | `supersede` | User explicitly corrected an old memory, or a workspace fact clearly changed. Provide `oldMemoryId`, `newTempRef`, `kind`, `observationText`, `memoryText`. |
 | `conflict` | Ambiguous contradiction between memories. Provide `memoryIds` array; optional `observationText`. |
 | `link` | Add a graph edge (`contains`, `related_to`, `supersedes`, `conflicts_with`) between existing or just-created nodes. |
-| `summarize` | Create/update a summary grouping related nodes. Provide `text`, `memberIds`; optional `tempRef` or `summaryId`. |
+| `summarize` | Create/update a summary grouping related nodes. Provide `text`, `memberIds`; create with optional `tempRef`, or update with `summaryId` **and the `expectedVersionId` shown by `memory_inspect_graph`**. Only active summaries can be updated — never update a summary you did not see in `memory_inspect_graph`. |
 | `no_op` | Nothing durable. Provide optional `reason`. |
 
 ## Text quality

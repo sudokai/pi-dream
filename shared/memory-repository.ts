@@ -521,6 +521,28 @@ function applyOperation(
         }
         const existing = getSummaryById(db, parsed.id);
         if (!existing) throw new Error(`Summary not found: ${op.summaryId}`);
+        // Updates never resurrect soft-forgotten summaries: only active
+        // summaries may receive a new version.
+        if (existing.state !== "active") {
+          throw new Error(
+            `Summary ${op.summaryId} is ${existing.state}; only active summaries can be updated`,
+          );
+        }
+        // Summary updates are compare-and-swap writes: require the version the
+        // learner observed so a stale plan cannot replace a newer summary.
+        if (
+          !Number.isSafeInteger(op.expectedVersionId) ||
+          op.expectedVersionId <= 0
+        ) {
+          throw new Error(
+            `Summary ${op.summaryId} update requires a positive expectedVersionId`,
+          );
+        }
+        if (existing.currentVersionId !== op.expectedVersionId) {
+          throw new Error(
+            `Summary ${op.summaryId} version is stale (expected ${op.expectedVersionId}, have ${existing.currentVersionId})`,
+          );
+        }
         summaryId = parsed.id;
         const verResult = db
           .prepare(
@@ -529,9 +551,18 @@ function applyOperation(
           )
           .run(summaryId, op.text.trim(), existing.currentVersionId);
         const versionId = Number(verResult.lastInsertRowid);
-        db.prepare(
-          `UPDATE summaries SET current_version_id = ?, state = 'active', updated_at = datetime('now') WHERE id = ?`,
-        ).run(versionId, summaryId);
+        const updated = db
+          .prepare(
+            `UPDATE summaries
+             SET current_version_id = ?, updated_at = datetime('now')
+             WHERE id = ? AND state = 'active' AND current_version_id = ?`,
+          )
+          .run(versionId, summaryId, op.expectedVersionId);
+        if (updated.changes !== 1) {
+          throw new Error(
+            `Summary ${op.summaryId} changed while its update was committing`,
+          );
+        }
       } else {
         const sumResult = db
           .prepare(
@@ -654,7 +685,11 @@ export function commitMemoryLearningSession(
       advanceMemorySourceSessionCheckpointMtime(db, input);
       return { applied: false, reason: "already checkpointed" };
     }
-    if (mtimeNotNewer) {
+    // Without comparable hashes (legacy/unhashable checkpoints) the mtime
+    // gate is the only signal. With comparable hashes a mismatch means the
+    // transcript changed — reprocess even when the mtime was preserved, so
+    // same-mtime edits are never silently skipped.
+    if (mtimeNotNewer && (input.contentHash === null || existing.contentHash === null)) {
       return { applied: false, reason: "already checkpointed" };
     }
   }
@@ -724,7 +759,12 @@ export function listMemoryGraphSnapshot(db: DatabaseSync): {
     text: string;
     recurrence: number;
   }>;
-  summaries: Array<{ id: string; state: string; text: string }>;
+  summaries: Array<{
+    id: string;
+    state: string;
+    currentVersionId: number;
+    text: string;
+  }>;
 } {
   const memories = listActiveMemories(db).map((m) => ({
     id: formatMemoryNodeId(m.id),
@@ -736,6 +776,7 @@ export function listMemoryGraphSnapshot(db: DatabaseSync): {
   const summaries = listActiveSummaries(db).map((s) => ({
     id: formatSummaryNodeId(s.id),
     state: s.state,
+    currentVersionId: s.currentVersionId,
     text: s.text,
   }));
   return { memories, summaries };

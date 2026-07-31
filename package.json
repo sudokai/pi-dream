@@ -31,6 +31,7 @@
     "shared/memory-graph.ts",
     "shared/memory-heat.ts",
     "shared/memory-model.ts",
+    "shared/memory-prompts.ts",
     "shared/memory-recall-planner.ts",
     "shared/memory-redaction.ts",
     "shared/memory-repository.ts",

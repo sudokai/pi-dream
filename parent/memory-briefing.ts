@@ -25,8 +25,7 @@ import {
   MEMORY_RECALL_OPERATION_TIMEOUT_MS,
   type MemoryBriefingPlan,
 } from "../shared/memory-types.ts";
-import { readFileSync } from "node:fs";
-import { memoryExtensionPath } from "../shared/pi-process-invocation.ts";
+import { loadBriefingPlannerPrompt } from "../shared/memory-prompts.ts";
 import {
   composeMemoryAbortSignal,
   throwIfMemoryAborted,
@@ -84,17 +83,6 @@ export type BuildMemoryBriefingResult =
         details: Record<string, unknown>;
       };
     };
-
-function loadBriefingPlannerPrompt(): string | undefined {
-  try {
-    return readFileSync(
-      memoryExtensionPath("prompts", "memory-briefing-planner.md"),
-      "utf-8",
-    );
-  } catch {
-    return undefined;
-  }
-}
 
 /**
  * Run the full first-turn recall pipeline once.

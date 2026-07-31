@@ -21,8 +21,7 @@ import {
   openMemoryNodeExact,
   recordMemoryRecallEvent,
 } from "../shared/memory-graph.ts";
-import { readFileSync } from "node:fs";
-import { memoryExtensionPath } from "../shared/pi-process-invocation.ts";
+import { loadBriefingPlannerPrompt } from "../shared/memory-prompts.ts";
 import {
   composeMemoryAbortSignal,
   isMemoryQueryBlank,
@@ -36,17 +35,6 @@ export interface MemoryToolsContext {
   getModelRegistry: () => MemoryModelRegistryLike;
   getSessionModel: () => { provider?: string; id?: string } | null | undefined;
   getPiSessionId: () => string | null | undefined;
-}
-
-function loadBriefingPlannerPrompt(): string | undefined {
-  try {
-    return readFileSync(
-      memoryExtensionPath("prompts", "memory-briefing-planner.md"),
-      "utf-8",
-    );
-  } catch {
-    return undefined;
-  }
 }
 
 function formatOpenResult(result: ReturnType<typeof openMemoryNodeExact>): string {

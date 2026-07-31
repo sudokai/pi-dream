@@ -59,10 +59,10 @@ export function acquireMemoryRunClaim(
       db.prepare(
         `UPDATE learning_runs
          SET status = 'failed',
-             finished_at = datetime('now'),
+             finished_at = ?,
              error_text = 'Stale learning run recovered'
          WHERE id = ? AND status IN ('claimed', 'running')`,
-      ).run(active.id);
+      ).run(new Date(nowMs).toISOString(), active.id);
     }
 
     const runId = newRunId(nowMs);
@@ -122,10 +122,10 @@ export function finalizeMemoryRun(
     db.prepare(
       `UPDATE learning_runs
        SET status = ?,
-           finished_at = datetime('now'),
+           finished_at = ?,
            error_text = ?
        WHERE id = ?`,
-    ).run(outcome.status, outcome.errorText ?? null, runId);
+    ).run(outcome.status, new Date().toISOString(), outcome.errorText ?? null, runId);
     db.exec("COMMIT");
     return true;
   } catch (err) {

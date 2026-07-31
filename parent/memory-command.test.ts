@@ -197,6 +197,33 @@ test("completed runs reset cadence with success time and processed watermark", (
   }
 });
 
+test("finished_at is stored as ISO-8601 UTC and round-trips through Date.parse", () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "auto");
+    assert.equal(claim.acquired, true);
+    finalizeMemoryRun(db, claim.runId!, { status: "completed" });
+
+    const row = db
+      .prepare(`SELECT finished_at FROM learning_runs WHERE id = ?`)
+      .get(claim.runId!) as { finished_at: string | null };
+    assert.ok(row.finished_at, "finished_at must be set");
+    assert.match(
+      row.finished_at,
+      /Z$/,
+      `finished_at must be ISO-8601 UTC (ends with Z), got ${row.finished_at}`,
+    );
+    const parsedMs = Date.parse(row.finished_at);
+    assert.ok(Number.isFinite(parsedMs), "finished_at must be parseable");
+    assert.ok(
+      Math.abs(parsedMs - Date.now()) < 1_000,
+      `finished_at must round-trip within ~1s of now, got ${row.finished_at}`,
+    );
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
 test("consume rolls back reported flag when cadence reset throws", () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {

@@ -6,9 +6,7 @@
 import { DatabaseSync } from "node:sqlite";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import {
-  MEMORY_DB_BUSY_TIMEOUT_MS,
-} from "./memory-types.ts";
+import { MEMORY_DB_BUSY_TIMEOUT_MS } from "./memory-types.ts";
 import {
   ensureMemoryWorkspaceDataDir,
   memoryWorkspaceDbPath,
@@ -339,9 +337,10 @@ export function upsertMemorySearchDocument(
     state: string;
   },
 ): void {
-  db.prepare(
-    "DELETE FROM search_fts WHERE node_type = ? AND node_id = ?",
-  ).run(doc.nodeType, doc.nodeId);
+  db.prepare("DELETE FROM search_fts WHERE node_type = ? AND node_id = ?").run(
+    doc.nodeType,
+    doc.nodeId,
+  );
   db.prepare(
     "DELETE FROM search_documents WHERE node_type = ? AND node_id = ?",
   ).run(doc.nodeType, doc.nodeId);
@@ -362,15 +361,17 @@ export function deleteMemorySearchDocument(
   nodeType: "memory" | "summary",
   nodeId: number,
 ): void {
-  db.prepare(
-    "DELETE FROM search_fts WHERE node_type = ? AND node_id = ?",
-  ).run(nodeType, nodeId);
+  db.prepare("DELETE FROM search_fts WHERE node_type = ? AND node_id = ?").run(
+    nodeType,
+    nodeId,
+  );
   db.prepare(
     "DELETE FROM search_documents WHERE node_type = ? AND node_id = ?",
   ).run(nodeType, nodeId);
-  db.prepare(
-    "DELETE FROM embeddings WHERE node_type = ? AND node_id = ?",
-  ).run(nodeType, nodeId);
+  db.prepare("DELETE FROM embeddings WHERE node_type = ? AND node_id = ?").run(
+    nodeType,
+    nodeId,
+  );
 }
 
 /**

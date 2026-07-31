@@ -55,7 +55,10 @@ test("an aborted embedder load detaches promptly without poisoning the cache", a
     const nextLoad = loadMemoryEmbedder("test/minilm", nextTurn.signal);
     deferred.resolve(fakeEmbed);
     const embedder = await nextLoad;
-    assert.ok(embedder, "a later active turn receives the shared loaded embedder");
+    assert.ok(
+      embedder,
+      "a later active turn receives the shared loaded embedder",
+    );
     assert.deepEqual(
       Array.from((await embedder(["next turn"]))[0]!),
       [0.25, 0.5, 0.75],

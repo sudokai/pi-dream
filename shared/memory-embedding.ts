@@ -20,7 +20,9 @@ interface MemoryEmbedderCacheEntry {
 
 const memoryEmbedderCache = new Map<string, MemoryEmbedderCacheEntry>();
 
-function getMemoryEmbedderCacheEntry(modelId: string): MemoryEmbedderCacheEntry {
+function getMemoryEmbedderCacheEntry(
+  modelId: string,
+): MemoryEmbedderCacheEntry {
   let entry = memoryEmbedderCache.get(modelId);
   if (!entry) {
     entry = { embedder: null, loadError: null, loading: null };
@@ -30,9 +32,7 @@ function getMemoryEmbedderCacheEntry(modelId: string): MemoryEmbedderCacheEntry 
 }
 
 /** Factory seam for deterministic embedder-load cancellation tests. */
-export type MemoryEmbedderFactory = (
-  modelId: string,
-) => Promise<MemoryEmbedFn>;
+export type MemoryEmbedderFactory = (modelId: string) => Promise<MemoryEmbedFn>;
 
 let memoryEmbedderFactoryForTests: MemoryEmbedderFactory | null = null;
 
@@ -80,9 +80,7 @@ function bufferToFloat32(buf: Buffer | Uint8Array): Float32Array {
 }
 
 /** Create an embedder without binding it to any one caller's abort signal. */
-async function createMemoryEmbedder(
-  modelId: string,
-): Promise<MemoryEmbedFn> {
+async function createMemoryEmbedder(modelId: string): Promise<MemoryEmbedFn> {
   if (memoryEmbedderFactoryForTests) {
     return memoryEmbedderFactoryForTests(modelId);
   }
@@ -193,6 +191,9 @@ function waitForMemoryEmbedderLoad(
 
   return new Promise((resolve, reject) => {
     const waiters = registerMemoryEmbedderLoadSettlement(loading);
+    // Two-phase init: the wait-handle must exist before its own cancel/cleanup
+    // closures reference it, so it cannot be reduced to a const initializer.
+    // eslint-disable-next-line prefer-const
     let waiter!: MemoryEmbedderLoadWaiter;
     let active = true;
 
@@ -255,8 +256,7 @@ export async function loadMemoryEmbedder(
         return embedder;
       })
       .catch((err: unknown) => {
-        entry.loadError =
-          err instanceof Error ? err.message : String(err);
+        entry.loadError = err instanceof Error ? err.message : String(err);
         entry.embedder = null;
         return null;
       })
@@ -269,7 +269,9 @@ export async function loadMemoryEmbedder(
 }
 
 /** Whether semantic indexing is currently degraded for a model. */
-export function memoryEmbeddingStatus(modelId: string = MEMORY_EMBEDDING_MODEL_ID): {
+export function memoryEmbeddingStatus(
+  modelId: string = MEMORY_EMBEDDING_MODEL_ID,
+): {
   available: boolean;
   error: string | null;
   modelId: string;
@@ -348,7 +350,9 @@ export async function ensureMemoryEmbeddings(
   }
 
   const embed =
-    opts?.embed !== undefined ? opts.embed : await loadMemoryEmbedder(modelId, signal);
+    opts?.embed !== undefined
+      ? opts.embed
+      : await loadMemoryEmbedder(modelId, signal);
   if (!embed) {
     return {
       updated: 0,
@@ -372,8 +376,7 @@ export async function ensureMemoryEmbeddings(
          WHERE node_type = ? AND node_id = ? AND model_id = ?`,
       )
       .get(doc.node_type, doc.node_id, modelId) as
-      | { content_hash: string }
-      | undefined;
+      { content_hash: string } | undefined;
     if (existing?.content_hash === contentHash) continue;
 
     let vector: Float32Array | undefined;
@@ -443,14 +446,18 @@ export async function searchMemorySemantic(
   }
 
   const docCount = db
-    .prepare(`SELECT COUNT(*) AS n FROM search_documents WHERE state = 'active'`)
+    .prepare(
+      `SELECT COUNT(*) AS n FROM search_documents WHERE state = 'active'`,
+    )
     .get() as { n: number };
   if (Number(docCount.n) === 0) {
     return { hits: [], degraded: false };
   }
 
   const embed =
-    opts?.embed !== undefined ? opts.embed : await loadMemoryEmbedder(modelId, signal);
+    opts?.embed !== undefined
+      ? opts.embed
+      : await loadMemoryEmbedder(modelId, signal);
   if (!embed) {
     return {
       hits: [],

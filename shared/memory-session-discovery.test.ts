@@ -49,7 +49,10 @@ function writeSessionFile(
   lines: string[],
 ): string {
   // Discovery encodes the normalized (realpath) cwd as the session dir name.
-  const dir = path.join(sessionsRoot, encodeMemorySessionDirName(normalizeMemoryCwd(cwd)));
+  const dir = path.join(
+    sessionsRoot,
+    encodeMemorySessionDirName(normalizeMemoryCwd(cwd)),
+  );
   fs.mkdirSync(dir, { recursive: true });
   const filePath = path.join(dir, "session.jsonl");
   fs.writeFileSync(filePath, `${lines.join("\n")}\n`, "utf8");

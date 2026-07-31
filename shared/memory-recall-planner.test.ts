@@ -27,9 +27,7 @@ function candidate(
     nodeType,
     nodeId: id,
     prefixedId:
-      nodeType === "memory"
-        ? formatMemoryNodeId(id)
-        : formatSummaryNodeId(id),
+      nodeType === "memory" ? formatMemoryNodeId(id) : formatSummaryNodeId(id),
     kind: nodeType === "memory" ? "fact" : "summary",
     text,
     heat: 1,
@@ -176,9 +174,27 @@ test("refresh drops nodes retired or revised while recall ran (fail closed)", ()
           sectionId: "workspace_knowledge",
           label: "Workspace knowledge",
           nodes: [
-            { prefixedId: "M:1", nodeType: "memory", kind: "fact", text: "Deploys to Fly.io", heat: 1 },
-            { prefixedId: "M:2", nodeType: "memory", kind: "fact", text: "Runs on Node 24", heat: 1 },
-            { prefixedId: "M:3", nodeType: "memory", kind: "fact", text: "Uses pnpm", heat: 1 },
+            {
+              prefixedId: "M:1",
+              nodeType: "memory",
+              kind: "fact",
+              text: "Deploys to Fly.io",
+              heat: 1,
+            },
+            {
+              prefixedId: "M:2",
+              nodeType: "memory",
+              kind: "fact",
+              text: "Runs on Node 24",
+              heat: 1,
+            },
+            {
+              prefixedId: "M:3",
+              nodeType: "memory",
+              kind: "fact",
+              text: "Uses pnpm",
+              heat: 1,
+            },
           ],
         },
       ],

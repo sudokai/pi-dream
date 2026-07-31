@@ -3,10 +3,7 @@
  * Model fields default to the current session model at execution time.
  */
 
-import {
-  existsSync,
-  readFileSync,
-} from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import * as path from "node:path";
 import {
   MEMORY_BRIEFING_TOKEN_BUDGET,
@@ -167,7 +164,11 @@ export function parseMemoryWorkspaceConfig(
   if (typeof obj.enabled !== "boolean") {
     return { ok: false, error: "Memory config enabled must be a boolean." };
   }
-  for (const key of ["learningModel", "recallModel", "embeddingModel"] as const) {
+  for (const key of [
+    "learningModel",
+    "recallModel",
+    "embeddingModel",
+  ] as const) {
     if (
       obj[key] !== undefined &&
       (typeof obj[key] !== "string" || !(obj[key] as string).trim())

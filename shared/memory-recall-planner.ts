@@ -88,7 +88,7 @@ export function defaultMemoryBriefingPlannerSystemPrompt(): string {
     "Given the user's opening request and candidate memory/summary nodes, select only the relevant existing IDs.",
     "You may group IDs under fixed section ids: learned_user_preferences, workspace_knowledge, relevant_summaries.",
     "You must not rewrite stored text, invent memories, or include IDs that were not provided.",
-    "If nothing is relevant, return {\"sections\":[]}.",
+    'If nothing is relevant, return {"sections":[]}.',
     "Output strict JSON only — no markdown fences.",
   ].join(" ");
 }
@@ -181,9 +181,7 @@ export function validateAndPackMemoryBriefingPlan(
   opts?: { tokenBudget?: number; db?: DatabaseSync },
 ): MemoryBriefingPlan {
   const budget = opts?.tokenBudget ?? MEMORY_BRIEFING_TOKEN_BUDGET;
-  const byId = new Map(
-    candidates.map((c) => [c.prefixedId, c] as const),
-  );
+  const byId = new Map(candidates.map((c) => [c.prefixedId, c] as const));
   const selected: Array<{
     sectionId: MemoryBriefingSectionId;
     candidate: MemorySearchCandidate;
@@ -201,7 +199,9 @@ export function validateAndPackMemoryBriefingPlan(
       if (parsedId.type === "observation") {
         throw new Error(`Planner selected observation id ${rawId}`);
       }
-      const candidate = byId.get(parsedId.prefixed as MemoryNodeId | SummaryNodeId);
+      const candidate = byId.get(
+        parsedId.prefixed as MemoryNodeId | SummaryNodeId,
+      );
       if (!candidate) {
         throw new Error(`Planner selected unknown or inactive id ${rawId}`);
       }
@@ -255,10 +255,7 @@ export function validateAndPackMemoryBriefingPlan(
   }
 
   // Budget pack: keep order, drop complete lowest-priority (last) nodes if needed
-  let total = selected.reduce(
-    (sum, s) => sum + s.candidate.estimatedTokens,
-    0,
-  );
+  let total = selected.reduce((sum, s) => sum + s.candidate.estimatedTokens, 0);
   while (total > budget && selected.length > 0) {
     const removed = selected.pop()!;
     total -= removed.candidate.estimatedTokens;
@@ -391,11 +388,10 @@ export async function planRelevantMemoryBriefing(
       return { ok: false, error: "Planner returned empty output", usage };
     }
     const parsed = parsePlannerJson(result.text);
-    const plan = validateAndPackMemoryBriefingPlan(
-      input.candidates,
-      parsed,
-      { tokenBudget: input.tokenBudget, db: input.db },
-    );
+    const plan = validateAndPackMemoryBriefingPlan(input.candidates, parsed, {
+      tokenBudget: input.tokenBudget,
+      db: input.db,
+    });
     return { ok: true, plan, usage };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

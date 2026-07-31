@@ -194,7 +194,10 @@ export function readMemoryLearningManifest(
     throw new Error(`Invalid memory learning manifest: ${manifestPath}`);
   }
   for (const s of parsed.sessions) {
-    if (typeof s.snapshotPath !== "string" || typeof s.contentHash !== "string") {
+    if (
+      typeof s.snapshotPath !== "string" ||
+      typeof s.contentHash !== "string"
+    ) {
       throw new Error(
         `Invalid memory learning manifest (missing snapshot): ${manifestPath}`,
       );

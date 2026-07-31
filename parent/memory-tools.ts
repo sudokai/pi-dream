@@ -37,10 +37,14 @@ export interface MemoryToolsContext {
   getPiSessionId: () => string | null | undefined;
 }
 
-function formatOpenResult(result: ReturnType<typeof openMemoryNodeExact>): string {
+function formatOpenResult(
+  result: ReturnType<typeof openMemoryNodeExact>,
+): string {
   const lines: string[] = [];
   const t = result.target;
-  lines.push(`# ${t.prefixedId} (${t.nodeType}${t.state ? `, ${t.state}` : ""})`);
+  lines.push(
+    `# ${t.prefixedId} (${t.nodeType}${t.state ? `, ${t.state}` : ""})`,
+  );
   if (t.kind) lines.push(`kind: ${t.kind}`);
   if (t.heat !== undefined) lines.push(`heat: ${t.heat.toFixed(3)}`);
   if (t.recurrence !== undefined) lines.push(`recurrence: ${t.recurrence}`);
@@ -201,9 +205,7 @@ export function registerMemoryAgentTools(
       for (const section of refreshed.sections) {
         lines.push(`## ${section.label}`);
         for (const node of section.nodes) {
-          lines.push(
-            `- **${node.prefixedId}** (${node.kind}): ${node.text}`,
-          );
+          lines.push(`- **${node.prefixedId}** (${node.kind}): ${node.text}`);
           recordMemoryRecallEvent(db, {
             nodeType: node.nodeType,
             nodeId: Number(node.prefixedId.slice(2)),
@@ -261,9 +263,7 @@ export function registerMemoryAgentTools(
         });
       }
       return {
-        content: [
-          { type: "text" as const, text: formatOpenResult(result) },
-        ],
+        content: [{ type: "text" as const, text: formatOpenResult(result) }],
         details: {
           id: result.target.prefixedId,
           childCount: result.children.length,

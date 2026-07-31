@@ -23,10 +23,7 @@ test("parsePrefixedNodeId accepts M/S/O", () => {
 
 test("formatMemoryNodeId and normalizeObservationText", () => {
   assert.equal(formatMemoryNodeId(7), "M:7");
-  assert.equal(
-    normalizeObservationText("  Prefer   tabs  "),
-    "prefer tabs",
-  );
+  assert.equal(normalizeObservationText("  Prefer   tabs  "), "prefer tabs");
 });
 
 test("validateMemoryBodyText rejects multiline and empty", () => {

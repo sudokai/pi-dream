@@ -26,11 +26,7 @@ export interface MemoryRawMessage {
 }
 
 export type MemoryRawEntryType =
-  | "session"
-  | "message"
-  | "branch_summary"
-  | "compaction"
-  | "custom_message";
+  "session" | "message" | "branch_summary" | "compaction" | "custom_message";
 
 export interface MemoryRawEntry {
   type: MemoryRawEntryType;
@@ -188,9 +184,7 @@ function mapRole(role: string): MemoryDecodedRole {
   }
 }
 
-function buildToolCallIdMap(
-  messages: MemoryRawMessage[],
-): Map<string, string> {
+function buildToolCallIdMap(messages: MemoryRawMessage[]): Map<string, string> {
   const map = new Map<string, string>();
   for (const m of messages) {
     if (!m || m.role !== "assistant" || !Array.isArray(m.content)) continue;
@@ -420,10 +414,7 @@ export function formatMemorySessionPage(
 } {
   const offset = Math.max(0, opts?.offset ?? 0);
   const rawLimit = opts?.limit ?? MEMORY_SESSION_PAGE_DEFAULT;
-  const limit = Math.min(
-    Math.max(1, rawLimit),
-    MEMORY_SESSION_PAGE_MAX,
-  );
+  const limit = Math.min(Math.max(1, rawLimit), MEMORY_SESSION_PAGE_MAX);
   const visible = session.messages
     .map((message) => {
       const parts = filterMemoryLearnerEvidenceParts(message);
@@ -451,8 +442,7 @@ export function formatMemorySessionPage(
       text,
     };
   });
-  const next =
-    offset + limit < total ? offset + limit : null;
+  const next = offset + limit < total ? offset + limit : null;
   return {
     totalMessages: total,
     offset,

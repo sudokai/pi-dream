@@ -14,13 +14,15 @@ function fakeStream(result: () => Promise<unknown>) {
   return { result };
 }
 
-function modelRegistry(overrides: {
-  provider?: unknown;
-  /** Set to null to simulate a registry with no provider resolution. */
-  noProvider?: boolean;
-  auth?: () => Promise<MemoryAuthResultLike>;
-  find?: () => unknown;
-} = {}): MemoryModelRegistryLike & {
+function modelRegistry(
+  overrides: {
+    provider?: unknown;
+    /** Set to null to simulate a registry with no provider resolution. */
+    noProvider?: boolean;
+    auth?: () => Promise<MemoryAuthResultLike>;
+    find?: () => unknown;
+  } = {},
+): MemoryModelRegistryLike & {
   calls: Array<Record<string, unknown>>;
 } {
   const calls: Array<Record<string, unknown>> = [];
@@ -28,17 +30,14 @@ function modelRegistry(overrides: {
     calls: Array<Record<string, unknown>>;
   } = {
     calls,
-    find: (overrides.find ?? (() => ({ id: "fake-model" }))) as MemoryModelRegistryLike["find"],
+    find: (overrides.find ??
+      (() => ({ id: "fake-model" }))) as MemoryModelRegistryLike["find"],
     getProvider: (providerId: string) => {
       calls.push({ kind: "provider", providerId });
       if (overrides.noProvider) return undefined;
       if (overrides.provider !== undefined) return overrides.provider as never;
       return {
-        streamSimple: (
-          model: unknown,
-          context: unknown,
-          options: unknown,
-        ) => {
+        streamSimple: (model: unknown, context: unknown, options: unknown) => {
           calls.push({ kind: "streamSimple", model, context, options });
           return fakeStream(async () => ({
             content: [{ type: "text", text: "planner output" }],
@@ -81,7 +80,11 @@ test("completeMemoryModelCall routes through provider.streamSimple with reasonin
   const call = registry.calls.find((c) => c.kind === "streamSimple");
   assert.ok(call, "streamSimple must be invoked");
   const options = call!.options as Record<string, unknown>;
-  assert.equal(options.reasoning, "high", "recallThinking maps to SimpleStreamOptions.reasoning");
+  assert.equal(
+    options.reasoning,
+    "high",
+    "recallThinking maps to SimpleStreamOptions.reasoning",
+  );
   assert.equal(options.apiKey, "sk-test");
   assert.deepEqual(options.headers, { "X-Test": "1" });
   assert.deepEqual(options.env, { FOO: "bar" });

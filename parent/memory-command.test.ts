@@ -131,7 +131,10 @@ test("paused or gated evaluations never consume the transcript watermark", () =>
       nowMs: 2_000_000,
     });
     assert.equal(e1.shouldLearn, false);
-    assert.equal(getMemoryWorkspaceState(db).lastObservedTranscriptMtimeMs, 100);
+    assert.equal(
+      getMemoryWorkspaceState(db).lastObservedTranscriptMtimeMs,
+      100,
+    );
 
     // Gates fail (turns unmet): watermark still untouched.
     const e2 = evaluateMemoryLearningCadence(db, {
@@ -141,7 +144,10 @@ test("paused or gated evaluations never consume the transcript watermark", () =>
       nowMs: 3_000_000,
     });
     assert.equal(e2.shouldLearn, false);
-    assert.equal(getMemoryWorkspaceState(db).lastObservedTranscriptMtimeMs, 100);
+    assert.equal(
+      getMemoryWorkspaceState(db).lastObservedTranscriptMtimeMs,
+      100,
+    );
   } finally {
     closeMemoryDatabase(db);
   }
@@ -249,7 +255,11 @@ test("consume rolls back reported flag when cadence reset throws", () => {
         `SELECT reported_to_parent, status FROM learning_runs WHERE id = ?`,
       )
       .get(claim.runId!) as { reported_to_parent: number; status: string };
-    assert.equal(row.reported_to_parent, 0, "failed beforeCommit must roll back");
+    assert.equal(
+      row.reported_to_parent,
+      0,
+      "failed beforeCommit must roll back",
+    );
     assert.equal(row.status, "completed");
     const state = getMemoryWorkspaceState(db);
     assert.equal(state.turnsSinceLastRun, 9);

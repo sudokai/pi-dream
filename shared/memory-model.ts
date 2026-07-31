@@ -2,11 +2,7 @@
  * Model resolution helpers for learning and recall.
  */
 
-import type {
-  Api,
-  Model,
-  Provider,
-} from "@earendil-works/pi-ai";
+import type { Api, Model, Provider } from "@earendil-works/pi-ai";
 import {
   resolveEffectiveMemoryModelId,
   splitMemoryModelId,
@@ -141,7 +137,12 @@ export function formatSessionModelId(
   if (!model) return undefined;
   const provider = model.provider;
   const id = model.id;
-  if (typeof provider === "string" && typeof id === "string" && provider && id) {
+  if (
+    typeof provider === "string" &&
+    typeof id === "string" &&
+    provider &&
+    id
+  ) {
     return `${provider}/${id}`;
   }
   return undefined;

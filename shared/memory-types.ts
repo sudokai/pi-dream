@@ -17,20 +17,15 @@ export type PrefixedNodeId = MemoryNodeId | SummaryNodeId | ObservationNodeId;
 
 /** Lifecycle state for memories and summaries. */
 export type MemoryLifecycleState =
-  | "active"
-  | "conflicted"
-  | "superseded"
-  | "retired";
+  "active" | "conflicted" | "superseded" | "retired";
 
 /** Kind of durable knowledge stored in an observation or memory. */
-export type MemoryKnowledgeKind = "preference" | "fact" | "correction" | "other";
+export type MemoryKnowledgeKind =
+  "preference" | "fact" | "correction" | "other";
 
 /** Typed graph edge relations between memory/summary nodes. */
 export type MemoryGraphRelation =
-  | "contains"
-  | "related_to"
-  | "supersedes"
-  | "conflicts_with";
+  "contains" | "related_to" | "supersedes" | "conflicts_with";
 
 /** Where a recall event originated. */
 export type MemoryRecallSource = "startup" | "search" | "open";
@@ -40,9 +35,7 @@ export type MemorySearchableNodeType = "memory" | "summary";
 
 /** Briefing section identifiers the planner may choose. */
 export type MemoryBriefingSectionId =
-  | "learned_user_preferences"
-  | "workspace_knowledge"
-  | "relevant_summaries";
+  "learned_user_preferences" | "workspace_knowledge" | "relevant_summaries";
 
 export const MEMORY_BRIEFING_SECTION_LABELS: Record<
   MemoryBriefingSectionId,
@@ -220,11 +213,7 @@ export interface SourceSessionRow {
   completedAt: string;
 }
 
-export type LearningRunStatus =
-  | "claimed"
-  | "running"
-  | "completed"
-  | "failed";
+export type LearningRunStatus = "claimed" | "running" | "completed" | "failed";
 
 export type LearningRunTrigger = "auto" | "manual";
 

@@ -60,7 +60,10 @@ export function finalizeMemoryLearningRun(
   let errorText = input.errorText ?? null;
   if (!errorText) {
     try {
-      errorText = findMemoryLearningCompletionError(input.db, input.manifestPath);
+      errorText = findMemoryLearningCompletionError(
+        input.db,
+        input.manifestPath,
+      );
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       errorText = `Memory learning manifest verification failed: ${detail}`;

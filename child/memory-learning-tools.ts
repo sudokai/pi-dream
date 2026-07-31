@@ -82,7 +82,9 @@ export function registerMemoryLearningTools(
     description:
       "Page a decoded source session for mining. Use offset to continue.",
     parameters: Type.Object({
-      sessionId: Type.String({ description: "Source session id from the manifest" }),
+      sessionId: Type.String({
+        description: "Source session id from the manifest",
+      }),
       offset: Type.Optional(
         Type.Number({ description: "Message offset (default 0)" }),
       ),
@@ -143,8 +145,7 @@ export function registerMemoryLearningTools(
       const lines = [
         "# Active memories",
         ...snapshot.memories.map(
-          (m) =>
-            `- ${m.id} [${m.kind}] r=${m.recurrence}: ${m.text}`,
+          (m) => `- ${m.id} [${m.kind}] r=${m.recurrence}: ${m.text}`,
         ),
         "",
         "# Active summaries",
@@ -165,7 +166,9 @@ export function registerMemoryLearningTools(
     description:
       "Atomically commit structured operations for one source session and checkpoint it. Use no_op when nothing durable was found.",
     parameters: Type.Object({
-      sessionId: Type.String({ description: "Source session id from the manifest" }),
+      sessionId: Type.String({
+        description: "Source session id from the manifest",
+      }),
       operations: Type.Array(Type.Any(), {
         description:
           "Learner operations: create, reinforce, revise, supersede, conflict, link, summarize, or no_op",

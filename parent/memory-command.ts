@@ -3,7 +3,10 @@
  */
 
 import type { DatabaseSync } from "node:sqlite";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionCommandContext,
+} from "@earendil-works/pi-coding-agent";
 import {
   defaultMemoryWorkspaceConfig,
   setMemoryWorkspaceEnabled,
@@ -27,9 +30,7 @@ import {
   memoryWorkspaceConfigPath,
   memoryWorkspaceDbPath,
 } from "../shared/memory-workspace-id.ts";
-import {
-  MEMORY_AUDIT_CUSTOM_TYPE,
-} from "../shared/memory-types.ts";
+import { MEMORY_AUDIT_CUSTOM_TYPE } from "../shared/memory-types.ts";
 import { formatSessionModelId } from "../shared/memory-model.ts";
 import { launchMemoryLearningRun } from "./memory-learning-launcher.ts";
 import type { MemoryModelRegistryLike } from "../shared/memory-model.ts";
@@ -69,7 +70,10 @@ export function parseMemoryCommandArgs(args: string): MemoryCommandAction {
   }
   if (head === "open") {
     if (!parts[1]) {
-      return { action: "error", message: `open requires an id. ${MEMORY_COMMAND_USAGE}` };
+      return {
+        action: "error",
+        message: `open requires an id. ${MEMORY_COMMAND_USAGE}`,
+      };
     }
     const id = parts[1];
     let cursor: string | undefined;
@@ -160,10 +164,7 @@ function formatStatus(input: {
   return lines.join("\n");
 }
 
-function formatList(
-  db: DatabaseSync,
-  query: string,
-): string {
+function formatList(db: DatabaseSync, query: string): string {
   const q = query.trim().toLowerCase();
   const memories = listAllMemories(db);
   const summaries = listAllSummaries(db);
@@ -175,7 +176,9 @@ function formatList(
   for (const m of memories) {
     const id = `M:${m.id}`;
     if (!match(m.text, id)) continue;
-    lines.push(`- **${id}** [${m.state}/${m.kind}] (r=${m.recurrence}): ${m.text}`);
+    lines.push(
+      `- **${id}** [${m.state}/${m.kind}] (r=${m.recurrence}): ${m.text}`,
+    );
   }
   lines.push("", "## Summaries");
   for (const s of summaries) {
@@ -265,9 +268,7 @@ export function registerMemoryCommand(
             result.target.state ? `state: ${result.target.state}` : "",
             `text: ${result.target.text}`,
             "",
-            ...result.children.map(
-              (c) => `child ${c.prefixedId}: ${c.text}`,
-            ),
+            ...result.children.map((c) => `child ${c.prefixedId}: ${c.text}`),
             ...result.lateral.map(
               (l) => `link ${l.relation} ${l.direction} ${l.prefixedId}`,
             ),

@@ -52,6 +52,10 @@
   "scripts": {
     "test": "node --test",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm test",
     "eval:learning": "node scripts/evaluate-memory-learning.mjs",
     "eval:recall": "node scripts/evaluate-memory-recall.mjs"
   },
@@ -74,7 +78,11 @@
     "@earendil-works/pi-coding-agent": "0.83.0",
     "@earendil-works/pi-tui": "0.83.0",
     "@types/node": "^24.0.0",
+    "eslint": "^9.39.5",
+    "globals": "^15.15.0",
+    "prettier": "^3.9.6",
     "typebox": "1.3.7",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "typescript-eslint": "^8.65.0"
   }
 }

@@ -46,8 +46,7 @@ export function acquireMemoryRunClaim(
          ORDER BY started_at DESC LIMIT 1`,
       )
       .get() as
-      | { id: string; started_at: string; status: LearningRunStatus }
-      | undefined;
+      { id: string; started_at: string; status: LearningRunStatus } | undefined;
 
     if (active) {
       const startedAtMs = Date.parse(active.started_at);
@@ -69,12 +68,7 @@ export function acquireMemoryRunClaim(
     db.prepare(
       `INSERT INTO learning_runs (id, trigger, model, status, started_at, reported_to_parent)
        VALUES (?, ?, ?, 'claimed', ?, 0)`,
-    ).run(
-      runId,
-      trigger,
-      opts?.model ?? null,
-      new Date(nowMs).toISOString(),
-    );
+    ).run(runId, trigger, opts?.model ?? null, new Date(nowMs).toISOString());
     db.exec("COMMIT");
     return { acquired: true, runId };
   } catch (err) {
@@ -88,10 +82,7 @@ export function acquireMemoryRunClaim(
 }
 
 /** Transition a claimed run to running (child start). */
-export function markMemoryRunRunning(
-  db: DatabaseSync,
-  runId: string,
-): void {
+export function markMemoryRunRunning(db: DatabaseSync, runId: string): void {
   db.prepare(
     `UPDATE learning_runs SET status = 'running' WHERE id = ? AND status = 'claimed'`,
   ).run(runId);
@@ -125,7 +116,12 @@ export function finalizeMemoryRun(
            finished_at = ?,
            error_text = ?
        WHERE id = ?`,
-    ).run(outcome.status, new Date().toISOString(), outcome.errorText ?? null, runId);
+    ).run(
+      outcome.status,
+      new Date().toISOString(),
+      outcome.errorText ?? null,
+      runId,
+    );
     db.exec("COMMIT");
     return true;
   } catch (err) {
@@ -274,10 +270,7 @@ export function consumeOneUnreportedMemoryRun(
 }
 
 /** Whether a run has reached a terminal state. */
-export function isMemoryRunTerminal(
-  db: DatabaseSync,
-  runId: string,
-): boolean {
+export function isMemoryRunTerminal(db: DatabaseSync, runId: string): boolean {
   const row = db
     .prepare(`SELECT status FROM learning_runs WHERE id = ?`)
     .get(runId) as { status: string } | undefined;

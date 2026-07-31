@@ -9,7 +9,6 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
-  mkdirSync,
   openSync,
   closeSync,
   readSync,
@@ -20,7 +19,10 @@ import {
 import * as os from "node:os";
 import * as path from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { MEMORY_STORAGE_ROOT_ENV, MEMORY_PI_SESSION_DIR_ENV } from "./memory-types.ts";
+import {
+  MEMORY_STORAGE_ROOT_ENV,
+  MEMORY_PI_SESSION_DIR_ENV,
+} from "./memory-types.ts";
 import { ensureMemorySecureDir } from "./memory-fs.ts";
 
 /** Environment flag for the pi sessions root (tests only). */

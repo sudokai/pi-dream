@@ -6,7 +6,10 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { DatabaseSync } from "node:sqlite";
-import { openMemoryDatabaseAtPath, closeMemoryDatabase } from "../shared/memory-database.ts";
+import {
+  openMemoryDatabaseAtPath,
+  closeMemoryDatabase,
+} from "../shared/memory-database.ts";
 import {
   markMemoryRunRunning,
   releaseMemoryRunClaim,

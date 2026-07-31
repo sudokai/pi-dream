@@ -18,10 +18,7 @@ import {
   getMemoryById,
   getSummaryById,
 } from "./memory-graph.ts";
-import {
-  computeMemoryRowHeat,
-  computeSummaryRowHeat,
-} from "./memory-heat.ts";
+import { computeMemoryRowHeat, computeSummaryRowHeat } from "./memory-heat.ts";
 import {
   searchMemorySemantic,
   type MemoryEmbedFn,
@@ -64,11 +61,13 @@ export function searchMemoryBm25(
   // must propagate instead of degrading to an empty hit list: an empty BM25
   // result is indistinguishable from a genuinely empty index for every caller.
   const docCount = db
-    .prepare(`SELECT COUNT(*) AS n FROM search_documents WHERE state = 'active'`)
+    .prepare(
+      `SELECT COUNT(*) AS n FROM search_documents WHERE state = 'active'`,
+    )
     .get() as { n: number };
-  const ftsCount = db
-    .prepare(`SELECT COUNT(*) AS n FROM search_fts`)
-    .get() as { n: number };
+  const ftsCount = db.prepare(`SELECT COUNT(*) AS n FROM search_fts`).get() as {
+    n: number;
+  };
   if (Number(docCount.n) > 0 && Number(ftsCount.n) === 0) {
     try {
       rebuildMemorySearchDocuments(db);
@@ -106,7 +105,11 @@ export function searchMemoryBm25(
  */
 export function fuseMemorySearchRanks(
   bm25: MemoryBm25Hit[],
-  semantic: Array<{ nodeType: MemorySearchableNodeType; nodeId: number; rank: number }>,
+  semantic: Array<{
+    nodeType: MemorySearchableNodeType;
+    nodeId: number;
+    rank: number;
+  }>,
   rrfK: number = MEMORY_RRF_K,
 ): Array<{
   nodeType: MemorySearchableNodeType;

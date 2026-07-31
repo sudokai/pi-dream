@@ -4,9 +4,7 @@ import {
   closeMemoryDatabase,
   openMemoryDatabaseAtPath,
 } from "./memory-database.ts";
-import {
-  acquireMemoryRunClaim,
-} from "./memory-run-claim.ts";
+import { acquireMemoryRunClaim } from "./memory-run-claim.ts";
 import {
   commitMemoryLearningSession,
   getSourceSessionCheckpoint,
@@ -30,7 +28,10 @@ import {
 import type { MemorySearchCandidate } from "./memory-types.ts";
 
 async function withClaimedDb(
-  fn: (db: ReturnType<typeof openMemoryDatabaseAtPath>, runId: string) => void | Promise<void>,
+  fn: (
+    db: ReturnType<typeof openMemoryDatabaseAtPath>,
+    runId: string,
+  ) => void | Promise<void>,
 ) {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
@@ -384,9 +385,9 @@ test("forget soft-retires and preserves observations", async () => {
     assert.ok(listObservationsForMemory(db, m.id).length >= 1);
     assert.equal(getSourceSessionCheckpoint(db, "s1")?.sessionId, "s1");
     assert.equal(searchMemoryBm25(db, "emoji").length, 0);
-    const fts = db
-      .prepare(`SELECT COUNT(*) AS n FROM search_fts`)
-      .get() as { n: number };
+    const fts = db.prepare(`SELECT COUNT(*) AS n FROM search_fts`).get() as {
+      n: number;
+    };
     assert.equal(Number(fts.n), 0);
   });
 });
@@ -472,9 +473,7 @@ test("planner validation fail-closed on unknown ids", async () => {
     candidates,
     complete: async () => ({
       text: JSON.stringify({
-        sections: [
-          { id: "learned_user_preferences", ids: ["M:1"] },
-        ],
+        sections: [{ id: "learned_user_preferences", ids: ["M:1"] }],
       }),
     }),
   });

@@ -105,9 +105,10 @@ export function getSourceSessionCheckpoint(
   };
 }
 
-function parseSearchableId(
-  raw: string,
-): { type: MemorySearchableNodeType; id: number } {
+function parseSearchableId(raw: string): {
+  type: MemorySearchableNodeType;
+  id: number;
+} {
   const parsed = parsePrefixedNodeId(raw);
   if (!parsed.ok) throw new Error(parsed.error);
   if (parsed.type === "observation") {
@@ -122,7 +123,8 @@ function assertActiveOrKnownMemory(
   allowStates: string[] = ["active", "conflicted"],
 ): void {
   const row = getMemoryById(db, memoryId);
-  if (!row) throw new Error(`Memory not found: ${formatMemoryNodeId(memoryId)}`);
+  if (!row)
+    throw new Error(`Memory not found: ${formatMemoryNodeId(memoryId)}`);
   if (!allowStates.includes(row.state)) {
     throw new Error(
       `Memory ${formatMemoryNodeId(memoryId)} is ${row.state}; operation not allowed`,
@@ -237,7 +239,8 @@ function reviseMemoryText(
   const err = validateMemoryBodyText(text, MEMORY_MAX_TEXT_CHARS);
   if (err) throw new Error(err);
   const mem = getMemoryById(db, memoryId);
-  if (!mem) throw new Error(`Memory not found: ${formatMemoryNodeId(memoryId)}`);
+  if (!mem)
+    throw new Error(`Memory not found: ${formatMemoryNodeId(memoryId)}`);
   if (!Number.isSafeInteger(expectedVersionId) || expectedVersionId <= 0) {
     throw new Error(
       `Memory ${formatMemoryNodeId(memoryId)} revision requires a positive expectedVersionId`,
@@ -286,16 +289,24 @@ function assertGraphEdgeEndpointsExist(
   toId: number,
 ): void {
   if (fromType === "memory" && !getMemoryById(db, fromId)) {
-    throw new Error(`Graph edge from memory not found: ${formatMemoryNodeId(fromId)}`);
+    throw new Error(
+      `Graph edge from memory not found: ${formatMemoryNodeId(fromId)}`,
+    );
   }
   if (fromType === "summary" && !getSummaryById(db, fromId)) {
-    throw new Error(`Graph edge from summary not found: ${formatSummaryNodeId(fromId)}`);
+    throw new Error(
+      `Graph edge from summary not found: ${formatSummaryNodeId(fromId)}`,
+    );
   }
   if (toType === "memory" && !getMemoryById(db, toId)) {
-    throw new Error(`Graph edge to memory not found: ${formatMemoryNodeId(toId)}`);
+    throw new Error(
+      `Graph edge to memory not found: ${formatMemoryNodeId(toId)}`,
+    );
   }
   if (toType === "summary" && !getSummaryById(db, toId)) {
-    throw new Error(`Graph edge to summary not found: ${formatSummaryNodeId(toId)}`);
+    throw new Error(
+      `Graph edge to summary not found: ${formatSummaryNodeId(toId)}`,
+    );
   }
 }
 
@@ -308,7 +319,9 @@ function insertEdge(
   toId: number,
 ): void {
   if (fromType === toType && fromId === toId) {
-    throw new Error(`Graph edge cannot link a node to itself: ${fromType}:${fromId}`);
+    throw new Error(
+      `Graph edge cannot link a node to itself: ${fromType}:${fromId}`,
+    );
   }
   assertGraphEdgeEndpointsExist(db, fromType, fromId, toType, toId);
   if (relation === "contains") {
@@ -348,7 +361,8 @@ function applyOperation(
       return;
 
     case "create": {
-      if (!op.tempRef.trim()) throw new Error("create tempRef must be non-empty");
+      if (!op.tempRef.trim())
+        throw new Error("create tempRef must be non-empty");
       if (ctx.tempRefs.has(op.tempRef)) {
         throw new Error(`Duplicate create tempRef: ${op.tempRef}`);
       }
@@ -418,7 +432,8 @@ function applyOperation(
         throw new Error(`supersede requires memory id, got ${op.oldMemoryId}`);
       }
       assertActiveOrKnownMemory(db, old.id, ["active", "conflicted"]);
-      if (!op.newTempRef.trim()) throw new Error("supersede newTempRef must be non-empty");
+      if (!op.newTempRef.trim())
+        throw new Error("supersede newTempRef must be non-empty");
       const obsId = insertObservation(db, {
         kind: op.kind,
         text: op.observationText,
@@ -436,16 +451,17 @@ function applyOperation(
         `UPDATE memories SET state = 'superseded', updated_at = datetime('now') WHERE id = ?`,
       ).run(old.id);
       deleteMemorySearchDocument(db, "memory", old.id);
-      db.prepare(`DELETE FROM embeddings WHERE node_type = 'memory' AND node_id = ?`).run(
-        old.id,
-      );
+      db.prepare(
+        `DELETE FROM embeddings WHERE node_type = 'memory' AND node_id = ?`,
+      ).run(old.id);
       insertEdge(db, "supersedes", "memory", newId, "memory", old.id);
       ctx.tempRefs.set(op.newTempRef, newId);
       return;
     }
 
     case "conflict": {
-      if (!op.memoryIds.length) throw new Error("conflict requires at least one memory id");
+      if (!op.memoryIds.length)
+        throw new Error("conflict requires at least one memory id");
       for (const mid of op.memoryIds) {
         const parsed = parsePrefixedNodeId(mid);
         if (!parsed.ok || parsed.type !== "memory") {
@@ -537,16 +553,24 @@ function applyOperation(
 
       // Ensure nodes exist
       if (fromType === "memory" && !getMemoryById(db, fromId)) {
-        throw new Error(`link from memory not found: ${formatMemoryNodeId(fromId)}`);
+        throw new Error(
+          `link from memory not found: ${formatMemoryNodeId(fromId)}`,
+        );
       }
       if (fromType === "summary" && !getSummaryById(db, fromId)) {
-        throw new Error(`link from summary not found: ${formatSummaryNodeId(fromId)}`);
+        throw new Error(
+          `link from summary not found: ${formatSummaryNodeId(fromId)}`,
+        );
       }
       if (toType === "memory" && !getMemoryById(db, toId)) {
-        throw new Error(`link to memory not found: ${formatMemoryNodeId(toId)}`);
+        throw new Error(
+          `link to memory not found: ${formatMemoryNodeId(toId)}`,
+        );
       }
       if (toType === "summary" && !getSummaryById(db, toId)) {
-        throw new Error(`link to summary not found: ${formatSummaryNodeId(toId)}`);
+        throw new Error(
+          `link to summary not found: ${formatSummaryNodeId(toId)}`,
+        );
       }
 
       insertEdge(db, op.relation, fromType, fromId, toType, toId);
@@ -564,7 +588,9 @@ function applyOperation(
       if (op.summaryId) {
         const parsed = parsePrefixedNodeId(op.summaryId);
         if (!parsed.ok || parsed.type !== "summary") {
-          throw new Error(`summarize summaryId must be S:<n>, got ${op.summaryId}`);
+          throw new Error(
+            `summarize summaryId must be S:<n>, got ${op.summaryId}`,
+          );
         }
         const existing = getSummaryById(db, parsed.id);
         if (!existing) throw new Error(`Summary not found: ${op.summaryId}`);
@@ -668,7 +694,9 @@ function applyOperation(
 
     default: {
       const _exhaustive: never = op;
-      throw new Error(`Unknown learner operation: ${JSON.stringify(_exhaustive)}`);
+      throw new Error(
+        `Unknown learner operation: ${JSON.stringify(_exhaustive)}`,
+      );
     }
   }
 }

@@ -19,10 +19,7 @@ import {
   type PrefixedNodeId,
   type SummaryRow,
 } from "./memory-types.ts";
-import {
-  computeMemoryRowHeat,
-  computeSummaryRowHeat,
-} from "./memory-heat.ts";
+import { computeMemoryRowHeat, computeSummaryRowHeat } from "./memory-heat.ts";
 import { deleteMemorySearchDocument } from "./memory-database.ts";
 
 export function getMemoryActivityGeneration(db: DatabaseSync): number {
@@ -329,7 +326,12 @@ export function listObservationsForMemory(
 export function listMemoryVersions(
   db: DatabaseSync,
   memoryId: number,
-): Array<{ id: number; text: string; previousVersionId: number | null; createdAt: string }> {
+): Array<{
+  id: number;
+  text: string;
+  previousVersionId: number | null;
+  createdAt: string;
+}> {
   const rows = db
     .prepare(
       `SELECT id, text, previous_version_id, created_at
@@ -352,7 +354,12 @@ export function listMemoryVersions(
 export function listSummaryVersions(
   db: DatabaseSync,
   summaryId: number,
-): Array<{ id: number; text: string; previousVersionId: number | null; createdAt: string }> {
+): Array<{
+  id: number;
+  text: string;
+  previousVersionId: number | null;
+  createdAt: string;
+}> {
   const rows = db
     .prepare(
       `SELECT id, text, previous_version_id, created_at
@@ -409,10 +416,7 @@ export function openMemoryNodeExact(
     throw new Error(parsed.error);
   }
   const rawPage = opts?.pageSize ?? MEMORY_OPEN_PAGE_DEFAULT;
-  const pageSize = Math.min(
-    Math.max(1, rawPage),
-    MEMORY_OPEN_CHILDREN_MAX,
-  );
+  const pageSize = Math.min(Math.max(1, rawPage), MEMORY_OPEN_CHILDREN_MAX);
   const offset = opts?.cursor ? Number.parseInt(opts.cursor, 10) || 0 : 0;
   const generation = getMemoryActivityGeneration(db);
 

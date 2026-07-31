@@ -94,7 +94,7 @@ export function buildMemoryLearnerSpawnArgs(
   args.push(MEMORY_LEARNER_TASK);
 
   const env: Record<string, string> = {
-    ...process.env as Record<string, string>,
+    ...(process.env as Record<string, string>),
     PI_DREAM_CHILD: "1",
     PI_DREAM_CWD: input.cwd,
     PI_DREAM_WORKSPACE_ID: input.workspaceId,

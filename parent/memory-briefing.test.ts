@@ -18,9 +18,7 @@ import {
 import { getMemoryActivityGeneration } from "../shared/memory-graph.ts";
 
 function fakeEmbed(texts: string[]): Promise<Float32Array[]> {
-  return Promise.resolve(
-    texts.map(() => new Float32Array([0.25, 0.5, 0.75])),
-  );
+  return Promise.resolve(texts.map(() => new Float32Array([0.25, 0.5, 0.75])));
 }
 
 test("briefing signal uses a bounded timeout before pi exposes a run signal", async () => {
@@ -112,7 +110,10 @@ test("buildMemorySessionBriefing completes through the pi-ai provider adapter by
     // The default completion path went through provider.streamSimple with
     // recallThinking mapped to SimpleStreamOptions.reasoning.
     const streamCall = calls.find((c) => c.kind === "streamSimple");
-    assert.ok(streamCall, "default completion must use the pi-ai provider adapter");
+    assert.ok(
+      streamCall,
+      "default completion must use the pi-ai provider adapter",
+    );
     const options = streamCall!.options as Record<string, unknown>;
     assert.equal(options.reasoning, "high");
     assert.equal(options.apiKey, "sk-test");
@@ -129,9 +130,7 @@ test("buildMemorySessionBriefing completes through the pi-ai provider adapter by
 
     // Recalled nodes record startup recall events.
     const events = db
-      .prepare(
-        `SELECT node_type, node_id, source FROM recall_events`,
-      )
+      .prepare(`SELECT node_type, node_id, source FROM recall_events`)
       .all() as Array<{ node_type: string; node_id: number; source: string }>;
     assert.equal(events.length, 1);
     assert.equal(events[0]!.node_type, "memory");
@@ -293,20 +292,19 @@ test("aborted briefing before planning does not advance activity generation", as
 
     const controller = new AbortController();
     controller.abort();
-    await assert.rejects(
-      () =>
-        buildMemorySessionBriefing({
-          db,
-          query: "what should I know?",
-          config: defaultMemoryWorkspaceConfig(),
-          modelRegistry: {
-            find: () => ({ id: "fake-model" }),
-            getProvider: () => undefined,
-          } as never,
-          currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
-          embed: fakeEmbed,
-          signal: controller.signal,
-        }),
+    await assert.rejects(() =>
+      buildMemorySessionBriefing({
+        db,
+        query: "what should I know?",
+        config: defaultMemoryWorkspaceConfig(),
+        modelRegistry: {
+          find: () => ({ id: "fake-model" }),
+          getProvider: () => undefined,
+        } as never,
+        currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        embed: fakeEmbed,
+        signal: controller.signal,
+      }),
     );
     const gen = db
       .prepare(`SELECT activity_generation FROM workspace_state WHERE id = 1`)

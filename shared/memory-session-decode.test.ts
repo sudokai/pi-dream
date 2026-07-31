@@ -20,9 +20,7 @@ test("parseMemoryJsonlLine tolerates junk", () => {
   assert.equal(parseMemoryJsonlLine("[1,2]"), null);
   assert.equal(parseMemoryJsonlLine('"hello"'), null);
   assert.equal(parseMemoryJsonlLine("42"), null);
-  const s = parseMemoryJsonlLine(
-    '{"type":"session","id":"abc","cwd":"/tmp"}',
-  );
+  const s = parseMemoryJsonlLine('{"type":"session","id":"abc","cwd":"/tmp"}');
   assert.equal(s?.type, "session");
   assert.equal(s?.id, "abc");
 });
@@ -76,7 +74,10 @@ test("loadVerifiedMemorySessionSnapshot fails closed on missing or modified snap
     );
     fs.writeFileSync(file, bytes);
     const hash = createHash("sha256").update(bytes).digest("hex");
-    assert.equal(loadVerifiedMemorySessionSnapshot(file, hash).sessionId, "sid");
+    assert.equal(
+      loadVerifiedMemorySessionSnapshot(file, hash).sessionId,
+      "sid",
+    );
 
     fs.appendFileSync(file, "corrupted\n", "utf-8");
     assert.throws(
@@ -131,7 +132,8 @@ test("generated briefings keep provenance and are not learner evidence", () => {
     {
       type: "custom_message",
       customType: "pi-dream-briefing",
-      content: "# Workspace memory briefing\n- **M:1** (preference): Do not use emoji",
+      content:
+        "# Workspace memory briefing\n- **M:1** (preference): Do not use emoji",
     },
     {
       type: "message",

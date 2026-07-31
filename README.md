@@ -5,7 +5,7 @@ Adaptive **workspace memory** for [pi](https://pi.dev): learns durable user pref
 ## Install
 
 ```bash
-pi install git:https://github.com/<your-org>/pi-dream
+pi install git:https://github.com/sudokai/pi-dream
 # local development from a checkout:
 pi install .
 # or load directly:

@@ -79,6 +79,13 @@ export const MEMORY_NOVELTY_BOOST = 1.0;
 /** Novelty duration in activity generations. */
 export const MEMORY_NOVELTY_GENERATIONS = 3;
 
+/** Maximum source-session age (days) for novelty: older evidence enters cold. */
+export const MEMORY_NOVELTY_MAX_SOURCE_AGE_DAYS = 14;
+
+/** Same cutoff in milliseconds (day-derived, single source of truth). */
+export const MEMORY_NOVELTY_MAX_SOURCE_AGE_MS =
+  MEMORY_NOVELTY_MAX_SOURCE_AGE_DAYS * 86_400_000;
+
 /** Exponential heat decay base per activity generation. */
 export const MEMORY_HEAT_DECAY = 0.85;
 

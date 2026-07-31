@@ -9,6 +9,7 @@ import {
   MEMORY_MAX_SUMMARY_CHARS,
   MEMORY_MAX_TEXT_CHARS,
   MEMORY_NOVELTY_GENERATIONS,
+  MEMORY_NOVELTY_MAX_SOURCE_AGE_MS,
   normalizeObservationText,
   parsePrefixedNodeId,
   validateMemoryBodyText,
@@ -191,13 +192,30 @@ function linkObservation(
   ).run(memoryId, observationId);
 }
 
+/**
+ * A fresh (non-backfilled) session touching a memory that entered cold grants
+ * it the standard novelty window; passive presence never extends an active one.
+ */
+function grantNoveltyToColdMemory(
+  db: DatabaseSync,
+  memoryId: number,
+  noveltyUntil: number | null,
+): void {
+  if (noveltyUntil === null) return;
+  const mem = getMemoryById(db, memoryId);
+  if (!mem || mem.noveltyUntilGeneration !== null) return;
+  db.prepare(
+    `UPDATE memories SET novelty_until_generation = ? WHERE id = ?`,
+  ).run(noveltyUntil, memoryId);
+}
+
 function createMemoryWithVersion(
   db: DatabaseSync,
   input: {
     kind: MemoryKnowledgeKind;
     text: string;
     creationGeneration: number;
-    noveltyUntilGeneration: number;
+    noveltyUntilGeneration: number | null;
   },
 ): number {
   const err = validateMemoryBodyText(input.text, MEMORY_MAX_TEXT_CHARS);
@@ -351,7 +369,7 @@ function applyOperation(
   ctx: {
     sourceSessionId: string;
     generation: number;
-    noveltyUntil: number;
+    noveltyUntil: number | null;
     tempRefs: Map<string, number>;
     summaryTempRefs: Map<string, number>;
   },
@@ -390,6 +408,7 @@ function applyOperation(
       }
       assertActiveOrKnownMemory(db, parsed.id);
       const mem = getMemoryById(db, parsed.id)!;
+      grantNoveltyToColdMemory(db, parsed.id, ctx.noveltyUntil);
       const obsId = insertObservation(db, {
         kind: mem.kind,
         text: op.observationText,
@@ -407,6 +426,7 @@ function applyOperation(
       }
       assertActiveOrKnownMemory(db, parsed.id);
       const mem = getMemoryById(db, parsed.id)!;
+      grantNoveltyToColdMemory(db, parsed.id, ctx.noveltyUntil);
       const obsId = insertObservation(db, {
         kind: mem.kind,
         text: op.observationText,
@@ -716,7 +736,14 @@ export function commitMemoryLearningSession(
 
   const operations = input.plan.operations ?? [];
   const generation = getMemoryActivityGeneration(db);
-  const noveltyUntil = generation + MEMORY_NOVELTY_GENERATIONS;
+  // Novelty is a freshness grant for recent evidence. Memories mined from
+  // backfilled sessions older than the source-age cutoff enter cold so old
+  // knowledge cannot masquerade as new regardless of mining order.
+  const sourceFresh =
+    Date.now() - input.processedMtimeMs <= MEMORY_NOVELTY_MAX_SOURCE_AGE_MS;
+  const noveltyUntil = sourceFresh
+    ? generation + MEMORY_NOVELTY_GENERATIONS
+    : null;
 
   db.exec("BEGIN IMMEDIATE");
   try {

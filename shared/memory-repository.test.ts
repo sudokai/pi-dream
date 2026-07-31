@@ -11,7 +11,9 @@ import {
   listMemoryGraphSnapshot,
 } from "./memory-repository.ts";
 import {
+  getMemoryActivityGeneration,
   getMemoryById,
+  incrementMemoryActivityGeneration,
   listActiveMemories,
   listObservationsForMemory,
   openMemoryNodeExact,
@@ -26,6 +28,11 @@ import {
   validateAndPackMemoryBriefingPlan,
 } from "./memory-recall-planner.ts";
 import type { MemorySearchCandidate } from "./memory-types.ts";
+import {
+  MEMORY_NOVELTY_GENERATIONS,
+  MEMORY_NOVELTY_MAX_SOURCE_AGE_DAYS,
+  MEMORY_NOVELTY_MAX_SOURCE_AGE_MS,
+} from "./memory-types.ts";
 
 async function withClaimedDb(
   fn: (
@@ -799,5 +806,200 @@ test("changed content with a preserved mtime is reprocessed, not skipped", async
     });
     assert.equal(r4.applied, false);
     assert.equal(r4.reason, "already checkpointed");
+  });
+});
+
+test("source session exactly at the age cutoff still receives novelty", async () => {
+  await withClaimedDb((db, runId) => {
+    // One second inside the cutoff so wall-clock drift cannot flip the branch.
+    const boundaryMtime = Date.now() - MEMORY_NOVELTY_MAX_SOURCE_AGE_MS + 1000;
+    commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "boundary-sess",
+      sessionPath: "/tmp/boundary.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: boundaryMtime,
+      contentHash: "h-b",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "m1",
+            kind: "fact",
+            observationText: "Uses pnpm",
+            memoryText: "Package manager is pnpm",
+          },
+        ],
+      },
+    });
+    const mem = listActiveMemories(db)[0]!;
+    assert.equal(
+      mem.noveltyUntilGeneration,
+      getMemoryActivityGeneration(db) + MEMORY_NOVELTY_GENERATIONS,
+    );
+  });
+});
+
+test("fresh session reinforcing a cold memory warms it", async () => {
+  await withClaimedDb((db, runId) => {
+    const oldMtime =
+      Date.now() - (MEMORY_NOVELTY_MAX_SOURCE_AGE_DAYS + 1) * 86_400_000;
+    commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "old-sess",
+      sessionPath: "/tmp/old.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: oldMtime,
+      contentHash: "h-old",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "m1",
+            kind: "fact",
+            observationText: "Uses pnpm",
+            memoryText: "Package manager is pnpm",
+          },
+        ],
+      },
+    });
+    const cold = listActiveMemories(db)[0]!;
+    assert.equal(cold.noveltyUntilGeneration, null);
+
+    commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "fresh-sess",
+      sessionPath: "/tmp/fresh.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: Date.now(),
+      contentHash: "h-fresh",
+      plan: {
+        operations: [
+          {
+            op: "reinforce",
+            memoryId: `M:${cold.id}`,
+            observationText: "Still uses pnpm",
+          },
+        ],
+      },
+    });
+    const warmed = getMemoryById(db, cold.id)!;
+    assert.equal(
+      warmed.noveltyUntilGeneration,
+      getMemoryActivityGeneration(db) + MEMORY_NOVELTY_GENERATIONS,
+    );
+  });
+});
+
+test("fresh reinforce of an already-warm memory does not extend novelty", async () => {
+  await withClaimedDb((db, runId) => {
+    commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "s1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: Date.now(),
+      contentHash: "h1",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "m1",
+            kind: "fact",
+            observationText: "Uses pnpm",
+            memoryText: "Package manager is pnpm",
+          },
+        ],
+      },
+    });
+    const created = listActiveMemories(db)[0]!;
+    const firstWindow = created.noveltyUntilGeneration!;
+    // Advance a generation so a naive window extension would be observable.
+    incrementMemoryActivityGeneration(db);
+
+    commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "s2",
+      sessionPath: "/tmp/s2.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: Date.now(),
+      contentHash: "h2",
+      plan: {
+        operations: [
+          {
+            op: "reinforce",
+            memoryId: `M:${created.id}`,
+            observationText: "Still uses pnpm",
+          },
+        ],
+      },
+    });
+    assert.equal(
+      getMemoryById(db, created.id)!.noveltyUntilGeneration,
+      firstWindow,
+    );
+  });
+});
+
+test("backfilled old sessions create cold memories (no novelty boost)", async () => {
+  await withClaimedDb((db, runId) => {
+    // Source session last touched past the source-age cutoff → cold entry.
+    const oldMtime =
+      Date.now() - (MEMORY_NOVELTY_MAX_SOURCE_AGE_DAYS + 1) * 86_400_000;
+    commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "old-sess",
+      sessionPath: "/tmp/old.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: oldMtime,
+      contentHash: "h-old",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "m1",
+            kind: "fact",
+            observationText: "Uses pnpm",
+            memoryText: "Package manager is pnpm",
+          },
+        ],
+      },
+    });
+    const cold = listActiveMemories(db)[0]!;
+    assert.equal(cold.noveltyUntilGeneration, null);
+    assert.equal(
+      computeMemoryNodeHeat({
+        currentGeneration: getMemoryActivityGeneration(db),
+        noveltyUntilGeneration: cold.noveltyUntilGeneration,
+        recallGenerations: [],
+      }),
+      0,
+    );
+
+    // Fresh source session → novelty granted as before.
+    commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "fresh-sess",
+      sessionPath: "/tmp/fresh.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: Date.now(),
+      contentHash: "h-fresh",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "m2",
+            kind: "fact",
+            observationText: "Uses pnpm",
+            memoryText: "Package manager is pnpm",
+          },
+        ],
+      },
+    });
+    const fresh = listActiveMemories(db)[1]!;
+    assert.equal(
+      fresh.noveltyUntilGeneration,
+      getMemoryActivityGeneration(db) + MEMORY_NOVELTY_GENERATIONS,
+    );
   });
 });

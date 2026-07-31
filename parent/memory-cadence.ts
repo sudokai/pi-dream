@@ -38,16 +38,8 @@ export function evaluateMemoryLearningCadence(
   const enabled = input.enabled ?? input.config.enabled;
 
   const prior = getMemoryWorkspaceState(db);
-  const turnRow = db
-    .prepare(
-      `UPDATE workspace_state
-       SET turns_since_last_run = turns_since_last_run + 1,
-           updated_at = datetime('now')
-       WHERE id = 1
-       RETURNING turns_since_last_run`,
-    )
-    .get() as { turns_since_last_run: number };
-  const turns = Number(turnRow.turns_since_last_run);
+  const turns = prior.turnsSinceLastRun + 1;
+  updateMemoryCadenceState(db, { turnsSinceLastRun: turns });
 
   const lastRun = prior.lastSuccessfulRunAtMs;
   const minutesSince =

@@ -31,6 +31,7 @@ test("semantic search short-circuits an empty index without loading the embedder
     assert.equal(result.degraded, false);
     const status = memoryEmbeddingStatus();
     assert.equal(status.available, false);
+    assert.equal(status.state, "not_loaded");
     assert.equal(
       status.error,
       null,
@@ -45,6 +46,7 @@ test("searchMemoryHybrid on an empty workspace never touches the embedder", asyn
     assert.equal(hybrid.candidates.length, 0);
     assert.equal(hybrid.semanticDegraded, false);
     assert.equal(memoryEmbeddingStatus().error, null);
+    assert.equal(memoryEmbeddingStatus().state, "not_loaded");
   });
 });
 
@@ -59,6 +61,7 @@ test("an already-aborted first turn never starts the embedder load", async () =>
     assert.equal(result.degraded, true);
     assert.equal(result.error, "aborted");
     assert.equal(memoryEmbeddingStatus().error, null);
+    assert.equal(memoryEmbeddingStatus().state, "not_loaded");
   });
 });
 

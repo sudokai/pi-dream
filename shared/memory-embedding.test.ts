@@ -3,6 +3,7 @@ import * as assert from "node:assert/strict";
 import {
   ensureMemoryEmbeddings,
   loadMemoryEmbedder,
+  memoryEmbeddingStatus,
   resetMemoryEmbedderForTests,
   setMemoryEmbedderFactoryForTests,
   type MemoryEmbedFn,
@@ -118,6 +119,49 @@ test("distinct embedding model ids keep independent caches", async () => {
       Array.from((await a!(["x"]))[0]!),
       Array.from((await b!(["x"]))[0]!),
     );
+  } finally {
+    resetMemoryEmbedderForTests();
+  }
+});
+
+test("memoryEmbeddingStatus tracks not_loaded, loading, ready, and failed", async () => {
+  const modelId = "test/minilm";
+  const fakeEmbed: MemoryEmbedFn = async (texts) =>
+    texts.map(() => new Float32Array([0.25, 0.5, 0.75]));
+
+  try {
+    // not_loaded: fresh cache, never attempted in this process.
+    assert.equal(memoryEmbeddingStatus(modelId).state, "not_loaded");
+    assert.equal(memoryEmbeddingStatus(modelId).available, false);
+    assert.equal(memoryEmbeddingStatus(modelId).error, null);
+
+    // loading: an in-flight shared load (factory resolves later).
+    const deferred = deferredMemoryEmbedder();
+    setMemoryEmbedderFactoryForTests(() => deferred.promise);
+    const loading = loadMemoryEmbedder(modelId);
+    assert.equal(memoryEmbeddingStatus(modelId).state, "loading");
+
+    // ready: the shared load settles.
+    deferred.resolve(fakeEmbed);
+    assert.ok(await loading);
+    assert.equal(memoryEmbeddingStatus(modelId).state, "ready");
+    assert.equal(memoryEmbeddingStatus(modelId).available, true);
+  } finally {
+    resetMemoryEmbedderForTests();
+  }
+});
+
+test("memoryEmbeddingStatus reports failed with the load error", async () => {
+  const modelId = "test/minilm";
+  setMemoryEmbedderFactoryForTests(async () => {
+    throw new Error("model download failed");
+  });
+  try {
+    assert.equal(await loadMemoryEmbedder(modelId), null);
+    const status = memoryEmbeddingStatus(modelId);
+    assert.equal(status.state, "failed");
+    assert.equal(status.available, false);
+    assert.match(status.error ?? "", /model download failed/);
   } finally {
     resetMemoryEmbedderForTests();
   }

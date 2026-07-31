@@ -268,17 +268,37 @@ export async function loadMemoryEmbedder(
   return waitForMemoryEmbedderLoad(entry.loading, signal);
 }
 
-/** Whether semantic indexing is currently degraded for a model. */
+/**
+ * In-process semantic embedder availability. The embedder loads lazily on the
+ * first semantic search, so a fresh pi process reports `not_loaded` until a
+ * briefing or search warms it up. Splitting `not_loaded` / `loading` /
+ * `failed` prevents the status from mistaking a lazy-load cold start for a
+ * broken index.
+ */
+export type MemoryEmbeddingState =
+  "ready" | "loading" | "failed" | "not_loaded";
+
+/** Whether semantic indexing is currently available for a model. */
 export function memoryEmbeddingStatus(
   modelId: string = MEMORY_EMBEDDING_MODEL_ID,
 ): {
+  state: MemoryEmbeddingState;
   available: boolean;
   error: string | null;
   modelId: string;
 } {
   const entry = getMemoryEmbedderCacheEntry(modelId);
+  const state: MemoryEmbeddingState =
+    entry.embedder !== null && entry.loadError === null
+      ? "ready"
+      : entry.loadError !== null
+        ? "failed"
+        : entry.loading !== null
+          ? "loading"
+          : "not_loaded";
   return {
-    available: entry.embedder !== null && entry.loadError === null,
+    state,
+    available: state === "ready",
     error: entry.loadError,
     modelId,
   };

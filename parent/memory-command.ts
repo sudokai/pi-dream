@@ -130,6 +130,21 @@ export function getMemoryCommandArgumentCompletions(
   return filtered.map((value) => ({ value, label: value }));
 }
 
+function formatSemanticIndexLabel(
+  emb: ReturnType<typeof memoryEmbeddingStatus>,
+): string {
+  switch (emb.state) {
+    case "ready":
+      return "ready";
+    case "loading":
+      return "loading (first use may download the model)";
+    case "failed":
+      return `degraded${emb.error ? ` (${emb.error})` : ""}`;
+    case "not_loaded":
+      return "not loaded (loads on first use)";
+  }
+}
+
 function formatStatus(input: {
   workspaceId: string;
   dbPath: string;
@@ -157,7 +172,7 @@ function formatStatus(input: {
     `memories:         active=${counts.memories.active} conflicted=${counts.memories.conflicted} superseded=${counts.memories.superseded} retired=${counts.memories.retired}`,
     `summaries:        active=${counts.summaries.active} retired=${counts.summaries.retired}`,
     `observations:     ${counts.observations}`,
-    `semantic index:   ${emb.available ? "ready" : `degraded${emb.error ? ` (${emb.error})` : ""}`}`,
+    `semantic index:   ${formatSemanticIndexLabel(emb)}`,
     `active run:       ${activeRun ?? "none"}`,
     `unreported runs:  ${lastRuns.length}`,
   ];

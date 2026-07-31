@@ -159,4 +159,4 @@ Domain vocabulary: see [CONTEXT.md](./CONTEXT.md). For agent workflows: see [AGE
 
 ## Semantic index
 
-Local MiniLM via `@xenova/transformers` (`Xenova/all-MiniLM-L6-v2`). First use may download the model. If embeddings are unavailable, BM25 still runs but the LLM filter remains required; `/memory status` reports degraded semantic status.
+Local MiniLM via `@xenova/transformers` (`Xenova/all-MiniLM-L6-v2`). First use may download the model. The embedder loads lazily on first semantic search, so `/memory status` reports the in-process state precisely: `not loaded (loads on first use)` before any search warms it up, `loading (first use may download the model)` while warming up, `degraded (<error>)` only on an actual load failure, or `ready`. If embeddings are unavailable, BM25 still runs but the LLM filter remains required.

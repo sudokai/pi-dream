@@ -6,7 +6,10 @@
  * Child (PI_DREAM_CHILD=1): no-op here; child uses memory-learning-entry.ts.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  BorderedLoader,
+  type ExtensionAPI,
+} from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
 import type { DatabaseSync } from "node:sqlite";
 import {
@@ -31,11 +34,13 @@ import {
 import {
   buildMemorySessionBriefing,
   createMemoryBriefingSignal,
+  type BuildMemoryBriefingResult,
 } from "./parent/memory-briefing.ts";
 import { evaluateMemoryLearningCadence } from "./parent/memory-cadence.ts";
 import { launchMemoryLearningRun } from "./parent/memory-learning-launcher.ts";
 import { registerMemoryAgentTools } from "./parent/memory-tools.ts";
 import { registerMemoryCommand } from "./parent/memory-command.ts";
+import { listMemoryTreeRoots } from "./shared/memory-tree.ts";
 import { consumeMemoryRunNotification } from "./parent/memory-session-lifecycle.ts";
 
 interface PinnedMemorySession {
@@ -205,20 +210,10 @@ export default function piDreamExtension(pi: ExtensionAPI) {
 
     if (!pinned.config.enabled) return;
 
-    try {
-      const result = await buildMemorySessionBriefing({
-        db: pinned.db,
-        query: event.prompt ?? "",
-        config: pinned.config,
-        modelRegistry: ctx.modelRegistry as never,
-        currentSessionModel: ctx.model as never,
-        piSessionId: ctx.sessionManager.getSessionId(),
-        // Pi 0.83 runs before_agent_start before creating the active run, so
-        // ctx.signal is normally undefined here. Use its signal when a newer
-        // lifecycle provides one and otherwise keep opening work bounded.
-        signal: createMemoryBriefingSignal(ctx.signal),
-      });
-
+    // Shared handling for a settled briefing: surface the message, or record
+    // the audit entry for silent skips (top-layer over budget, synthesizer
+    // failure). Never show raw tree content.
+    const handleBriefingResult = (result: BuildMemoryBriefingResult) => {
       if (!result.ok) {
         return { message: result.notice };
       }
@@ -226,14 +221,81 @@ export default function piDreamExtension(pi: ExtensionAPI) {
         return { message: result.message };
       }
       if (result.audit) {
-        // Silent skip (top-layer over budget or synthesizer failure): record
-        // the audit entry best-effort; never show raw tree content.
         try {
           pi.appendEntry(MEMORY_AUDIT_CUSTOM_TYPE, result.audit);
         } catch {
           // appendEntry is optional outside interactive TUI sessions.
         }
       }
+      return undefined;
+    };
+
+    try {
+      const briefingInput = {
+        db: pinned.db,
+        query: event.prompt ?? "",
+        config: pinned.config,
+        modelRegistry: ctx.modelRegistry as never,
+        currentSessionModel: ctx.model as never,
+        piSessionId: ctx.sessionManager.getSessionId(),
+      };
+
+      // Empty tree: the briefing resolves instantly without a model call, so
+      // skip the loader instead of flashing it.
+      if (listMemoryTreeRoots(pinned.db).length === 0) {
+        const result = await buildMemorySessionBriefing({
+          ...briefingInput,
+          signal: createMemoryBriefingSignal(ctx.signal),
+        });
+        return handleBriefingResult(result);
+      }
+
+      // Model-backed synthesis can take seconds, so show a cancellable loader
+      // while it runs. Escape aborts the briefing, which fails closed into the
+      // audit path below.
+      const abort = new AbortController();
+      const briefing = buildMemorySessionBriefing({
+        ...briefingInput,
+        // Pi 0.83 runs before_agent_start before creating the active run, so
+        // ctx.signal is normally undefined here. Use its signal when a newer
+        // lifecycle provides one and otherwise keep opening work bounded.
+        signal: createMemoryBriefingSignal(
+          AbortSignal.any(
+            ctx.signal ? [abort.signal, ctx.signal] : [abort.signal],
+          ),
+        ),
+      });
+
+      type MemoryBriefingVerdict =
+        | { kind: "result"; result: BuildMemoryBriefingResult }
+        | { kind: "error"; error: unknown };
+
+      // Non-interactive runs resolve ui.custom with undefined without calling
+      // the factory; the briefing promise still settles in the background.
+      const verdict = await ctx.ui.custom<MemoryBriefingVerdict | undefined>(
+        (tui, theme, _keybindings, done) => {
+          const loader = new BorderedLoader(
+            tui,
+            theme,
+            "Recalling your memories…",
+          );
+          loader.onAbort = () => abort.abort();
+          briefing.then(
+            (result) => done({ kind: "result", result }),
+            (error) => done({ kind: "error", error }),
+          );
+          return loader;
+        },
+      );
+
+      if (verdict === undefined) {
+        // No loader was shown; the briefing is still running in the background.
+        return handleBriefingResult(await briefing);
+      }
+      if (verdict.kind === "error") {
+        throw verdict.error;
+      }
+      return handleBriefingResult(verdict.result);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       try {

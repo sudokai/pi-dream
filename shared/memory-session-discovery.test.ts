@@ -10,14 +10,14 @@ import {
 } from "./memory-database.ts";
 import { acquireMemoryRunClaim } from "./memory-run-claim.ts";
 import {
-  buildMemoryLearningManifest,
-  hasMemoryLearningEligibleSession,
-  readMemoryLearningManifest,
-  writeMemoryLearningManifest,
+  buildMemoryDreamManifest,
+  hasMemoryDreamEligibleSession,
+  readMemoryDreamManifest,
+  writeMemoryDreamManifest,
 } from "./memory-session-discovery.ts";
 import { loadDecodedMemorySession } from "./memory-session-decode.ts";
 import {
-  commitMemoryLearningSession,
+  commitMemoryDreamSession,
   getSourceSessionCheckpoint,
 } from "./memory-repository.ts";
 import { listActiveMemories } from "./memory-graph.ts";
@@ -73,7 +73,7 @@ test("manifest snapshots sessions at discovery; live appends are not mined", () 
         }),
       ]);
 
-      const manifest = buildMemoryLearningManifest(db, cwd, "ws-any", {
+      const manifest = buildMemoryDreamManifest(db, cwd, "ws-any", {
         snapshotDir,
       });
       assert.equal(manifest.length, 1);
@@ -83,7 +83,7 @@ test("manifest snapshots sessions at discovery; live appends are not mined", () 
       assert.notEqual(entry.snapshotPath, livePath);
       assert.match(entry.contentHash, /^[0-9a-f]{64}$/);
 
-      // Live file keeps being appended while the learner would run: the
+      // Live file keeps being appended while the dreamer would run: the
       // snapshot still reflects exactly the discovery-time content.
       fs.appendFileSync(
         livePath,
@@ -100,8 +100,8 @@ test("manifest snapshots sessions at discovery; live appends are not mined", () 
 
       // Manifest round-trips with snapshot + hash intact.
       const manifestPath = path.join(snapshotDir, "manifest.json");
-      writeMemoryLearningManifest(manifestPath, manifest);
-      assert.deepEqual(readMemoryLearningManifest(manifestPath), manifest);
+      writeMemoryDreamManifest(manifestPath, manifest);
+      assert.deepEqual(readMemoryDreamManifest(manifestPath), manifest);
     } finally {
       closeMemoryDatabase(db);
       fs.rmSync(cwd, { recursive: true, force: true });
@@ -110,7 +110,7 @@ test("manifest snapshots sessions at discovery; live appends are not mined", () 
   });
 });
 
-test("readMemoryLearningManifest fails closed on entries without snapshots", () => {
+test("readMemoryDreamManifest fails closed on entries without snapshots", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-manifest-"));
   try {
     const manifestPath = path.join(dir, "manifest.json");
@@ -129,7 +129,7 @@ test("readMemoryLearningManifest fails closed on entries without snapshots", () 
       }),
       "utf8",
     );
-    assert.throws(() => readMemoryLearningManifest(manifestPath), /snapshot/i);
+    assert.throws(() => readMemoryDreamManifest(manifestPath), /snapshot/i);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -162,14 +162,14 @@ test("capped manifests leave older checkpoint-missing sessions eligible", () => 
         fs.utimesSync(filePath, 1_000 + i, 1_000 + i);
       }
 
-      const manifest = buildMemoryLearningManifest(db, cwd, "ws-any", {
+      const manifest = buildMemoryDreamManifest(db, cwd, "ws-any", {
         cap: 30,
         snapshotDir,
       });
       assert.equal(manifest.length, 30);
       const claim = acquireMemoryRunClaim(db, "manual");
       for (const entry of manifest) {
-        commitMemoryLearningSession(db, {
+        commitMemoryDreamSession(db, {
           runId: claim.runId!,
           sourceSessionId: entry.sessionId,
           sessionPath: entry.sessionPath,
@@ -181,7 +181,7 @@ test("capped manifests leave older checkpoint-missing sessions eligible", () => 
       }
 
       assert.equal(
-        hasMemoryLearningEligibleSession(db, cwd, "ws-any"),
+        hasMemoryDreamEligibleSession(db, cwd, "ws-any"),
         true,
         "the session outside the newest-first cap remains eligible",
       );
@@ -213,7 +213,7 @@ test("content changes under a preserved mtime are still discovered", () => {
       const v1Hash = createHash("sha256")
         .update(fs.readFileSync(filePath))
         .digest("hex");
-      commitMemoryLearningSession(db, {
+      commitMemoryDreamSession(db, {
         runId: claim.runId!,
         sourceSessionId: "sess-1",
         sessionPath: filePath,
@@ -223,9 +223,9 @@ test("content changes under a preserved mtime are still discovered", () => {
         plan: { operations: [{ op: "no_op", reason: "checkpoint" }] },
       });
 
-      assert.equal(hasMemoryLearningEligibleSession(db, cwd, "ws-any"), false);
+      assert.equal(hasMemoryDreamEligibleSession(db, cwd, "ws-any"), false);
       assert.equal(
-        buildMemoryLearningManifest(db, cwd, "ws-any", { snapshotDir }).length,
+        buildMemoryDreamManifest(db, cwd, "ws-any", { snapshotDir }).length,
         0,
       );
 
@@ -245,11 +245,11 @@ test("content changes under a preserved mtime are still discovered", () => {
       fs.utimesSync(filePath, mtimeMs / 1000, mtimeMs / 1000);
 
       assert.equal(
-        hasMemoryLearningEligibleSession(db, cwd, "ws-any"),
+        hasMemoryDreamEligibleSession(db, cwd, "ws-any"),
         true,
         "a same-mtime content change must remain eligible",
       );
-      const manifest = buildMemoryLearningManifest(db, cwd, "ws-any", {
+      const manifest = buildMemoryDreamManifest(db, cwd, "ws-any", {
         snapshotDir,
       });
       assert.equal(manifest.length, 1);
@@ -257,7 +257,7 @@ test("content changes under a preserved mtime are still discovered", () => {
       assert.notEqual(manifest[0]!.contentHash, v1Hash);
 
       // Identical bytes under the preserved mtime stay skipped.
-      commitMemoryLearningSession(db, {
+      commitMemoryDreamSession(db, {
         runId: claim.runId!,
         sourceSessionId: "sess-1",
         sessionPath: filePath,
@@ -266,9 +266,9 @@ test("content changes under a preserved mtime are still discovered", () => {
         contentHash: manifest[0]!.contentHash,
         plan: { operations: [{ op: "no_op", reason: "recheckpoint" }] },
       });
-      assert.equal(hasMemoryLearningEligibleSession(db, cwd, "ws-any"), false);
+      assert.equal(hasMemoryDreamEligibleSession(db, cwd, "ws-any"), false);
       assert.equal(
-        buildMemoryLearningManifest(db, cwd, "ws-any", { snapshotDir }).length,
+        buildMemoryDreamManifest(db, cwd, "ws-any", { snapshotDir }).length,
         0,
       );
     } finally {
@@ -283,7 +283,7 @@ test("same snapshot content is never re-mined even when the live mtime advances"
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     const claim = acquireMemoryRunClaim(db, "manual");
-    const r1 = commitMemoryLearningSession(db, {
+    const r1 = commitMemoryDreamSession(db, {
       runId: claim.runId!,
       sourceSessionId: "sess-1",
       sessionPath: "/tmp/s1.jsonl",
@@ -306,7 +306,7 @@ test("same snapshot content is never re-mined even when the live mtime advances"
 
     // A later run sees the same bytes but a newer live mtime: the snapshot
     // hash is authoritative, so the commit must be a no-op.
-    const r2 = commitMemoryLearningSession(db, {
+    const r2 = commitMemoryDreamSession(db, {
       runId: claim.runId!,
       sourceSessionId: "sess-1",
       sessionPath: "/tmp/s1.jsonl",

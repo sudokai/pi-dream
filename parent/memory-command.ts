@@ -1,5 +1,5 @@
 /**
- * /memory command: status, list, open, learn, pause, resume, forget.
+ * /memory command: status, list, open, dream, pause, resume, forget.
  */
 
 import type { DatabaseSync } from "node:sqlite";
@@ -22,9 +22,9 @@ import {
 } from "../shared/memory-graph.ts";
 import { getMemoryWorkspaceState } from "../shared/memory-repository.ts";
 import {
-  listMemoryMaintenanceAttempts,
-  readMemoryLastMaintenanceInspect,
-} from "../shared/memory-maintenance.ts";
+  listMemoryConsolidationAttempts,
+  readMemoryLastConsolidationInspect,
+} from "../shared/memory-consolidation.ts";
 import {
   estimateTopLayerTokens,
   listMemoryNodeChildren,
@@ -41,20 +41,20 @@ import {
 } from "../shared/memory-workspace-id.ts";
 import {
   MEMORY_AUDIT_CUSTOM_TYPE,
-  MEMORY_MAINTENANCE_MAX_ATTEMPTS,
+  MEMORY_CONSOLIDATION_MAX_ATTEMPTS,
 } from "../shared/memory-types.ts";
 import { formatSessionModelId } from "../shared/memory-model.ts";
-import { launchMemoryLearningRun } from "./memory-learning-launcher.ts";
+import { launchMemoryDreamRun } from "./memory-dream-launcher.ts";
 import type { MemoryModelRegistryLike } from "../shared/memory-model.ts";
 
 export const MEMORY_COMMAND_USAGE =
-  "Usage: /memory [status|list [query]|open <id> [cursor=<n>]|learn|pause|resume|forget <id>]";
+  "Usage: /memory [status|list [query]|open <id> [cursor=<n>]|dream|pause|resume|forget <id>]";
 
 export const MEMORY_COMMAND_ARG_CHOICES = [
   "status",
   "list",
   "open",
-  "learn",
+  "dream",
   "pause",
   "resume",
   "forget",
@@ -64,7 +64,7 @@ export type MemoryCommandAction =
   | { action: "status" }
   | { action: "list"; query: string }
   | { action: "open"; id: string; cursor?: string }
-  | { action: "learn" }
+  | { action: "dream" }
   | { action: "pause" }
   | { action: "resume" }
   | { action: "forget"; id: string }
@@ -110,7 +110,7 @@ export function parseMemoryCommandArgs(args: string): MemoryCommandAction {
       ? { action: "open", id }
       : { action: "open", id, cursor };
   }
-  if (head === "learn") return { action: "learn" };
+  if (head === "dream") return { action: "dream" };
   if (head === "pause") return { action: "pause" };
   if (head === "resume") return { action: "resume" };
   if (head === "forget") {
@@ -156,8 +156,8 @@ function formatStatus(input: {
   const roots = listMemoryTreeRoots(input.db);
   const layerTokens = estimateTopLayerTokens(input.db, roots);
   const overBudget = layerTokens > input.config.briefingTokenBudget;
-  const attempts = listMemoryMaintenanceAttempts(input.db);
-  const inspect = readMemoryLastMaintenanceInspect(
+  const attempts = listMemoryConsolidationAttempts(input.db);
+  const inspect = readMemoryLastConsolidationInspect(
     memoryWorkspaceLastInspectPath(input.workspaceId),
   );
   const inspectSummary = inspect
@@ -170,7 +170,7 @@ function formatStatus(input: {
     `database:         ${input.dbPath}`,
     `config:           ${memoryWorkspaceConfigPath(input.workspaceId)}`,
     `enabled:          ${input.config.enabled ? "yes" : "no (paused)"}`,
-    `learning model:   ${input.config.learningModel ?? `(session: ${input.sessionModelId ?? "unset"})`}`,
+    `dream model:      ${input.config.dreamModel ?? `(session: ${input.sessionModelId ?? "unset"})`}`,
     `recall model:     ${input.config.recallModel ?? `(session: ${input.sessionModelId ?? "unset"})`}`,
     `activity gen:     ${getMemoryActivityGeneration(input.db)}`,
     `cadence turns:    ${state.turnsSinceLastRun} (min ${input.config.minTurns})`,
@@ -178,20 +178,21 @@ function formatStatus(input: {
     `memories:         active=${counts.memories.active} conflicted=${counts.memories.conflicted} superseded=${counts.memories.superseded} retired=${counts.memories.retired}`,
     `summaries:        active=${counts.summaries.active} retired=${counts.summaries.retired}`,
     `observations:     ${counts.observations}`,
-    `embedder:         tree maintenance + learning only (never loaded for recall)`,
-    `active run:       ${activeRun ?? "none"}`,
-    `unreported runs:  ${lastRuns.length}`,
+    `embedder:         consolidation + dreaming only (never loaded for recall)`,
+    `active dream:    ${activeRun ?? "none"}`,
+    `unreported dreams: ${lastRuns.length}`,
     `tree roots:       ${roots.length} (${roots.filter((r) => r.nodeType === "memory").length} memories / ${roots.filter((r) => r.nodeType === "summary").length} summaries)`,
     overBudget
       ? `top layer:        OVER BUDGET: ${layerTokens}/${input.config.briefingTokenBudget} tokens`
       : `top layer:        ${layerTokens} tokens (budget ${input.config.briefingTokenBudget})`,
-    `last maintenance: ${inspectSummary}`,
+    `last dream:       ${inspectSummary}`,
   ];
   if (attempts.length > 0) {
     lines.push(
       `pending attempts: ${attempts
         .map(
-          (a) => `${a.key} (${a.attempts}/${MEMORY_MAINTENANCE_MAX_ATTEMPTS})`,
+          (a) =>
+            `${a.key} (${a.attempts}/${MEMORY_CONSOLIDATION_MAX_ATTEMPTS})`,
         )
         .join(", ")}`,
     );
@@ -313,7 +314,7 @@ export interface MemoryCommandContext {
   getModelRegistry: () => MemoryModelRegistryLike;
   getSessionModel: () => { provider?: string; id?: string } | null | undefined;
   getCwd: () => string;
-  launchLearning?: typeof launchMemoryLearningRun;
+  launchDream?: typeof launchMemoryDreamRun;
 }
 
 /**
@@ -325,7 +326,7 @@ export function registerMemoryCommand(
 ): void {
   pi.registerCommand("memory", {
     description:
-      "Workspace memory: status, list, open, learn, pause, resume, forget",
+      "Workspace memory: status, list, open, dream, pause, resume, forget",
     getArgumentCompletions: (prefix: string) =>
       getMemoryCommandArgumentCompletions(prefix),
     handler: async (args, cmdCtx: ExtensionCommandContext) => {
@@ -420,7 +421,7 @@ export function registerMemoryCommand(
           setMemoryWorkspaceEnabled(workspaceId, false);
           ctx.reloadConfig();
           cmdCtx.ui.notify(
-            "Automatic memory learning paused for this workspace.",
+            "Automatic memory dreaming paused for this workspace.",
             "info",
           );
           return;
@@ -430,7 +431,7 @@ export function registerMemoryCommand(
           setMemoryWorkspaceEnabled(workspaceId, true);
           ctx.reloadConfig();
           cmdCtx.ui.notify(
-            "Automatic memory learning resumed for this workspace.",
+            "Automatic memory dreaming resumed for this workspace.",
             "info",
           );
           return;
@@ -445,9 +446,9 @@ export function registerMemoryCommand(
           return;
         }
 
-        if (parsed.action === "learn") {
+        if (parsed.action === "dream") {
           const config = ctx.getConfig();
-          const launch = ctx.launchLearning ?? launchMemoryLearningRun;
+          const launch = ctx.launchDream ?? launchMemoryDreamRun;
           const result = launch({
             db,
             cwd: ctx.getCwd(),
@@ -458,11 +459,11 @@ export function registerMemoryCommand(
             currentSessionModel: ctx.getSessionModel(),
           });
           if (!result.ok) {
-            cmdCtx.ui.notify(`Memory learn: ${result.reason}`, "warning");
+            cmdCtx.ui.notify(`Dream: ${result.reason}`, "warning");
             return;
           }
           cmdCtx.ui.notify(
-            `Memory learning started (run ${result.runId}, ${result.sessionCount} session(s)).`,
+            `Dream started (run ${result.runId}, ${result.sessionCount} session(s)).`,
             "info",
           );
           return;

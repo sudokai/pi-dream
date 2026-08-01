@@ -14,7 +14,7 @@ import {
   MEMORY_EMBEDDING_MODEL_ID,
   MEMORY_HEAT_DECAY,
   MEMORY_HOT_HEAT_THRESHOLD,
-  MEMORY_MAINTENANCE_MERGE_BOUND,
+  MEMORY_CONSOLIDATION_MERGE_BOUND,
   MEMORY_MAX_SUMMARY_CHARS,
   MEMORY_NOVELTY_BOOST,
   MEMORY_NOVELTY_GENERATIONS,
@@ -47,8 +47,8 @@ export interface MemoryWorkspaceConfig {
   version: 1;
   enabled: boolean;
   /** Exact `provider/modelId`, or omit to use current session model. */
-  learningModel?: string;
-  learningThinking?: MemoryThinkingLevel;
+  dreamModel?: string;
+  dreamThinking?: MemoryThinkingLevel;
   /** Exact `provider/modelId`, or omit to use current session model. */
   recallModel?: string;
   recallThinking?: MemoryThinkingLevel;
@@ -58,7 +58,7 @@ export interface MemoryWorkspaceConfig {
   embeddingModel: string;
   coldHeatThreshold: number;
   hotHeatThreshold: number;
-  maintenanceMergeBound: number;
+  consolidationMergeBound: number;
   synthesizerMaxSteps: number;
   synthesizerContextBudget: number;
   synthesizerAnswerBudget: number;
@@ -92,7 +92,7 @@ export function defaultMemoryWorkspaceConfig(): MemoryWorkspaceConfig {
     embeddingModel: MEMORY_EMBEDDING_MODEL_ID,
     coldHeatThreshold: MEMORY_COLD_HEAT_THRESHOLD,
     hotHeatThreshold: MEMORY_HOT_HEAT_THRESHOLD,
-    maintenanceMergeBound: MEMORY_MAINTENANCE_MERGE_BOUND,
+    consolidationMergeBound: MEMORY_CONSOLIDATION_MERGE_BOUND,
     synthesizerMaxSteps: MEMORY_SYNTHESIZER_MAX_STEPS,
     synthesizerContextBudget: MEMORY_SYNTHESIZER_CONTEXT_BUDGET,
     synthesizerAnswerBudget: MEMORY_SYNTHESIZER_ANSWER_BUDGET,
@@ -149,8 +149,8 @@ export function parseMemoryWorkspaceConfig(
   const allowed = new Set([
     "version",
     "enabled",
-    "learningModel",
-    "learningThinking",
+    "dreamModel",
+    "dreamThinking",
     "recallModel",
     "recallThinking",
     "minTurns",
@@ -159,7 +159,7 @@ export function parseMemoryWorkspaceConfig(
     "embeddingModel",
     "coldHeatThreshold",
     "hotHeatThreshold",
-    "maintenanceMergeBound",
+    "consolidationMergeBound",
     "synthesizerMaxSteps",
     "synthesizerContextBudget",
     "synthesizerAnswerBudget",
@@ -180,11 +180,7 @@ export function parseMemoryWorkspaceConfig(
   if (typeof obj.enabled !== "boolean") {
     return { ok: false, error: "Memory config enabled must be a boolean." };
   }
-  for (const key of [
-    "learningModel",
-    "recallModel",
-    "embeddingModel",
-  ] as const) {
+  for (const key of ["dreamModel", "recallModel", "embeddingModel"] as const) {
     if (
       obj[key] !== undefined &&
       (typeof obj[key] !== "string" || !(obj[key] as string).trim())
@@ -195,7 +191,7 @@ export function parseMemoryWorkspaceConfig(
       };
     }
   }
-  for (const key of ["learningThinking", "recallThinking"] as const) {
+  for (const key of ["dreamThinking", "recallThinking"] as const) {
     if (obj[key] !== undefined && !isThinkingLevel(obj[key])) {
       return {
         ok: false,
@@ -226,9 +222,9 @@ export function parseMemoryWorkspaceConfig(
       obj.hotHeatThreshold,
       defaults.hotHeatThreshold,
     ),
-    maintenanceMergeBound: positiveInt(
-      obj.maintenanceMergeBound,
-      defaults.maintenanceMergeBound,
+    consolidationMergeBound: positiveInt(
+      obj.consolidationMergeBound,
+      defaults.consolidationMergeBound,
     ),
     synthesizerMaxSteps: positiveInt(
       obj.synthesizerMaxSteps,
@@ -249,11 +245,11 @@ export function parseMemoryWorkspaceConfig(
     ),
     heatDecay: unitInterval(obj.heatDecay, defaults.heatDecay),
   };
-  if (typeof obj.learningModel === "string" && obj.learningModel.trim()) {
-    config.learningModel = obj.learningModel.trim();
+  if (typeof obj.dreamModel === "string" && obj.dreamModel.trim()) {
+    config.dreamModel = obj.dreamModel.trim();
   }
-  if (isThinkingLevel(obj.learningThinking)) {
-    config.learningThinking = obj.learningThinking;
+  if (isThinkingLevel(obj.dreamThinking)) {
+    config.dreamThinking = obj.dreamThinking;
   }
   if (typeof obj.recallModel === "string" && obj.recallModel.trim()) {
     config.recallModel = obj.recallModel.trim();

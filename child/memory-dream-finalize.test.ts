@@ -7,27 +7,27 @@ import {
   closeMemoryDatabase,
   openMemoryDatabaseAtPath,
 } from "../shared/memory-database.ts";
-import { commitMemoryLearningSession } from "../shared/memory-repository.ts";
+import { commitMemoryDreamSession } from "../shared/memory-repository.ts";
 import {
   acquireMemoryRunClaim,
   listUnreportedMemoryRuns,
 } from "../shared/memory-run-claim.ts";
-import { writeMemoryLearningManifest } from "../shared/memory-session-discovery.ts";
+import { writeMemoryDreamManifest } from "../shared/memory-session-discovery.ts";
 import { defaultMemoryWorkspaceConfig } from "../shared/memory-config.ts";
 import {
-  finalizeMemoryLearningRun,
-  findMemoryMaintenanceCoverageError,
-} from "./memory-learning-finalize.ts";
-import { persistMemoryMaintenanceInspect } from "./memory-learning-tools.ts";
-import { incrementMemoryMaintenanceAttempt } from "../shared/memory-maintenance.ts";
+  finalizeMemoryDreamRun,
+  findMemoryConsolidationCoverageError,
+} from "./memory-dream-finalize.ts";
+import { persistMemoryConsolidationInspect } from "./memory-dream-tools.ts";
+import { incrementMemoryConsolidationAttempt } from "../shared/memory-consolidation.ts";
 
 const TEST_WORKSPACE = "finalize-test-workspace";
 
-function writeLearningManifest(dir: string): string {
+function writeDreamManifest(dir: string): string {
   const snapshotPath = path.join(dir, "session.jsonl");
   fs.writeFileSync(snapshotPath, "snapshot bytes\n", "utf-8");
   const manifestPath = path.join(dir, "manifest.json");
-  writeMemoryLearningManifest(manifestPath, [
+  writeMemoryDreamManifest(manifestPath, [
     {
       sessionId: "session-1",
       sessionPath: "/tmp/session-1.jsonl",
@@ -40,18 +40,18 @@ function writeLearningManifest(dir: string): string {
   return manifestPath;
 }
 
-test("finalizeMemoryLearningRun fails when a manifest session was not checkpointed", async () => {
+test("finalizeMemoryDreamRun fails when a manifest session was not checkpointed", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-finalize-"));
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     const claim = acquireMemoryRunClaim(db, "auto");
     assert.ok(claim.runId);
-    await finalizeMemoryLearningRun({
+    await finalizeMemoryDreamRun({
       db,
       runId: claim.runId,
       workspaceId: TEST_WORKSPACE,
       config: defaultMemoryWorkspaceConfig(),
-      manifestPath: writeLearningManifest(dir),
+      manifestPath: writeDreamManifest(dir),
     });
 
     const run = listUnreportedMemoryRuns(db)[0]!;
@@ -63,14 +63,14 @@ test("finalizeMemoryLearningRun fails when a manifest session was not checkpoint
   }
 });
 
-test("finalizeMemoryLearningRun completes only after every manifest checkpoint", async () => {
+test("finalizeMemoryDreamRun completes only after every manifest checkpoint", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-finalize-"));
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     const claim = acquireMemoryRunClaim(db, "auto");
     assert.ok(claim.runId);
-    const manifestPath = writeLearningManifest(dir);
-    const committed = commitMemoryLearningSession(db, {
+    const manifestPath = writeDreamManifest(dir);
+    const committed = commitMemoryDreamSession(db, {
       runId: claim.runId,
       sourceSessionId: "session-1",
       sessionPath: "/tmp/session-1.jsonl",
@@ -81,7 +81,7 @@ test("finalizeMemoryLearningRun completes only after every manifest checkpoint",
     });
     assert.equal(committed.applied, true);
 
-    await finalizeMemoryLearningRun({
+    await finalizeMemoryDreamRun({
       db,
       runId: claim.runId,
       workspaceId: TEST_WORKSPACE,
@@ -97,16 +97,16 @@ test("finalizeMemoryLearningRun completes only after every manifest checkpoint",
   }
 });
 
-test("an empty manifest is a valid maintenance-only run", async () => {
+test("an empty manifest is a valid dream-only run", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-finalize-"));
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     const claim = acquireMemoryRunClaim(db, "auto");
     assert.ok(claim.runId);
     const manifestPath = path.join(dir, "manifest.json");
-    writeMemoryLearningManifest(manifestPath, []);
+    writeMemoryDreamManifest(manifestPath, []);
 
-    await finalizeMemoryLearningRun({
+    await finalizeMemoryDreamRun({
       db,
       runId: claim.runId,
       workspaceId: TEST_WORKSPACE,
@@ -128,9 +128,9 @@ test("finalize fails loudly when the last inspect batch has outstanding candidat
     const claim = acquireMemoryRunClaim(db, "auto");
     assert.ok(claim.runId);
     const manifestPath = path.join(dir, "manifest.json");
-    writeMemoryLearningManifest(manifestPath, []);
+    writeMemoryDreamManifest(manifestPath, []);
     // Two cold memories -> a merge candidate in the plan.
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId: claim.runId,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",
@@ -156,9 +156,9 @@ test("finalize fails loudly when the last inspect batch has outstanding candidat
         ],
       },
     });
-    // The learner inspected (persisting the batch) but committed nothing.
-    const plan = await planMemoryMaintenanceForTest(db, claim.runId);
-    persistMemoryMaintenanceInspect(
+    // The dreamer inspected (persisting the batch) but committed nothing.
+    const plan = await planMemoryConsolidationForTest(db, claim.runId);
+    persistMemoryConsolidationInspect(
       {
         db,
         runId: claim.runId,
@@ -169,7 +169,7 @@ test("finalize fails loudly when the last inspect batch has outstanding candidat
       },
       plan,
     );
-    const error = await findMemoryMaintenanceCoverageError(
+    const error = await findMemoryConsolidationCoverageError(
       db,
       claim.runId,
       TEST_WORKSPACE,
@@ -179,10 +179,10 @@ test("finalize fails loudly when the last inspect batch has outstanding candidat
     assert.match(error ?? "", /merge:memory:1\+memory:2/);
 
     // At the attempt bound the same outstanding candidate is not a failure.
-    incrementMemoryMaintenanceAttempt(db, "merge:memory:1+memory:2", 0);
-    incrementMemoryMaintenanceAttempt(db, "merge:memory:1+memory:2", 0);
-    incrementMemoryMaintenanceAttempt(db, "merge:memory:1+memory:2", 0);
-    const bound = await findMemoryMaintenanceCoverageError(
+    incrementMemoryConsolidationAttempt(db, "merge:memory:1+memory:2", 0);
+    incrementMemoryConsolidationAttempt(db, "merge:memory:1+memory:2", 0);
+    incrementMemoryConsolidationAttempt(db, "merge:memory:1+memory:2", 0);
+    const bound = await findMemoryConsolidationCoverageError(
       db,
       claim.runId,
       TEST_WORKSPACE,
@@ -202,8 +202,8 @@ test("a supersede that dissolves a merge candidate completes (dissolution)", asy
     const claim = acquireMemoryRunClaim(db, "auto");
     assert.ok(claim.runId);
     const manifestPath = path.join(dir, "manifest.json");
-    writeMemoryLearningManifest(manifestPath, []);
-    commitMemoryLearningSession(db, {
+    writeMemoryDreamManifest(manifestPath, []);
+    commitMemoryDreamSession(db, {
       runId: claim.runId,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",
@@ -229,8 +229,8 @@ test("a supersede that dissolves a merge candidate completes (dissolution)", asy
         ],
       },
     });
-    const plan = await planMemoryMaintenanceForTest(db, claim.runId);
-    persistMemoryMaintenanceInspect(
+    const plan = await planMemoryConsolidationForTest(db, claim.runId);
+    persistMemoryConsolidationInspect(
       {
         db,
         runId: claim.runId,
@@ -242,7 +242,7 @@ test("a supersede that dissolves a merge candidate completes (dissolution)", asy
       plan,
     );
     // The final commit supersedes one of the merge-eligible roots.
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId: claim.runId,
       sourceSessionId: "s2",
       sessionPath: "/tmp/s2.jsonl",
@@ -262,7 +262,7 @@ test("a supersede that dissolves a merge candidate completes (dissolution)", asy
         ],
       },
     });
-    const error = await findMemoryMaintenanceCoverageError(
+    const error = await findMemoryConsolidationCoverageError(
       db,
       claim.runId,
       TEST_WORKSPACE,
@@ -276,14 +276,14 @@ test("a supersede that dissolves a merge candidate completes (dissolution)", asy
 });
 
 /** Recompute helper matching the child's planner invocation. */
-async function planMemoryMaintenanceForTest(
+async function planMemoryConsolidationForTest(
   db: ReturnType<typeof openMemoryDatabaseAtPath>,
   runId: string,
 ): Promise<
-  import("../shared/memory-maintenance.ts").PersistedMemoryMaintenanceInspect
+  import("../shared/memory-consolidation.ts").PersistedMemoryConsolidationInspect
 > {
-  const plan = await import("../shared/memory-maintenance.ts").then((m) =>
-    m.planMemoryMaintenance(db, {
+  const plan = await import("../shared/memory-consolidation.ts").then((m) =>
+    m.planMemoryConsolidation(db, {
       config: defaultMemoryWorkspaceConfig(),
       embed: async (texts: string[]) =>
         Promise.resolve(texts.map(() => new Float32Array(4))),
@@ -323,10 +323,10 @@ test("a run whose only unresolved candidate was rejected for compaction complete
     const claim = acquireMemoryRunClaim(db, "auto");
     assert.ok(claim.runId);
     const manifestPath = path.join(dir, "manifest.json");
-    writeMemoryLearningManifest(manifestPath, []);
+    writeMemoryDreamManifest(manifestPath, []);
     // Six cold memories -> three merge pairs in the inspect batch.
     for (let i = 1; i <= 6; i++) {
-      commitMemoryLearningSession(db, {
+      commitMemoryDreamSession(db, {
         runId: claim.runId,
         sourceSessionId: `s${i}`,
         sessionPath: `/tmp/s${i}.jsonl`,
@@ -353,8 +353,8 @@ test("a run whose only unresolved candidate was rejected for compaction complete
       ...defaultMemoryWorkspaceConfig(),
       briefingTokenBudget: 12,
     };
-    const plan = await planMemoryMaintenanceForTest(db, claim.runId);
-    persistMemoryMaintenanceInspect(
+    const plan = await planMemoryConsolidationForTest(db, claim.runId);
+    persistMemoryConsolidationInspect(
       {
         db,
         runId: claim.runId,
@@ -365,7 +365,7 @@ test("a run whose only unresolved candidate was rejected for compaction complete
       },
       plan,
     );
-    // The learner emits ops for the PLANNED pairs (read from the persisted
+    // The dreamer emits ops for the PLANNED pairs (read from the persisted
     // inspect batch, so the committed keys are exactly the persisted keys);
     // one text is at the compaction bar and gets rejected alone (attempts=1),
     // the other two apply. On pre-fix code this scenario fails finalize with
@@ -378,9 +378,9 @@ test("a run whose only unresolved candidate was rejected for compaction complete
       ["M:3", "M:4"],
       ["M:5", "M:6"],
     ]);
-    const { commitMemoryLearningOps } =
+    const { commitMemoryDreamOps } =
       await import("../shared/memory-repository.ts");
-    const result = commitMemoryLearningOps(db, {
+    const result = commitMemoryDreamOps(db, {
       runId: claim.runId,
       operations: [
         {
@@ -408,9 +408,9 @@ test("a run whose only unresolved candidate was rejected for compaction complete
       "the rejected key is one of the persisted planned pairs",
     );
     assert.equal(result.coveredKeys.length, 2, "partial progress applied");
-    const { mergeMemoryMaintenanceRejections } =
-      await import("./memory-learning-tools.ts");
-    mergeMemoryMaintenanceRejections(
+    const { mergeMemoryConsolidationRejections } =
+      await import("./memory-dream-tools.ts");
+    mergeMemoryConsolidationRejections(
       {
         db,
         runId: claim.runId,
@@ -422,7 +422,7 @@ test("a run whose only unresolved candidate was rejected for compaction complete
       result.rejectedKeys.map((r) => r.key),
     );
 
-    const error = await findMemoryMaintenanceCoverageError(
+    const error = await findMemoryConsolidationCoverageError(
       db,
       claim.runId,
       TEST_WORKSPACE,
@@ -435,7 +435,7 @@ test("a run whose only unresolved candidate was rejected for compaction complete
     );
 
     // And the whole run completes.
-    await finalizeMemoryLearningRun({
+    await finalizeMemoryDreamRun({
       db,
       runId: claim.runId,
       workspaceId: TEST_WORKSPACE,
@@ -457,8 +457,8 @@ test("a candidate rejected in a previous run but omitted now still fails loudly"
     const claim = acquireMemoryRunClaim(db, "auto");
     assert.ok(claim.runId);
     const manifestPath = path.join(dir, "manifest.json");
-    writeMemoryLearningManifest(manifestPath, []);
-    commitMemoryLearningSession(db, {
+    writeMemoryDreamManifest(manifestPath, []);
+    commitMemoryDreamSession(db, {
       runId: claim.runId,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",
@@ -484,8 +484,8 @@ test("a candidate rejected in a previous run but omitted now still fails loudly"
         ],
       },
     });
-    const plan = await planMemoryMaintenanceForTest(db, claim.runId);
-    persistMemoryMaintenanceInspect(
+    const plan = await planMemoryConsolidationForTest(db, claim.runId);
+    persistMemoryConsolidationInspect(
       {
         db,
         runId: claim.runId,
@@ -496,10 +496,10 @@ test("a candidate rejected in a previous run but omitted now still fails loudly"
       },
       plan,
     );
-    // A previous run rejected the pair (counter 1); this run the learner
+    // A previous run rejected the pair (counter 1); this run the dreamer
     // omits it entirely — the persisted batch carries no in-run rejection.
-    incrementMemoryMaintenanceAttempt(db, "merge:memory:1+memory:2", 0);
-    const error = await findMemoryMaintenanceCoverageError(
+    incrementMemoryConsolidationAttempt(db, "merge:memory:1+memory:2", 0);
+    const error = await findMemoryConsolidationCoverageError(
       db,
       claim.runId,
       TEST_WORKSPACE,

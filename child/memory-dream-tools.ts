@@ -1,5 +1,5 @@
 /**
- * Internal tools for the detached memory learner child.
+ * Internal tools for the detached memory dreamer child.
  */
 
 import type { DatabaseSync } from "node:sqlite";
@@ -8,32 +8,32 @@ import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
-  readMemoryLearningManifest,
-  type MemoryLearningManifestEntry,
+  readMemoryDreamManifest,
+  type MemoryDreamManifestEntry,
 } from "../shared/memory-session-discovery.ts";
 import {
   formatMemorySessionPage,
   loadVerifiedMemorySessionSnapshot,
 } from "../shared/memory-session-decode.ts";
 import {
-  commitMemoryLearningOps,
-  commitMemoryLearningSession,
+  commitMemoryDreamOps,
+  commitMemoryDreamSession,
   listMemoryGraphSnapshot,
 } from "../shared/memory-repository.ts";
 import {
-  planMemoryMaintenance,
-  readMemoryLastMaintenanceInspect,
-  type PersistedMemoryMaintenanceInspect,
-} from "../shared/memory-maintenance.ts";
+  planMemoryConsolidation,
+  readMemoryLastConsolidationInspect,
+  type PersistedMemoryConsolidationInspect,
+} from "../shared/memory-consolidation.ts";
 import type {
-  MemoryLearnerOperation,
-  MemoryLearningSessionPlan,
+  MemoryDreamerOperation,
+  MemoryDreamSessionPlan,
 } from "../shared/memory-types.ts";
 import { MEMORY_AUDIT_CUSTOM_TYPE } from "../shared/memory-types.ts";
 import type { MemoryWorkspaceConfig } from "../shared/memory-config.ts";
 import { memoryWorkspaceLastInspectPath } from "../shared/memory-workspace-id.ts";
 
-export interface MemoryLearnerChildContext {
+export interface MemoryDreamerChildContext {
   db: DatabaseSync;
   runId: string;
   workspaceId: string;
@@ -43,25 +43,25 @@ export interface MemoryLearnerChildContext {
 }
 
 function loadManifest(
-  ctx: MemoryLearnerChildContext,
-): MemoryLearningManifestEntry[] {
-  return readMemoryLearningManifest(ctx.manifestPath);
+  ctx: MemoryDreamerChildContext,
+): MemoryDreamManifestEntry[] {
+  return readMemoryDreamManifest(ctx.manifestPath);
 }
 
-function parseOperations(raw: unknown): MemoryLearnerOperation[] {
+function parseOperations(raw: unknown): MemoryDreamerOperation[] {
   if (!Array.isArray(raw)) {
     throw new Error("operations must be an array");
   }
-  return raw as MemoryLearnerOperation[];
+  return raw as MemoryDreamerOperation[];
 }
 
 /**
- * Persist the last inspect-time maintenance batch so finalize can hold the
- * learner to what it was shown and /memory status can surface it.
+ * Persist the last inspect-time consolidation batch so finalize can hold the
+ * dreamer to what it was shown and /memory status can surface it.
  */
-export function persistMemoryMaintenanceInspect(
-  ctx: MemoryLearnerChildContext,
-  inspect: PersistedMemoryMaintenanceInspect,
+export function persistMemoryConsolidationInspect(
+  ctx: MemoryDreamerChildContext,
+  inspect: PersistedMemoryConsolidationInspect,
 ): void {
   try {
     const target = memoryWorkspaceLastInspectPath(ctx.workspaceId);
@@ -72,7 +72,7 @@ export function persistMemoryMaintenanceInspect(
   }
 }
 
-function inputBudget(ctx: MemoryLearnerChildContext): number {
+function inputBudget(ctx: MemoryDreamerChildContext): number {
   return ctx.config.briefingTokenBudget;
 }
 
@@ -80,16 +80,16 @@ function inputBudget(ctx: MemoryLearnerChildContext): number {
  * Merge this run's compaction-rejected candidate keys into the persisted last
  * inspect-time batch so finalize can distinguish "rejected for compaction in
  * this run" (partial progress, a pass state per the completion rules) from
- * "omitted by the learner" (a loud failure). Best-effort.
+ * "omitted by the dreamer" (a loud failure). Best-effort.
  */
-export function mergeMemoryMaintenanceRejections(
-  ctx: MemoryLearnerChildContext,
+export function mergeMemoryConsolidationRejections(
+  ctx: MemoryDreamerChildContext,
   rejectedKeys: string[],
 ): void {
   if (rejectedKeys.length === 0) return;
   try {
     const target = memoryWorkspaceLastInspectPath(ctx.workspaceId);
-    const existing = readMemoryLastMaintenanceInspect(target);
+    const existing = readMemoryLastConsolidationInspect(target);
     if (!existing || existing.runId !== ctx.runId) return;
     const merged = [
       ...new Set([...(existing.rejectedKeys ?? []), ...rejectedKeys]),
@@ -105,15 +105,15 @@ export function mergeMemoryMaintenanceRejections(
 }
 
 /**
- * Register learner-only tools on the child extension.
+ * Register dreamer-only tools on the child extension.
  */
-export function registerMemoryLearningTools(
+export function registerMemoryDreamTools(
   pi: ExtensionAPI,
-  ctx: MemoryLearnerChildContext,
+  ctx: MemoryDreamerChildContext,
 ): void {
   pi.registerTool({
     name: "memory_list_sessions",
-    label: "List learning sessions",
+    label: "List dream sessions",
     description:
       "List eligible source sessions from the run manifest that should be mined.",
     parameters: Type.Object({}),
@@ -139,7 +139,7 @@ export function registerMemoryLearningTools(
 
   pi.registerTool({
     name: "memory_read_session",
-    label: "Read learning session",
+    label: "Read dream session",
     description:
       "Page a decoded source session for mining. Use offset to continue.",
     parameters: Type.Object({
@@ -199,11 +199,11 @@ export function registerMemoryLearningTools(
     name: "memory_inspect_graph",
     label: "Inspect memory graph",
     description:
-      "List current active memories and summaries for reconciliation, plus deterministic maintenance candidates (merges to summarize, promotes to emit).",
+      "List current active memories and summaries for reconciliation, plus deterministic consolidation candidates (merges to summarize, promotes to emit).",
     parameters: Type.Object({}),
     async execute() {
       const snapshot = listMemoryGraphSnapshot(ctx.db);
-      const plan = await planMemoryMaintenance(ctx.db, {
+      const plan = await planMemoryConsolidation(ctx.db, {
         config: ctx.config,
       });
       const lines = [
@@ -217,7 +217,7 @@ export function registerMemoryLearningTools(
           (s) => `- ${s.id} v=${s.currentVersionId}: ${s.text}`,
         ),
         "",
-        "# Maintenance candidates",
+        "# Consolidation candidates",
         plan.overBudget
           ? `Top layer is OVER BUDGET: ${plan.layerTokensAfterProjected}/${plan.budget} estimated tokens. Budget-forced merges below are mandatory.`
           : `Top layer: ${plan.layerTokensAfterProjected}/${plan.budget} estimated tokens (projected).`,
@@ -256,7 +256,7 @@ export function registerMemoryLearningTools(
         );
       }
 
-      persistMemoryMaintenanceInspect(ctx, {
+      persistMemoryConsolidationInspect(ctx, {
         runId: ctx.runId,
         plannedAt: new Date().toISOString(),
         generation: plan.generation,
@@ -287,7 +287,7 @@ export function registerMemoryLearningTools(
         content: [{ type: "text" as const, text: lines.join("\n") }],
         details: {
           snapshot,
-          maintenance: {
+          consolidation: {
             promotes: plan.promotes.map((p) => p.key),
             merges: plan.merges.map((m) => m.key),
             overBudget: plan.overBudget,
@@ -300,27 +300,27 @@ export function registerMemoryLearningTools(
   });
 
   pi.registerTool({
-    name: "memory_commit_maintenance",
-    label: "Commit maintenance ops",
+    name: "memory_commit_consolidation",
+    label: "Commit consolidation ops",
     description:
-      "Atomically commit maintenance operations (summarize/promote/no_op only) with post-rewrite budget enforcement. Use to cover the Maintenance candidates listing of the latest memory_inspect_graph call; the only commit tool usable when the manifest is empty.",
+      "Atomically commit consolidation operations (summarize/promote/no_op only) with post-rewrite budget enforcement. Use to cover the Consolidation candidates listing of the latest memory_inspect_graph call; the only commit tool usable when the manifest is empty.",
     parameters: Type.Object({
       operations: Type.Array(Type.Any(), {
         description:
-          "Maintenance ops: summarize (create or extend form) and promote only",
+          "Consolidation ops: summarize (create or extend form) and promote only",
       }),
     }),
     async execute(_id, params) {
       const operations = parseOperations(params.operations);
       if (operations.length === 0) {
-        operations.push({ op: "no_op", reason: "no maintenance candidates" });
+        operations.push({ op: "no_op", reason: "no consolidation candidates" });
       }
-      const result = commitMemoryLearningOps(ctx.db, {
+      const result = commitMemoryDreamOps(ctx.db, {
         runId: ctx.runId,
         operations,
         config: ctx.config,
       });
-      mergeMemoryMaintenanceRejections(
+      mergeMemoryConsolidationRejections(
         ctx,
         result.rejectedKeys.map((r) => r.key),
       );
@@ -332,8 +332,8 @@ export function registerMemoryLearningTools(
         }
       }
       let text = result.coveredKeys.length
-        ? `Maintenance commit applied (${result.coveredKeys.length} candidate(s) covered).`
-        : `Maintenance commit applied (no candidates covered).`;
+        ? `Consolidation commit applied (${result.coveredKeys.length} candidate(s) covered).`
+        : `Consolidation commit applied (no candidates covered).`;
       if (result.fallbackKeys.length) {
         text += ` Fallback text applied for: ${result.fallbackKeys.join(", ")}.`;
       }
@@ -362,7 +362,7 @@ export function registerMemoryLearningTools(
 
   pi.registerTool({
     name: "memory_commit_session",
-    label: "Commit learning session",
+    label: "Commit dream session",
     description:
       "Atomically commit structured operations for one source session and checkpoint it. Use no_op when nothing durable was found.",
     parameters: Type.Object({
@@ -371,7 +371,7 @@ export function registerMemoryLearningTools(
       }),
       operations: Type.Array(Type.Any(), {
         description:
-          "Learner operations: create, reinforce, revise, supersede, conflict, link, summarize, or no_op",
+          "Dreamer operations: create, reinforce, revise, supersede, conflict, link, summarize, or no_op",
       }),
     }),
     async execute(_id, params) {
@@ -384,12 +384,12 @@ export function registerMemoryLearningTools(
       // manifest snapshot again before checkpointing its source session.
       loadVerifiedMemorySessionSnapshot(entry.snapshotPath, entry.contentHash);
       const operations = parseOperations(params.operations);
-      const plan: MemoryLearningSessionPlan = { operations };
+      const plan: MemoryDreamSessionPlan = { operations };
       // Ensure empty plan still checkpoints via explicit no_op
       if (plan.operations.length === 0) {
         plan.operations = [{ op: "no_op", reason: "no high-signal updates" }];
       }
-      const result = commitMemoryLearningSession(ctx.db, {
+      const result = commitMemoryDreamSession(ctx.db, {
         runId: ctx.runId,
         sourceSessionId: entry.sessionId,
         sessionPath: entry.sessionPath,

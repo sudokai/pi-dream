@@ -1,7 +1,7 @@
 /**
- * Single typed decoder for pi session JSONL used by the memory learner.
+ * Single typed decoder for pi session JSONL used by the memory dreamer.
  * Observations store only extracted assertions + source-session identity —
- * never transcript excerpts — but the learner may page the full logical session.
+ * never transcript excerpts — but the dreamer may page the full logical session.
  */
 
 import { createHash } from "node:crypto";
@@ -244,7 +244,7 @@ function decodeParts(
 }
 
 /**
- * Decode raw entries into a logical session for learner paging.
+ * Decode raw entries into a logical session for dreamer paging.
  */
 export function decodeMemorySession(
   entries: MemoryRawEntry[],
@@ -293,7 +293,7 @@ export function decodeMemorySession(
     if (entry.type === "custom_message" && entry.content) {
       // Extension-generated messages (briefings, audit entries) are NOT user
       // speech: keep them with their customType provenance and a dedicated
-      // role so learner input can exclude them.
+      // role so dreamer input can exclude them.
       rawMessages.push({
         role: "custom",
         content: entry.content,
@@ -325,7 +325,7 @@ export function loadDecodedMemorySession(
 }
 
 /**
- * Load an immutable learning snapshot only when its bytes match the manifest hash.
+ * Load an immutable dream snapshot only when its bytes match the manifest hash.
  * Unlike live-session decoding, unreadable or modified snapshots fail closed.
  */
 export function loadVerifiedMemorySessionSnapshot(
@@ -378,11 +378,11 @@ function isMemoryToolPart(part: MemoryDecodedPart): boolean {
 }
 
 /**
- * Filter one decoded message down to learner evidence parts. Generated custom
+ * Filter one decoded message down to dreamer evidence parts. Generated custom
  * messages and Dream memory-tool parts are removed individually, preserving
  * text and ordinary tool results from a mixed assistant message.
  */
-function filterMemoryLearnerEvidenceParts(
+function filterMemoryDreamerEvidenceParts(
   m: MemoryDecodedMessage,
 ): MemoryDecodedPart[] {
   if (m.role === "custom") return [];
@@ -390,18 +390,18 @@ function filterMemoryLearnerEvidenceParts(
 }
 
 /**
- * Whether a decoded message has learner evidence after per-part filtering.
+ * Whether a decoded message has dreamer evidence after per-part filtering.
  * Ordinary tool results stay visible even when a message also used Dream's
  * memory tools.
  */
-export function isMemoryLearnerEvidence(m: MemoryDecodedMessage): boolean {
-  return filterMemoryLearnerEvidenceParts(m).length > 0;
+export function isMemoryDreamerEvidence(m: MemoryDecodedMessage): boolean {
+  return filterMemoryDreamerEvidenceParts(m).length > 0;
 }
 
 /**
- * Format a page of decoded messages as plain text for the learner.
+ * Format a page of decoded messages as plain text for the dreamer.
  * Only user evidence passes: generated briefings and memory-tool output are
- * excluded, so the learner cannot mine its own generated memory.
+ * excluded, so the dreamer cannot mine its own generated memory.
  */
 export function formatMemorySessionPage(
   session: MemoryDecodedSession,
@@ -417,7 +417,7 @@ export function formatMemorySessionPage(
   const limit = Math.min(Math.max(1, rawLimit), MEMORY_SESSION_PAGE_MAX);
   const visible = session.messages
     .map((message) => {
-      const parts = filterMemoryLearnerEvidenceParts(message);
+      const parts = filterMemoryDreamerEvidenceParts(message);
       return parts.length > 0 ? { ...message, parts } : null;
     })
     .filter((message): message is MemoryDecodedMessage => message !== null);

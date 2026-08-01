@@ -2,8 +2,8 @@
  * pi-dream — adaptive workspace memory extension.
  *
  * Parent: first-turn visible briefing, memory_search/memory_open, /memory,
- * agent_settled cadence, detached learner launch.
- * Child (PI_DREAM_CHILD=1): no-op here; child uses memory-learning-entry.ts.
+ * agent_settled cadence, detached dreamer launch.
+ * Child (PI_DREAM_CHILD=1): no-op here; child uses memory-dream-entry.ts.
  */
 
 import {
@@ -36,8 +36,8 @@ import {
   createMemoryBriefingSignal,
   type BuildMemoryBriefingResult,
 } from "./parent/memory-briefing.ts";
-import { evaluateMemoryLearningCadence } from "./parent/memory-cadence.ts";
-import { launchMemoryLearningRun } from "./parent/memory-learning-launcher.ts";
+import { evaluateMemoryDreamCadence } from "./parent/memory-cadence.ts";
+import { launchMemoryDreamRun } from "./parent/memory-dream-launcher.ts";
 import { registerMemoryAgentTools } from "./parent/memory-tools.ts";
 import { registerMemoryCommand } from "./parent/memory-command.ts";
 import { listMemoryTreeRoots } from "./shared/memory-tree.ts";
@@ -333,14 +333,14 @@ export default function piDreamExtension(pi: ExtensionAPI) {
         }
       }
       const config = pinned.config;
-      const evaluation = evaluateMemoryLearningCadence(pinned.db, {
+      const evaluation = evaluateMemoryDreamCadence(pinned.db, {
         cwd: pinned.cwd,
         workspaceId: pinned.workspaceId,
         config,
       });
-      if (!evaluation.shouldLearn) return;
+      if (!evaluation.shouldDream) return;
 
-      const launched = launchMemoryLearningRun({
+      const launched = launchMemoryDreamRun({
         db: pinned.db,
         cwd: pinned.cwd,
         workspaceId: pinned.workspaceId,
@@ -350,10 +350,7 @@ export default function piDreamExtension(pi: ExtensionAPI) {
         currentSessionModel: ctx.model as never,
       });
       if (launched.ok) {
-        ctx.ui.notify(
-          `Memory learning started (run ${launched.runId}).`,
-          "info",
-        );
+        ctx.ui.notify(`Dream started (run ${launched.runId}).`, "info");
       }
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);

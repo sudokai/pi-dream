@@ -1,5 +1,5 @@
 /**
- * Deterministic tree maintenance: promote planning + nearest-neighbor merge
+ * Deterministic tree consolidation: promote planning + nearest-neighbor merge
  * pairing with an envelope-budgeted override, plus attempt counters and the
  * deterministic fallback text used by the commit layer.
  *
@@ -9,9 +9,9 @@
  * merge-ineligible during a grace window. If the top layer still exceeds the
  * briefing token budget, the pass extends the candidate set with the coldest
  * remaining roots regardless of warmth (the budget override), which is not
- * subject to maintenanceMergeBound.
+ * subject to consolidationMergeBound.
  *
- * The embedder is loaded only here (and by new-node embedding during learning)
+ * The embedder is loaded only here (and by new-node embedding during dreaming)
  * — never by the parent-side briefing/search path.
  */
 
@@ -31,8 +31,8 @@ import {
 import { computeMemoryRowHeat, computeSummaryRowHeat } from "./memory-heat.ts";
 import {
   estimateMemoryTextTokens,
-  MEMORY_MAINTENANCE_MAX_ATTEMPTS,
-  MEMORY_MAINTENANCE_SUMMARY_GRACE_GENERATIONS,
+  MEMORY_CONSOLIDATION_MAX_ATTEMPTS,
+  MEMORY_CONSOLIDATION_SUMMARY_GRACE_GENERATIONS,
   MEMORY_MAX_SUMMARY_CHARS,
   type MemoryNodeId,
   type MemorySearchableNodeType,
@@ -46,7 +46,7 @@ import {
 } from "./memory-tree.ts";
 
 /** Stable attempt-counter key for a merge pair (create and extend alike). */
-export function memoryMaintenanceMergeKey(
+export function memoryConsolidationMergeKey(
   a: { nodeType: MemorySearchableNodeType; nodeId: number },
   b: { nodeType: MemorySearchableNodeType; nodeId: number },
 ): string {
@@ -56,7 +56,7 @@ export function memoryMaintenanceMergeKey(
 }
 
 /** Stable attempt-counter key for a promote (child + parent). */
-export function memoryMaintenancePromoteKey(
+export function memoryConsolidationPromoteKey(
   childType: MemorySearchableNodeType,
   childId: number,
   parentId: number,
@@ -65,25 +65,25 @@ export function memoryMaintenancePromoteKey(
 }
 
 /** Persisted consecutive-failure counter for one candidate. */
-export function getMemoryMaintenanceAttempts(
+export function getMemoryConsolidationAttempts(
   db: DatabaseSync,
   key: string,
 ): number {
   const row = db
-    .prepare(`SELECT attempts FROM maintenance_attempts WHERE key = ?`)
+    .prepare(`SELECT attempts FROM consolidation_attempts WHERE key = ?`)
     .get(key) as { attempts: number } | undefined;
   return row ? Number(row.attempts) : 0;
 }
 
 /** Increment the consecutive-failure counter; returns the new count. */
-export function incrementMemoryMaintenanceAttempt(
+export function incrementMemoryConsolidationAttempt(
   db: DatabaseSync,
   key: string,
   generation: number,
 ): number {
-  const next = getMemoryMaintenanceAttempts(db, key) + 1;
+  const next = getMemoryConsolidationAttempts(db, key) + 1;
   db.prepare(
-    `INSERT INTO maintenance_attempts (key, attempts, last_generation)
+    `INSERT INTO consolidation_attempts (key, attempts, last_generation)
      VALUES (?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET
        attempts = excluded.attempts,
@@ -94,20 +94,20 @@ export function incrementMemoryMaintenanceAttempt(
 }
 
 /** Reset the consecutive-failure counter (candidate covered). */
-export function clearMemoryMaintenanceAttempt(
+export function clearMemoryConsolidationAttempt(
   db: DatabaseSync,
   key: string,
 ): void {
-  db.prepare(`DELETE FROM maintenance_attempts WHERE key = ?`).run(key);
+  db.prepare(`DELETE FROM consolidation_attempts WHERE key = ?`).run(key);
 }
 
 /** All persisted attempt counters (status surface). */
-export function listMemoryMaintenanceAttempts(
+export function listMemoryConsolidationAttempts(
   db: DatabaseSync,
 ): Array<{ key: string; attempts: number; lastGeneration: number }> {
   const rows = db
     .prepare(
-      `SELECT key, attempts, last_generation FROM maintenance_attempts
+      `SELECT key, attempts, last_generation FROM consolidation_attempts
        ORDER BY key ASC`,
     )
     .all() as Array<{
@@ -196,8 +196,8 @@ export interface MemoryMergeCandidate {
   outputCapTokens: number;
 }
 
-/** Deterministic maintenance batch for one generation: promote candidates, then merge candidates. */
-export interface MemoryMaintenancePlan {
+/** Deterministic consolidation batch for one generation: promote candidates, then merge candidates. */
+export interface MemoryConsolidationPlan {
   promotes: MemoryPromoteCandidate[];
   merges: MemoryMergeCandidate[];
   layerTokensBefore: number;
@@ -208,8 +208,8 @@ export interface MemoryMaintenancePlan {
   generation: number;
 }
 
-/** Options for planMemoryMaintenance: config, embedder seam, abort signal. */
-export interface MemoryMaintenancePlannerOptions {
+/** Options for planMemoryConsolidation: config, embedder seam, abort signal. */
+export interface MemoryConsolidationPlannerOptions {
   config: MemoryWorkspaceConfig;
   /** Test seam; defaults to the local MiniLM pipeline. */
   embed?: MemoryEmbedFn | null;
@@ -311,7 +311,7 @@ function planMemoryPromotes(
         (c) => !(c.nodeType === child.nodeType && c.nodeId === child.nodeId),
       ).length;
       const candidate: MemoryPromoteCandidate = {
-        key: memoryMaintenancePromoteKey(
+        key: memoryConsolidationPromoteKey(
           child.nodeType,
           child.nodeId,
           parentId,
@@ -386,7 +386,7 @@ function planMemoryPromotes(
       }
     }
   }
-  // Deterministic order for the learner: by key.
+  // Deterministic order for the dreamer: by key.
   batch.sort((a, b) => a.key.localeCompare(b.key));
   return batch;
 }
@@ -620,8 +620,8 @@ function greedyPairMemoryRoots(
       .sort((x, y) => y.score - x.score || x.b.nodeId - y.b.nodeId);
     for (const { b, score } of partners) {
       if (
-        getMemoryMaintenanceAttempts(db, memoryMaintenanceMergeKey(a, b)) >=
-        MEMORY_MAINTENANCE_MAX_ATTEMPTS
+        getMemoryConsolidationAttempts(db, memoryConsolidationMergeKey(a, b)) >=
+        MEMORY_CONSOLIDATION_MAX_ATTEMPTS
       ) {
         continue;
       }
@@ -647,7 +647,7 @@ function buildMemoryMergeCandidate(
     const baselineTokens =
       extendTarget.estimatedTokens + incoming.estimatedTokens;
     return {
-      key: memoryMaintenanceMergeKey(a, b),
+      key: memoryConsolidationMergeKey(a, b),
       kind: "extend",
       reason,
       similarity: pair.similarity,
@@ -661,7 +661,7 @@ function buildMemoryMergeCandidate(
   }
   const baselineTokens = a.estimatedTokens + b.estimatedTokens;
   return {
-    key: memoryMaintenanceMergeKey(a, b),
+    key: memoryConsolidationMergeKey(a, b),
     kind: "create",
     reason,
     similarity: pair.similarity,
@@ -672,15 +672,15 @@ function buildMemoryMergeCandidate(
 }
 
 /**
- * Deterministic maintenance planning against the current DB state.
+ * Deterministic consolidation planning against the current DB state.
  * Promotes first (they change the root set), then merges with an
  * envelope-budgeted override. Loads the embedder for pairing — call only in
  * the child (never on the interactive parent path).
  */
-export async function planMemoryMaintenance(
+export async function planMemoryConsolidation(
   db: DatabaseSync,
-  opts: MemoryMaintenancePlannerOptions,
-): Promise<MemoryMaintenancePlan> {
+  opts: MemoryConsolidationPlannerOptions,
+): Promise<MemoryConsolidationPlan> {
   const config = opts.config;
   const generation = getMemoryActivityGeneration(db);
   const promotes = planMemoryPromotes(db, generation, config);
@@ -740,7 +740,7 @@ export async function planMemoryMaintenance(
   const pastGrace = (m: PairPoolMember): boolean =>
     !m.isSummary ||
     generation >=
-      m.creationGeneration + MEMORY_MAINTENANCE_SUMMARY_GRACE_GENERATIONS;
+      m.creationGeneration + MEMORY_CONSOLIDATION_SUMMARY_GRACE_GENERATIONS;
 
   const coldPool = sim.roots
     .filter((r) => !promotedParentIds.has(r.nodeId) || r.nodeType !== "summary")
@@ -749,7 +749,7 @@ export async function planMemoryMaintenance(
 
   const coldPairs = greedyPairMemoryRoots(db, coldPool, vectors).slice(
     0,
-    config.maintenanceMergeBound,
+    config.consolidationMergeBound,
   );
 
   const merges: MemoryMergeCandidate[] = [];
@@ -761,7 +761,7 @@ export async function planMemoryMaintenance(
     projected -= 1;
   }
 
-  // Budget override: not subject to maintenanceMergeBound; respects grace and
+  // Budget override: not subject to consolidationMergeBound; respects grace and
   // the attempt bound; targets the cap with monotonic measured compaction.
   if (projected > config.briefingTokenBudget) {
     const used = new Set<string>();
@@ -805,7 +805,7 @@ export async function planMemoryMaintenance(
  * of heat). All clauses exclude pairs at/past the attempt bound, so a budget
  * below a single node's estimate never spawns doomed runs.
  */
-export function hasMemoryMaintenanceCandidates(
+export function hasMemoryConsolidationCandidates(
   db: DatabaseSync,
   opts: { config: MemoryWorkspaceConfig },
 ): boolean {
@@ -822,13 +822,14 @@ export function hasMemoryMaintenanceCandidates(
       if (child.state !== "active") continue;
       if (childHeat(db, child, generation) < config.hotHeatThreshold) continue;
       if (!ancestorChainOk(db, child.nodeType, child.nodeId)) continue;
-      const key = memoryMaintenancePromoteKey(
+      const key = memoryConsolidationPromoteKey(
         child.nodeType,
         child.nodeId,
         parentId,
       );
       if (
-        getMemoryMaintenanceAttempts(db, key) < MEMORY_MAINTENANCE_MAX_ATTEMPTS
+        getMemoryConsolidationAttempts(db, key) <
+        MEMORY_CONSOLIDATION_MAX_ATTEMPTS
       ) {
         return true;
       }
@@ -846,7 +847,7 @@ export function hasMemoryMaintenanceCandidates(
   const pastGrace = (r: (typeof roots)[number]): boolean =>
     !r.isSummary ||
     generation >=
-      r.creationGeneration + MEMORY_MAINTENANCE_SUMMARY_GRACE_GENERATIONS;
+      r.creationGeneration + MEMORY_CONSOLIDATION_SUMMARY_GRACE_GENERATIONS;
 
   const pairPossible = (eligible: (typeof roots)[number][]): boolean => {
     for (let i = 0; i < eligible.length; i++) {
@@ -854,8 +855,10 @@ export function hasMemoryMaintenanceCandidates(
         const a = eligible[i]!;
         const b = eligible[j]!;
         if (
-          getMemoryMaintenanceAttempts(db, memoryMaintenanceMergeKey(a, b)) <
-          MEMORY_MAINTENANCE_MAX_ATTEMPTS
+          getMemoryConsolidationAttempts(
+            db,
+            memoryConsolidationMergeKey(a, b),
+          ) < MEMORY_CONSOLIDATION_MAX_ATTEMPTS
         ) {
           return true;
         }
@@ -877,8 +880,8 @@ export function hasMemoryMaintenanceCandidates(
   return false;
 }
 
-/** Persisted last inspect-time maintenance batch (child writes, status reads). */
-export interface PersistedMemoryMaintenanceInspect {
+/** Persisted last inspect-time consolidation batch (child writes, status reads). */
+export interface PersistedMemoryConsolidationInspect {
   runId: string;
   plannedAt: string;
   generation: number;
@@ -901,7 +904,7 @@ export interface PersistedMemoryMaintenanceInspect {
   }>;
   /**
    * Candidate keys the commit rejected for compaction during this run
-   * (merged into the persisted batch by memory_commit_maintenance). Finalize
+   * (merged into the persisted batch by memory_commit_consolidation). Finalize
    * treats "rejected in this run" as covered — partial progress is not a failure.
    */
   rejectedKeys?: string[];
@@ -911,12 +914,12 @@ export interface PersistedMemoryMaintenanceInspect {
 }
 
 /** Read the persisted last inspect-time batch; null when absent/unreadable. */
-export function readMemoryLastMaintenanceInspect(
+export function readMemoryLastConsolidationInspect(
   filePath: string,
-): PersistedMemoryMaintenanceInspect | null {
+): PersistedMemoryConsolidationInspect | null {
   try {
     const raw = readFileSync(filePath, "utf-8");
-    const parsed = JSON.parse(raw) as PersistedMemoryMaintenanceInspect;
+    const parsed = JSON.parse(raw) as PersistedMemoryConsolidationInspect;
     if (
       typeof parsed.runId !== "string" ||
       !Array.isArray(parsed.merges) ||

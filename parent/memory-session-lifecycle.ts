@@ -4,10 +4,10 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import { consumeOneUnreportedMemoryRun } from "../shared/memory-run-claim.ts";
-import { markMemoryLearningCompleted } from "./memory-cadence.ts";
+import { markMemoryDreamCompleted } from "./memory-cadence.ts";
 
 /**
- * Surface at most one compact unreported learning run notification.
+ * Surface at most one compact unreported dream notification.
  * Consumes the run and (on success) resets cadence in one transaction so a
  * crash cannot leave the run reported without the cooldown watermark.
  */
@@ -20,7 +20,7 @@ export function consumeMemoryRunNotification(
       const finishedAtMs = claimed.finishedAt
         ? Date.parse(claimed.finishedAt)
         : NaN;
-      markMemoryLearningCompleted(db, {
+      markMemoryDreamCompleted(db, {
         nowMs: Number.isFinite(finishedAtMs) ? finishedAtMs : Date.now(),
       });
     },
@@ -28,12 +28,12 @@ export function consumeMemoryRunNotification(
   if (!run) return null;
   if (run.status === "completed") {
     return {
-      message: `Memory learning completed (run ${run.id}, ${run.trigger}).`,
+      message: `Dream completed (run ${run.id}, ${run.trigger}).`,
       level: "info",
     };
   }
   return {
-    message: `Memory learning failed (run ${run.id}): ${run.errorText ?? "unknown error"}`,
+    message: `Dream failed (run ${run.id}): ${run.errorText ?? "unknown error"}`,
     level: "warning",
   };
 }

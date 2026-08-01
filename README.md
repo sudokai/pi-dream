@@ -1,6 +1,6 @@
 # pi-dream
 
-Adaptive **workspace memory** for [pi](https://pi.dev): learns durable user preferences and workspace facts from completed sessions into an auditable SQLite **tree**, and synthesizes the top layer into a **visible first-turn briefing**.
+Adaptive **workspace memory** for [pi](https://pi.dev): extracts durable user preferences and workspace facts from completed sessions into an auditable SQLite **tree**, and synthesizes the top layer into a **visible first-turn briefing**.
 
 ## Install
 
@@ -21,17 +21,17 @@ Requires **Node 24+** (native `node:sqlite`).
 | First turn         | Synthesizer turns the top layer of the memory tree into a grounded answer + a one-line index of the remaining roots (visible `pi-dream-briefing` custom message)                |
 | `memory_search`    | Same synthesizer: returns a synthesized answer with sources; records recall for sources and opened summaries only                                                               |
 | `memory_open`      | Exact target + one deeper level + lateral IDs; never truncates a node                                                                                                           |
-| `/memory`          | `status`, `list [query]`, `open <id>`, `learn`, `pause`, `resume`, `forget <id>`; `list` and `open` also append a visible `pi-dream-audit` entry (learn/forget are notify-only) |
-| Automatic learning | After ≥10 settled turns, ≥120 minutes, and advanced transcripts (or pending tree maintenance) → detached `--no-session` learner                                                 |
+| `/memory`          | `status`, `list [query]`, `open <id>`, `dream`, `pause`, `resume`, `forget <id>`; `list` and `open` also append a visible `pi-dream-audit` entry (dream/forget are notify-only) |
+| Automatic dreaming | After ≥10 settled turns, ≥120 minutes, and advanced transcripts (or pending tree consolidation) → detached `--no-session` dreamer                                               |
 
 **Never** edits `AGENTS.md`, injects hidden system-prompt memory, or physically deletes history on forget (soft retirement only).
 
 ## How recall works: tree + synthesizer
 
-- **Tree maintenance is forced and algorithmic.** Roots (active nodes with no active parent summary) whose heat is at or below the cold threshold are paired by semantic nearest-neighbor (cosine over stored MiniLM embeddings, **no similarity floor**) and merged into summaries; a root whose heat reaches the hot threshold is automatically promoted back out of its parent. Conflicted/retired/superseded nodes are excluded from the top layer and from maintenance.
-- **The top layer always fits.** The estimated token size of all roots is capped by `briefingTokenBudget` (8000). The cap is enforced by maintenance — budget-forced merges, a summary grace window, per-merge strict-compaction validation, and a deterministic fallback text after three consecutive rejections. Reads never truncate: an over-budget layer fails closed with an audit entry until maintenance compacts it.
+- **Tree consolidation is forced and algorithmic.** Roots (active nodes with no active parent summary) whose heat is at or below the cold threshold are paired by semantic nearest-neighbor (cosine over stored MiniLM embeddings, **no similarity floor**) and merged into summaries; a root whose heat reaches the hot threshold is automatically promoted back out of its parent. Conflicted/retired/superseded nodes are excluded from the top layer and from consolidation.
+- **The top layer always fits.** The estimated token size of all roots is capped by `briefingTokenBudget` (8000). The cap is enforced by consolidation — budget-forced merges, a summary grace window, per-merge strict-compaction validation, and a deterministic fallback text after three consecutive rejections. Reads never truncate: an over-budget layer fails closed with an audit entry until consolidation compacts it.
 - **One synthesizer serves briefing and search.** A single bounded LLM loop (≤ 8 steps, 16000-token envelope) reads the top layer, opens summaries only when it needs more detail, refreshes its context after every model result, and returns `{answer, sources, openedSummaryIds}`. Only the synthesized answer is shown; sources and opened summaries are reheated (selection credits heat; display never does).
-- **Fail-closed everywhere.** Synthesizer failures skip silently with an audit entry (no raw tree dump); maintenance commits reject non-compacting merges with a persisted attempt counter; a legacy store (old schema) is wiped and re-learned from transcripts.
+- **Fail-closed everywhere.** Synthesizer failures skip silently with an audit entry (no raw tree dump); consolidation commits reject non-compacting merges with a persisted attempt counter; a legacy store (old schema) is wiped and re-mined from transcripts.
 
 ## Data layout
 
@@ -41,7 +41,7 @@ Per workspace (identity: canonical git origin → git common dir → real cwd):
 ~/.pi/agent/dream/<workspaceId>/
   memory.db
   config.json
-  last-maintenance-inspect.json   # last inspect-time maintenance batch (status reads it)
+  last-consolidation-inspect.json   # last inspect-time consolidation batch (status reads it)
   runs/<runId>/manifest.json      # temporary
 ```
 
@@ -55,8 +55,8 @@ All fields are optional except `version` and `enabled`; missing optional fields 
 {
   "version": 1,
   "enabled": true,
-  "learningModel": "provider/modelId",
-  "learningThinking": "off",
+  "dreamModel": "provider/modelId",
+  "dreamThinking": "off",
   "recallModel": "provider/modelId",
   "recallThinking": "off",
   "minTurns": 10,
@@ -65,7 +65,7 @@ All fields are optional except `version` and `enabled`; missing optional fields 
   "embeddingModel": "Xenova/all-MiniLM-L6-v2",
   "coldHeatThreshold": 0.4,
   "hotHeatThreshold": 1.5,
-  "maintenanceMergeBound": 3,
+  "consolidationMergeBound": 3,
   "synthesizerMaxSteps": 8,
   "synthesizerContextBudget": 16000,
   "synthesizerAnswerBudget": 2000,
@@ -79,17 +79,17 @@ All fields are optional except `version` and `enabled`; missing optional fields 
 | -------------------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | `version`                  | 1 (required)              | Config schema version; must be 1.                                                                                                             |
 | `enabled`                  | — (required)              | Master switch; `/memory pause` and `resume` toggle it.                                                                                        |
-| `learningModel`            | current session model     | Exact `provider/modelId` for the detached learner; omit to use the session model.                                                             |
-| `learningThinking`         | unset (no override)       | Thinking level for the learner: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Unset omits the override, so pi's default applies. |
+| `dreamModel`               | current session model     | Exact `provider/modelId` for the detached dreamer; omit to use the session model.                                                             |
+| `dreamThinking`            | unset (no override)       | Thinking level for the dreamer: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Unset omits the override, so pi's default applies. |
 | `recallModel`              | current session model     | Exact `provider/modelId` for the synthesizer (briefing + search); omit to use the session model.                                              |
 | `recallThinking`           | unset (no override)       | Thinking level for the synthesizer (same level set). Unset omits the override, so pi's default applies.                                       |
-| `minTurns`                 | 10                        | Minimum settled turns before automatic learning.                                                                                              |
-| `minMinutes`               | 120                       | Minimum idle minutes before automatic learning.                                                                                               |
-| `briefingTokenBudget`      | 8000                      | Estimated-token cap for the top layer (maintenance-enforced; reads fail closed above it). Must be ≥ 200 (the largest single-node estimate).   |
-| `embeddingModel`           | `Xenova/all-MiniLM-L6-v2` | Local embedding model id (first use may download it). Used by tree maintenance and learning only — never by the briefing/search read path.    |
+| `minTurns`                 | 10                        | Minimum settled turns before automatic dreaming.                                                                                              |
+| `minMinutes`               | 120                       | Minimum idle minutes before automatic dreaming.                                                                                               |
+| `briefingTokenBudget`      | 8000                      | Estimated-token cap for the top layer (consolidation-enforced; reads fail closed above it). Must be ≥ 200 (the largest single-node estimate). |
+| `embeddingModel`           | `Xenova/all-MiniLM-L6-v2` | Local embedding model id (first use may download it). Used by consolidation and dreaming only — never by the briefing/search read path.       |
 | `coldHeatThreshold`        | 0.4                       | Roots at or below this heat are merge-eligible. Must be strictly less than `hotHeatThreshold`.                                                |
 | `hotHeatThreshold`         | 1.5                       | Children at or above this heat are promote-eligible (resurfaced). The cold/hot gap is the anti-flapping hysteresis.                           |
-| `maintenanceMergeBound`    | 3                         | Maximum cold-eligible merge pairs per maintenance pass (the budget override is not subject to it).                                            |
+| `consolidationMergeBound`  | 3                         | Maximum cold-eligible merge pairs per consolidation pass (the budget override is not subject to it).                                          |
 | `synthesizerMaxSteps`      | 8                         | Hard ceiling on synthesizer navigation steps (open + finalize calls) per answer.                                                              |
 | `synthesizerContextBudget` | 16000                     | Serialized-context envelope: framing + request + top layer + navigation reserve + answer reserve.                                             |
 | `synthesizerAnswerBudget`  | 2000                      | Answer token cap inside the envelope.                                                                                                         |
@@ -111,7 +111,7 @@ All variables are optional; defaults exist without them.
 | ------------------------ | ----------------------------------------------------------------------------------- |
 | `PI_DREAM_STORAGE_ROOT`  | Override the per-workspace data root (tests use this).                              |
 | `PI_DREAM_SESSIONS_ROOT` | Override the pi sessions root used for source-session discovery (tests/child only). |
-| `PI_DREAM_CHILD`         | Set to `1` inside the detached learner child (`--no-session`, isolated tools).      |
+| `PI_DREAM_CHILD`         | Set to `1` inside the detached dreamer child (`--no-session`, isolated tools).      |
 
 `PI_DREAM_WORKSPACE_ID`, `PI_DREAM_RUN_ID`, `PI_DREAM_MANIFEST`, `PI_DREAM_DB`, and `PI_DREAM_CWD` are internal handoff variables the launcher sets for the detached child; they are not for manual use.
 
@@ -119,13 +119,13 @@ All variables are optional; defaults exist without them.
 
 ```text
 /memory              # status: workspace id, db path, counts, cadence, tree section (roots,
-                     #   top-layer token estimate with OVER BUDGET flag, last maintenance
-                     #   candidates, pending attempt counters)
+                     #   top-layer token estimate with OVER BUDGET flag, last dream
+                     #   (merges/promotes), pending attempt counters)
 /memory list [q]     # the tree rendered indented (roots + children under summaries);
                      #   fallback-labeled summaries render as "S:n (fallback)"; non-active
                      #   nodes stay visible flat; deterministic audit list (no recall events)
 /memory open M:12 [cursor=<n>]  # exact node + one level; versions; cursor for more children
-/memory learn        # manual detached run (bypasses cadence, still claims)
+/memory dream        # manual detached dream (bypasses cadence, still claims)
 /memory pause|resume
 /memory forget M:12  # soft-retire; preserves versions and observations
 ```
@@ -135,9 +135,9 @@ All variables are optional; defaults exist without them.
 - **`memory_search({ query })`** — synthesizer answer grounded in the memory tree; sources/opened summaries in details
 - **`memory_open({ id, cursor? })`** — progressive drill-down (`M:` / `S:` / `O:`)
 
-## Learning
+## Dreams
 
-A detached pi child (`PI_DREAM_CHILD=1`, `--no-session`, isolated tools) processes eligible sessions and submits structured ops: `create`, `reinforce`, `revise`, `supersede`, `conflict`, `link`, `summarize`, `promote`, `no_op`. Code validates graph invariants (strict tree, strict summary compaction) and commits observations, versions, edges, projections, and the source-session checkpoint in one transaction. Every learner run ends with a post-ingestion maintenance phase; deterministic maintenance candidates also trigger **maintenance-only runs** (zero-session manifests) from `agent_settled`.
+A detached pi child (`PI_DREAM_CHILD=1`, `--no-session`, isolated tools) processes eligible sessions and submits structured ops: `create`, `reinforce`, `revise`, `supersede`, `conflict`, `link`, `summarize`, `promote`, `no_op`. Code validates graph invariants (strict tree, strict summary compaction) and commits observations, versions, edges, projections, and the source-session checkpoint in one transaction. Every dream ends with a post-ingestion consolidation phase; deterministic consolidation candidates also trigger **dream-only runs** (zero-session manifests) from `agent_settled`.
 
 ## SQL audit examples
 
@@ -150,15 +150,15 @@ SELECT 'S', id FROM summaries WHERE state = 'active';
 -- Containment edges (retired edges are audit history)
 SELECT * FROM graph_edges WHERE relation = 'contains';
 
--- Pending maintenance attempt counters
-SELECT * FROM maintenance_attempts;
+-- Pending consolidation attempt counters
+SELECT * FROM consolidation_attempts;
 
 -- Recall history
 SELECT * FROM recall_events ORDER BY id DESC LIMIT 20;
 
--- Latest learning runs
+-- Latest dreams
 SELECT id, trigger, status, started_at, finished_at, error_text
-FROM learning_runs ORDER BY started_at DESC LIMIT 10;
+FROM dream_runs ORDER BY started_at DESC LIMIT 10;
 ```
 
 ## Development
@@ -168,7 +168,7 @@ npm install
 npm run check          # typecheck + lint + format + tests (CI runs this)
 npm test
 npm run typecheck
-npm run eval:learning  # offline corpus report
+npm run eval:dream  # offline corpus report
 npm run eval:recall
 npm run format         # prettier --write (CI enforces format:check)
 ```
@@ -177,4 +177,4 @@ Domain vocabulary: see [CONTEXT.md](./CONTEXT.md). For agent workflows: see [AGE
 
 ## Embeddings
 
-Local MiniLM via `@xenova/transformers` (`Xenova/all-MiniLM-L6-v2`). First use may download the model. The embedder is loaded only by the maintenance pass (merge pairing) and by new-node embedding during learning — never by the briefing or `memory_search` read path, so `/memory status` describes it as maintenance-only. If embeddings are unavailable, pairing degrades (missing similarities score 0, still pairable — there is no similarity floor) and maintenance never aborts a learning run.
+Local MiniLM via `@xenova/transformers` (`Xenova/all-MiniLM-L6-v2`). First use may download the model. The embedder is loaded only by the consolidation pass (merge pairing) and by new-node embedding during dreaming — never by the briefing or `memory_search` read path, so `/memory status` describes it as consolidation-only. If embeddings are unavailable, pairing degrades (missing similarities score 0, still pairable — there is no similarity floor) and consolidation never aborts a dream.

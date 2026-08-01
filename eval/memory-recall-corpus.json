@@ -12,7 +12,7 @@
         { "id": "S:1", "kind": "summary", "text": "Tooling preferences" }
       ],
       "expect": "fail-closed",
-      "notes": "A top layer exceeding briefingTokenBudget never truncates at read time; the read fails closed with an audit and maintenance must compact."
+      "notes": "A top layer exceeding briefingTokenBudget never truncates at read time; the read fails closed with an audit and consolidation must compact."
     },
     {
       "id": "merge-pairing-quality",
@@ -99,7 +99,7 @@
         { "id": "M:3", "kind": "fact", "text": "CI runs on Ubuntu" }
       ],
       "expectSources": [],
-      "notes": "Conflicted nodes are excluded from the top layer and from maintenance until resolved."
+      "notes": "Conflicted nodes are excluded from the top layer and from consolidation until resolved."
     }
   ]
 }

@@ -6,7 +6,7 @@ import {
   openMemoryDatabaseAtPath,
 } from "../shared/memory-database.ts";
 import { acquireMemoryRunClaim } from "../shared/memory-run-claim.ts";
-import { commitMemoryLearningSession } from "../shared/memory-repository.ts";
+import { commitMemoryDreamSession } from "../shared/memory-repository.ts";
 import { defaultMemoryWorkspaceConfig } from "../shared/memory-config.ts";
 import { registerMemoryAgentTools } from "./memory-tools.ts";
 import type { MemoryToolsContext } from "./memory-tools.ts";
@@ -32,7 +32,7 @@ function seed(
   db: ReturnType<typeof openMemoryDatabaseAtPath>,
   runId: string,
 ): void {
-  commitMemoryLearningSession(db, {
+  commitMemoryDreamSession(db, {
     runId,
     sourceSessionId: "s1",
     sessionPath: "/tmp/s1.jsonl",
@@ -79,7 +79,7 @@ test("memory_search returns the synthesized answer and records search/open event
     const claim = acquireMemoryRunClaim(db, "manual");
     assert.equal(claim.acquired, true);
     seed(db, claim.runId!);
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId: claim.runId!,
       sourceSessionId: "s2",
       sessionPath: "/tmp/s2.jsonl",
@@ -223,7 +223,7 @@ test("memory_search surfaces the named tool error for an over-budget top layer",
     );
     await assert.rejects(
       () => tools.get("memory_search")!.execute("1", { query: "anything" }),
-      /top layer over budget \(\d+\/1 tokens\); maintenance has not yet compacted it/,
+      /top layer over budget \(\d+\/1 tokens\); consolidation has not yet compacted it/,
     );
   } finally {
     closeMemoryDatabase(db);

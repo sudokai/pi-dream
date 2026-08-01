@@ -5,7 +5,7 @@ import {
   openMemoryDatabaseAtPath,
 } from "./memory-database.ts";
 import { acquireMemoryRunClaim } from "./memory-run-claim.ts";
-import { commitMemoryLearningSession } from "./memory-repository.ts";
+import { commitMemoryDreamSession } from "./memory-repository.ts";
 import { synthesizeMemoryAnswer } from "./memory-synthesizer.ts";
 import { defaultMemoryWorkspaceConfig } from "./memory-config.ts";
 import { retireMemoryNode } from "./memory-graph.ts";
@@ -31,7 +31,7 @@ function seedTree(
   db: ReturnType<typeof openMemoryDatabaseAtPath>,
   runId: string,
 ): void {
-  commitMemoryLearningSession(db, {
+  commitMemoryDreamSession(db, {
     runId,
     sourceSessionId: "s1",
     sessionPath: "/tmp/s1.jsonl",
@@ -184,7 +184,7 @@ test("sources outside the context fail closed; over-cap sources truncate", async
 
     // More than MEMORY_SYNTHESIZER_MAX_SOURCES sources: first N credited.
     // Build a tree with 8 visible nodes: S:1 wrapping M:1..M:7, plus S:1.
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "rich",
       sessionPath: "/tmp/rich.jsonl",
@@ -407,7 +407,7 @@ test("a concurrent mutation of a context node fails the next open/finalize close
 test("envelope enforcement: opening a summary whose children overflow fails closed", async () => {
   await withClaimedDb(async (db, runId) => {
     // S:1 has one huge child; the envelope cannot hold both the layer and it.
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",
@@ -534,7 +534,7 @@ test("opening a summary counts the request tokens in the open-time envelope chec
   await withClaimedDb(async (db, runId) => {
     // Layer: S:1 wrapping three max-size children (400 chars -> 100 tokens
     // each; 300 tokens total when opened).
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",

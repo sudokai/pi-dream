@@ -27,8 +27,8 @@ export type MemoryKnowledgeKind =
 export type MemoryGraphRelation =
   "contains" | "related_to" | "supersedes" | "conflicts_with";
 
-/** Relations the learner `link` op may create (containment is ops-only). */
-export type MemoryLearnerLinkRelation =
+/** Relations the dreamer `link` op may create (containment is ops-only). */
+export type MemoryDreamerLinkRelation =
   "related_to" | "supersedes" | "conflicts_with";
 
 /** Lifecycle state of a graph edge (retired edges are append-only history). */
@@ -58,8 +58,8 @@ export const MEMORY_COLD_HEAT_THRESHOLD = 0.4;
 /** Heat at or above which a child is promote-eligible (hot). */
 export const MEMORY_HOT_HEAT_THRESHOLD = 1.5;
 
-/** Maximum cold-eligible merge pairs per maintenance pass. */
-export const MEMORY_MAINTENANCE_MERGE_BOUND = 3;
+/** Maximum cold-eligible merge pairs per consolidation pass. */
+export const MEMORY_CONSOLIDATION_MERGE_BOUND = 3;
 
 /** Hard ceiling on synthesizer navigation steps per answer. */
 export const MEMORY_SYNTHESIZER_MAX_STEPS = 8;
@@ -74,10 +74,10 @@ export const MEMORY_SYNTHESIZER_ANSWER_BUDGET = 2000;
 export const MEMORY_BRIEFING_INDEX_MAX_LINES = 50;
 
 /** Fresh summaries are merge-ineligible for this many activity generations. */
-export const MEMORY_MAINTENANCE_SUMMARY_GRACE_GENERATIONS = 3;
+export const MEMORY_CONSOLIDATION_SUMMARY_GRACE_GENERATIONS = 3;
 
 /** Consecutive compaction rejections before the deterministic fallback applies. */
-export const MEMORY_MAINTENANCE_MAX_ATTEMPTS = 3;
+export const MEMORY_CONSOLIDATION_MAX_ATTEMPTS = 3;
 
 /** Truncation cap on credited sources per synthesized answer. */
 export const MEMORY_SYNTHESIZER_MAX_SOURCES = 6;
@@ -88,10 +88,10 @@ export const MEMORY_SYNTHESIZER_NAV_RESERVE = 256;
 /** Rough tokens reserved for framing + request inside the synthesizer envelope. */
 export const MEMORY_SYNTHESIZER_FRAMING_BUDGET = 512;
 
-/** Default automatic learning cadence: settled turns. */
+/** Default automatic dreaming cadence: settled turns. */
 export const MEMORY_DEFAULT_MIN_TURNS = 10;
 
-/** Default automatic learning cadence: minutes since last successful run. */
+/** Default automatic dreaming cadence: minutes since last successful run. */
 export const MEMORY_DEFAULT_MIN_MINUTES = 120;
 
 /** Novelty heat boost for newly activated memories. */
@@ -113,7 +113,7 @@ export const MEMORY_HEAT_DECAY = 0.85;
 /** Weight of one recall event before decay. */
 export const MEMORY_RECALL_EVENT_WEIGHT = 1.0;
 
-/** Stale learning-run claim threshold (ms). */
+/** Stale dream-run claim threshold (ms). */
 export const MEMORY_STALE_RUN_MS = 60 * 60 * 1000;
 
 /** SQLite busy timeout (ms). */
@@ -128,7 +128,7 @@ export const MEMORY_BRIEFING_CUSTOM_TYPE = "pi-dream-briefing";
 /** Custom entry type for human audit list/open output (not LLM context). */
 export const MEMORY_AUDIT_CUSTOM_TYPE = "pi-dream-audit";
 
-/** Environment flag set on detached learner children. */
+/** Environment flag set on detached dreamer children. */
 export const MEMORY_CHILD_ENV = "PI_DREAM_CHILD";
 
 /** Test-only override for the storage root under ~/.pi/agent/dream. */
@@ -149,10 +149,10 @@ export const MEMORY_COMPLETION_TIMEOUT_MS = 30_000;
 /** Maximum session JSONL bytes read for discovery/header checks. */
 export const MEMORY_SESSION_MAX_BYTES = 64 * 1024 * 1024;
 
-/** Default page size for learner session paging. */
+/** Default page size for dreamer session paging. */
 export const MEMORY_SESSION_PAGE_DEFAULT = 40;
 
-/** Maximum page size for learner session paging. */
+/** Maximum page size for dreamer session paging. */
 export const MEMORY_SESSION_PAGE_MAX = 200;
 
 /** Default page size for memory_open /memory open children. */
@@ -242,15 +242,15 @@ export interface SourceSessionRow {
   completedAt: string;
 }
 
-export type LearningRunStatus = "claimed" | "running" | "completed" | "failed";
+export type DreamRunStatus = "claimed" | "running" | "completed" | "failed";
 
-export type LearningRunTrigger = "auto" | "manual";
+export type DreamRunTrigger = "auto" | "manual";
 
-export interface LearningRunRow {
+export interface DreamRunRow {
   id: string;
-  trigger: LearningRunTrigger;
+  trigger: DreamRunTrigger;
   model: string | null;
-  status: LearningRunStatus;
+  status: DreamRunStatus;
   startedAt: string;
   finishedAt: string | null;
   errorText: string | null;
@@ -266,7 +266,7 @@ export interface WorkspaceStateRow {
 }
 
 /** Structured summary create/update operation; updates carry the observed version. */
-export type MemoryLearnerSummaryOperation =
+export type MemoryDreamerSummaryOperation =
   | {
       op: "summarize";
       /** Create a summary and optionally expose it to later in-commit operations. */
@@ -276,7 +276,7 @@ export type MemoryLearnerSummaryOperation =
       text: string;
       /** Prefixed M:/S: ids or in-commit temp refs from create/summarize. */
       memberIds: string[];
-      /** Why the maintenance pass planned this merge (audit only). */
+      /** Why the consolidation pass planned this merge (audit only). */
       reason?: "cold" | "budget";
     }
   | {
@@ -288,11 +288,11 @@ export type MemoryLearnerSummaryOperation =
       text: string;
       /** Prefixed M:/S: ids or in-commit temp refs from create/summarize. */
       memberIds: string[];
-      /** Why the maintenance pass planned this merge (audit only). */
+      /** Why the consolidation pass planned this merge (audit only). */
       reason?: "cold" | "budget";
     };
 
-export type MemoryLearnerOperation =
+export type MemoryDreamerOperation =
   | {
       op: "create";
       tempRef: string;
@@ -346,26 +346,26 @@ export type MemoryLearnerOperation =
     }
   | {
       op: "link";
-      relation: MemoryLearnerLinkRelation;
+      relation: MemoryDreamerLinkRelation;
       /** Prefixed M:/S: ids or in-commit temp refs. */
       fromId: string;
       toId: string;
     }
-  | MemoryLearnerSummaryOperation
+  | MemoryDreamerSummaryOperation
   | { op: "no_op"; reason?: string };
 
-export interface MemoryLearningSessionPlan {
-  operations: MemoryLearnerOperation[];
+export interface MemoryDreamSessionPlan {
+  operations: MemoryDreamerOperation[];
 }
 
-export interface MemoryLearningCommitInput {
+export interface MemoryDreamCommitInput {
   runId: string;
   sourceSessionId: string;
   sessionPath: string;
   cwd: string;
   processedMtimeMs: number;
   contentHash: string | null;
-  plan: MemoryLearningSessionPlan;
+  plan: MemoryDreamSessionPlan;
 }
 
 /** Parse a public prefixed node id into type + integer. */

@@ -13,7 +13,3 @@ export function loadMemoryPromptFile(name: string): string | undefined {
 export function loadMemorySynthesizerPrompt(): string | undefined {
   return loadMemoryPromptFile("memory-synthesizer.md");
 }
-
-export function loadMemoryLearnerPrompt(): string | undefined {
-  return loadMemoryPromptFile("memory-learner.md");
-}

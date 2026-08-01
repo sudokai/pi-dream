@@ -16,5 +16,5 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
-      - run: npm run eval:learning
+      - run: npm run eval:dream
       - run: npm run eval:recall

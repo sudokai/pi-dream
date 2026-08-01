@@ -5,7 +5,7 @@ import {
   openMemoryDatabaseAtPath,
 } from "./memory-database.ts";
 import { acquireMemoryRunClaim } from "./memory-run-claim.ts";
-import { commitMemoryLearningSession } from "./memory-repository.ts";
+import { commitMemoryDreamSession } from "./memory-repository.ts";
 import { retireMemoryNode } from "./memory-graph.ts";
 import {
   estimateTopLayerTokens,
@@ -38,7 +38,7 @@ function createMemory(
   sessionId: string,
   text: string,
 ): string {
-  commitMemoryLearningSession(db, {
+  commitMemoryDreamSession(db, {
     runId,
     sourceSessionId: sessionId,
     sessionPath: `/tmp/${sessionId}.jsonl`,
@@ -72,7 +72,7 @@ function summarize(
   text: string,
   memberIds: string[],
 ): string {
-  commitMemoryLearningSession(db, {
+  commitMemoryDreamSession(db, {
     runId,
     sourceSessionId: sessionId,
     sessionPath: `/tmp/${sessionId}.jsonl`,
@@ -113,7 +113,7 @@ test("roots exclude non-root and conflicted nodes", async () => {
     assert.equal(isMemoryRoot(db, "summary", 1), true);
 
     // Conflict the root memory: it must disappear from roots.
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s4",
       sessionPath: "/tmp/s4.jsonl",

@@ -6,18 +6,18 @@ import {
 } from "./memory-database.ts";
 import { acquireMemoryRunClaim } from "./memory-run-claim.ts";
 import {
-  commitMemoryLearningOps,
-  commitMemoryLearningSession,
+  commitMemoryDreamOps,
+  commitMemoryDreamSession,
 } from "./memory-repository.ts";
 import {
   buildMemoryFallbackSummaryText,
-  clearMemoryMaintenanceAttempt,
-  getMemoryMaintenanceAttempts,
-  hasMemoryMaintenanceCandidates,
-  incrementMemoryMaintenanceAttempt,
-  memoryMaintenanceMergeKey,
-  planMemoryMaintenance,
-} from "./memory-maintenance.ts";
+  clearMemoryConsolidationAttempt,
+  getMemoryConsolidationAttempts,
+  hasMemoryConsolidationCandidates,
+  incrementMemoryConsolidationAttempt,
+  memoryConsolidationMergeKey,
+  planMemoryConsolidation,
+} from "./memory-consolidation.ts";
 import {
   getMemoryActivityGeneration,
   incrementMemoryActivityGeneration,
@@ -78,7 +78,7 @@ function createMemory(
   sessionId: string,
   text: string,
 ): string {
-  commitMemoryLearningSession(db, {
+  commitMemoryDreamSession(db, {
     runId,
     sourceSessionId: sessionId,
     sessionPath: `/tmp/${sessionId}.jsonl`,
@@ -136,7 +136,7 @@ test("cold roots pair by nearest neighbor, deterministically, with no floor", as
     createMemory(db, runId, "s3", "CI runs on Ubuntu");
     createMemory(db, runId, "s4", "Prefer tabs everywhere");
 
-    const plan = await planMemoryMaintenance(db, {
+    const plan = await planMemoryConsolidation(db, {
       config: config(),
       embed: fakeEmbed,
     });
@@ -150,7 +150,7 @@ test("cold roots pair by nearest neighbor, deterministically, with no floor", as
     assert.ok(first.similarity > 0.9);
     assert.equal(first.outputCapTokens, first.baselineTokens - 1);
 
-    const again = await planMemoryMaintenance(db, {
+    const again = await planMemoryConsolidation(db, {
       config: config(),
       embed: fakeEmbed,
     });
@@ -171,7 +171,7 @@ test("hot roots never merge unless the budget override forces it", async () => {
     makeHot(db, "memory", Number(m3.slice(2)));
     makeHot(db, "memory", Number(m4.slice(2)));
 
-    const plan = await planMemoryMaintenance(db, {
+    const plan = await planMemoryConsolidation(db, {
       config: config(),
       embed: fakeEmbed,
     });
@@ -182,8 +182,8 @@ test("hot roots never merge unless the budget override forces it", async () => {
     );
 
     // Tiny budget: the override merges warm roots too and ignores the bound.
-    const forced = await planMemoryMaintenance(db, {
-      config: config({ briefingTokenBudget: 10, maintenanceMergeBound: 1 }),
+    const forced = await planMemoryConsolidation(db, {
+      config: config({ briefingTokenBudget: 10, consolidationMergeBound: 1 }),
       embed: fakeEmbed,
     });
     const keys = forced.merges.map((m) => m.key);
@@ -199,7 +199,7 @@ test("hot roots never merge unless the budget override forces it", async () => {
     );
     assert.ok(
       forced.merges.length > 1,
-      "budget override is not subject to maintenanceMergeBound (1)",
+      "budget override is not subject to consolidationMergeBound (1)",
     );
   });
 });
@@ -209,8 +209,8 @@ test("merge bound caps cold-eligible selection only", async () => {
     for (let i = 1; i <= 6; i++) {
       createMemory(db, runId, `s${i}`, `Fact number ${i} about pnpm builds`);
     }
-    const plan = await planMemoryMaintenance(db, {
-      config: config({ maintenanceMergeBound: 2 }),
+    const plan = await planMemoryConsolidation(db, {
+      config: config({ consolidationMergeBound: 2 }),
       embed: fakeEmbed,
     });
     assert.equal(plan.merges.length, 2, "cold selection capped at the bound");
@@ -225,7 +225,7 @@ test("fresh summaries are merge-ineligible during the grace window", async () =>
     createMemory(db, runId, "s3", "CI runs on Ubuntu");
     createMemory(db, runId, "s4", "Prefer tabs everywhere");
     // Wrap m1+m2 into a summary (created at generation 0, in grace).
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s5",
       sessionPath: "/tmp/s5.jsonl",
@@ -251,7 +251,7 @@ test("fresh summaries are merge-ineligible during the grace window", async () =>
     ).text;
     void summaryText;
 
-    const g0 = await planMemoryMaintenance(db, {
+    const g0 = await planMemoryConsolidation(db, {
       config: config(),
       embed: fakeEmbed,
     });
@@ -268,7 +268,7 @@ test("fresh summaries are merge-ineligible during the grace window", async () =>
     incrementMemoryActivityGeneration(db);
     incrementMemoryActivityGeneration(db);
     incrementMemoryActivityGeneration(db);
-    const g3 = await planMemoryMaintenance(db, {
+    const g3 = await planMemoryConsolidation(db, {
       config: config(),
       embed: fakeEmbed,
     });
@@ -286,7 +286,7 @@ test("promote candidates require hot children; at most one per parent; no ancest
     const m1 = createMemory(db, runId, "s1", "Use tabs for indentation");
     const m2 = createMemory(db, runId, "s2", "No emoji in commits");
     const m3 = createMemory(db, runId, "s3", "CI runs on Ubuntu");
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s4",
       sessionPath: "/tmp/s4.jsonl",
@@ -306,7 +306,7 @@ test("promote candidates require hot children; at most one per parent; no ancest
     // Two hot children of the same parent: at most one promote per parent.
     makeHot(db, "memory", 1);
     makeHot(db, "memory", 2);
-    let plan = await planMemoryMaintenance(db, {
+    let plan = await planMemoryConsolidation(db, {
       config: config(),
       embed: fakeEmbed,
     });
@@ -322,7 +322,7 @@ test("promote candidates require hot children; at most one per parent; no ancest
     // Nested: S:2 contains M:4; S:1 contains S:2. A hot S:2 beats a hot M:4
     // (M:4 is a descendant of the promoted S:2).
     const m4 = createMemory(db, runId, "s5", "Prefer tabs everywhere");
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s6",
       sessionPath: "/tmp/s6.jsonl",
@@ -340,7 +340,7 @@ test("promote candidates require hot children; at most one per parent; no ancest
       },
     });
     // Attach S:2 under S:1 via extend.
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s7",
       sessionPath: "/tmp/s7.jsonl",
@@ -375,7 +375,7 @@ test("promote candidates require hot children; at most one per parent; no ancest
       source: "open",
     });
     makeHot(db, "memory", 4);
-    plan = await planMemoryMaintenance(db, {
+    plan = await planMemoryConsolidation(db, {
       config: config(),
       embed: fakeEmbed,
     });
@@ -391,12 +391,12 @@ test("promote candidates require hot children; at most one per parent; no ancest
   });
 });
 
-test("conflicted and retired nodes never appear in maintenance", async () => {
+test("conflicted and retired nodes never appear in consolidation", async () => {
   await withClaimedDb(async (db, runId) => {
     const m1 = createMemory(db, runId, "s1", "Use tabs for indentation");
     const m2 = createMemory(db, runId, "s2", "No emoji in commits");
     const m3 = createMemory(db, runId, "s3", "CI runs on Ubuntu");
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s4",
       sessionPath: "/tmp/s4.jsonl",
@@ -405,7 +405,7 @@ test("conflicted and retired nodes never appear in maintenance", async () => {
       contentHash: "h-s4",
       plan: { operations: [{ op: "conflict", memoryIds: [m1 as never] }] },
     });
-    const plan = await planMemoryMaintenance(db, {
+    const plan = await planMemoryConsolidation(db, {
       config: config(),
       embed: fakeEmbed,
     });
@@ -416,7 +416,7 @@ test("conflicted and retired nodes never appear in maintenance", async () => {
         Number(id.slice(2)),
       );
     }
-    const empty = await planMemoryMaintenance(db, {
+    const empty = await planMemoryConsolidation(db, {
       config: config(),
       embed: fakeEmbed,
     });
@@ -436,7 +436,7 @@ test("commit rejects non-compacting merges alone without vetoing the batch", asy
     // Budget 12: only genuinely compacting merges fit. All three texts pass
     // the per-op strict-compaction rule, but together the layer stays over.
     const cfg = config({ briefingTokenBudget: 12 });
-    const result = commitMemoryLearningOps(db, {
+    const result = commitMemoryDreamOps(db, {
       runId,
       operations: [
         {
@@ -467,7 +467,7 @@ test("commit rejects non-compacting merges alone without vetoing the batch", asy
     );
     const rejectedKey = result.rejectedKeys[0]!.key;
     assert.equal(rejectedKey, mergeKey(1, 4));
-    assert.equal(getMemoryMaintenanceAttempts(db, rejectedKey), 1);
+    assert.equal(getMemoryConsolidationAttempts(db, rejectedKey), 1);
     const summaries = db
       .prepare(`SELECT id, state FROM summaries`)
       .all() as Array<{ id: number; state: string }>;
@@ -477,7 +477,7 @@ test("commit rejects non-compacting merges alone without vetoing the batch", asy
       "partial progress: rejected op not applied",
     );
     // The rejected candidate applies on the next run (attempts < K).
-    const retry = commitMemoryLearningOps(db, {
+    const retry = commitMemoryDreamOps(db, {
       runId,
       operations: [
         {
@@ -489,7 +489,7 @@ test("commit rejects non-compacting merges alone without vetoing the batch", asy
       config: cfg,
     });
     assert.equal(retry.coveredKeys.length, 1);
-    assert.equal(getMemoryMaintenanceAttempts(db, rejectedKey), 0);
+    assert.equal(getMemoryConsolidationAttempts(db, rejectedKey), 0);
   });
 });
 
@@ -498,14 +498,14 @@ test("K consecutive rejections apply the deterministic fallback with an audit en
     createMemory(db, runId, "s1", "Use tabs for indentation");
     createMemory(db, runId, "s2", "No emoji in commits");
     const cfg = config({ briefingTokenBudget: 5 });
-    const key = memoryMaintenanceMergeKey(
+    const key = memoryConsolidationMergeKey(
       { nodeType: "memory", nodeId: 1 },
       { nodeType: "memory", nodeId: 2 },
     );
     // Two prior rejections (attempts 2); the next rejection is the K-th.
-    incrementMemoryMaintenanceAttempt(db, key, 0);
-    incrementMemoryMaintenanceAttempt(db, key, 0);
-    const result = commitMemoryLearningOps(db, {
+    incrementMemoryConsolidationAttempt(db, key, 0);
+    incrementMemoryConsolidationAttempt(db, key, 0);
+    const result = commitMemoryDreamOps(db, {
       runId,
       operations: [
         {
@@ -518,7 +518,7 @@ test("K consecutive rejections apply the deterministic fallback with an audit en
     });
     assert.equal(result.fallbackKeys.length, 1);
     assert.deepEqual(result.fallbackKeys, [key]);
-    assert.equal(getMemoryMaintenanceAttempts(db, key), 0, "counter resets");
+    assert.equal(getMemoryConsolidationAttempts(db, key), 0, "counter resets");
     const fallbackAudit = result.auditEntries.find((a) =>
       a.text.includes("fallback merge"),
     );
@@ -546,11 +546,11 @@ test("K consecutive rejections apply the deterministic fallback with an audit en
   });
 });
 
-test("commitMemoryLearningOps rejects session-bound ops", async () => {
+test("commitMemoryDreamOps rejects session-bound ops", async () => {
   await withClaimedDb((db, runId) => {
     assert.throws(
       () =>
-        commitMemoryLearningOps(db, {
+        commitMemoryDreamOps(db, {
           runId,
           operations: [
             {
@@ -567,7 +567,7 @@ test("commitMemoryLearningOps rejects session-bound ops", async () => {
     );
     assert.throws(
       () =>
-        commitMemoryLearningOps(db, {
+        commitMemoryDreamOps(db, {
           runId,
           operations: [
             { op: "link", relation: "related_to", fromId: "M:1", toId: "M:2" },
@@ -585,7 +585,7 @@ test("a rewritten summary is re-embedded before the next pairing pass", async ()
     const m2 = createMemory(db, runId, "s2", "No emoji in commits");
     createMemory(db, runId, "s3", "CI runs on Ubuntu");
     const s1 = (() => {
-      commitMemoryLearningSession(db, {
+      commitMemoryDreamSession(db, {
         runId,
         sourceSessionId: "s4",
         sessionPath: "/tmp/s4.jsonl",
@@ -606,7 +606,7 @@ test("a rewritten summary is re-embedded before the next pairing pass", async ()
     })();
     void s1;
     // Rewrite S:1 via extend (new text -> stale embedding content hash).
-    commitMemoryLearningOps(db, {
+    commitMemoryDreamOps(db, {
       runId,
       operations: [
         {
@@ -620,7 +620,7 @@ test("a rewritten summary is re-embedded before the next pairing pass", async ()
       config: config(),
     });
     const embedded: string[] = [];
-    await planMemoryMaintenance(db, {
+    await planMemoryConsolidation(db, {
       config: config(),
       embed: async (texts) => {
         embedded.push(...texts);
@@ -634,7 +634,7 @@ test("a rewritten summary is re-embedded before the next pairing pass", async ()
   });
 });
 
-test("hasMemoryMaintenanceCandidates is pure SQL/heat and covers the over-budget state", async () => {
+test("hasMemoryConsolidationCandidates is pure SQL/heat and covers the over-budget state", async () => {
   await withClaimedDb(async (db, runId) => {
     const m1 = createMemory(db, runId, "s1", "Use tabs for indentation");
     const m2 = createMemory(db, runId, "s2", "No emoji in commits");
@@ -643,11 +643,11 @@ test("hasMemoryMaintenanceCandidates is pure SQL/heat and covers the over-budget
     makeHot(db, "memory", 1);
     makeHot(db, "memory", 2);
     assert.equal(
-      hasMemoryMaintenanceCandidates(db, { config: config() }),
+      hasMemoryConsolidationCandidates(db, { config: config() }),
       false,
     );
     assert.equal(
-      hasMemoryMaintenanceCandidates(db, {
+      hasMemoryConsolidationCandidates(db, {
         config: config({ briefingTokenBudget: 5 }),
       }),
       true,
@@ -655,7 +655,7 @@ test("hasMemoryMaintenanceCandidates is pure SQL/heat and covers the over-budget
     );
 
     // And the planner (child side) actually merges those warm roots.
-    const plan = await planMemoryMaintenance(db, {
+    const plan = await planMemoryConsolidation(db, {
       config: config({ briefingTokenBudget: 5 }),
       embed: fakeEmbed,
     });
@@ -673,22 +673,22 @@ test("candidates at the attempt bound no longer spawn doomed runs", async () => 
   await withClaimedDb(async (db, runId) => {
     createMemory(db, runId, "s1", "Use tabs for indentation");
     createMemory(db, runId, "s2", "No emoji in commits");
-    const key = memoryMaintenanceMergeKey(
+    const key = memoryConsolidationMergeKey(
       { nodeType: "memory", nodeId: 1 },
       { nodeType: "memory", nodeId: 2 },
     );
     for (let i = 0; i < 3; i++) {
-      incrementMemoryMaintenanceAttempt(db, key, 0);
+      incrementMemoryConsolidationAttempt(db, key, 0);
     }
     assert.equal(
-      hasMemoryMaintenanceCandidates(db, {
+      hasMemoryConsolidationCandidates(db, {
         config: config({ briefingTokenBudget: 1 }),
       }),
       false,
       "the only pairable pair is at the attempt bound",
     );
     // The planner skips the pair too.
-    const plan = await planMemoryMaintenance(db, {
+    const plan = await planMemoryConsolidation(db, {
       config: config({ briefingTokenBudget: 1 }),
       embed: fakeEmbed,
     });
@@ -704,7 +704,7 @@ test("promote tips the layer over budget and the pass compensates with budget me
     createMemory(db, runId, "s4", "Prefer tabs everywhere");
     createMemory(db, runId, "s5", "Build uses pnpm");
     // S:1 wraps m1+m2 (compacting text).
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s6",
       sessionPath: "/tmp/s6.jsonl",
@@ -727,8 +727,8 @@ test("promote tips the layer over budget and the pass compensates with budget me
     incrementMemoryActivityGeneration(db);
     incrementMemoryActivityGeneration(db);
     makeHot(db, "memory", 1);
-    const cfg = config({ briefingTokenBudget: 6, maintenanceMergeBound: 1 });
-    const plan = await planMemoryMaintenance(db, {
+    const cfg = config({ briefingTokenBudget: 6, consolidationMergeBound: 1 });
+    const plan = await planMemoryConsolidation(db, {
       config: cfg,
       embed: fakeEmbed,
     });
@@ -764,12 +764,12 @@ test("fallback text satisfies strict compaction by construction", () => {
   assert.ok(estimateMemoryTextTokens(extended) < extBaseline);
 });
 
-test("maintenance commits require claim ownership", async () => {
+test("consolidation commits require claim ownership", async () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     assert.throws(
       () =>
-        commitMemoryLearningOps(db, {
+        commitMemoryDreamOps(db, {
           runId: "no-such-run",
           operations: [],
           config: config(),
@@ -787,7 +787,7 @@ test("promote rewrite failure accumulates attempts and falls back to the old tex
     const m2 = createMemory(db, runId, "s2", "No emoji in commits");
     const m3 = createMemory(db, runId, "s3", "CI runs on Ubuntu");
     const m4 = createMemory(db, runId, "s4", "Prefer tabs everywhere");
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s5",
       sessionPath: "/tmp/s5.jsonl",
@@ -805,12 +805,12 @@ test("promote rewrite failure accumulates attempts and falls back to the old tex
       },
     });
     const promoteKey = "promote:memory:2:1";
-    clearMemoryMaintenanceAttempt(db, promoteKey);
-    incrementMemoryMaintenanceAttempt(db, promoteKey, 0);
-    incrementMemoryMaintenanceAttempt(db, promoteKey, 0);
+    clearMemoryConsolidationAttempt(db, promoteKey);
+    incrementMemoryConsolidationAttempt(db, promoteKey, 0);
+    incrementMemoryConsolidationAttempt(db, promoteKey, 0);
     const badText =
       "A very long tooling overview that grows the parent summary";
-    const result = commitMemoryLearningOps(db, {
+    const result = commitMemoryDreamOps(db, {
       runId,
       operations: [
         {
@@ -833,7 +833,7 @@ test("promote rewrite failure accumulates attempts and falls back to the old tex
         (a) => a.text.includes("fallback") || a.text.includes("promote M:2"),
       ),
     );
-    assert.equal(getMemoryMaintenanceAttempts(db, promoteKey), 0);
+    assert.equal(getMemoryConsolidationAttempts(db, promoteKey), 0);
     const parent = db
       .prepare(
         `SELECT v.text FROM summaries s
@@ -852,7 +852,7 @@ test("a model-authored extend rewrite resets label_source to 'model'", async () 
   await withClaimedDb(async (db, runId) => {
     const m1 = createMemory(db, runId, "s1", "Use tabs for indentation");
     createMemory(db, runId, "s2", "No emoji in commits");
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s3",
       sessionPath: "/tmp/s3.jsonl",
@@ -873,7 +873,7 @@ test("a model-authored extend rewrite resets label_source to 'model'", async () 
     db.prepare(
       `UPDATE summaries SET label_source = 'fallback' WHERE id = 1`,
     ).run();
-    const result = commitMemoryLearningOps(db, {
+    const result = commitMemoryDreamOps(db, {
       runId,
       operations: [
         {

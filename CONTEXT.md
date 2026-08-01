@@ -1,16 +1,16 @@
 # pi-dream domain language
 
-Workspace-scoped **adaptive memory** for pi. Dream learns durable user preferences and workspace facts from completed sessions, stores them in an auditable append-oriented SQLite graph, and serves them through a **tree** whose top layer is synthesized into a visible first-turn briefing.
+Workspace-scoped **adaptive memory** for pi. Dream extracts durable user preferences and workspace facts from completed sessions, stores them in an auditable append-oriented SQLite graph, and serves them through a **tree** whose top layer is synthesized into a visible first-turn briefing.
 
 ## Core terms
 
-**Observation**: An immutable extracted assertion — a concise user preference or workspace fact produced by the learner, plus only the source-session identity and timestamps needed for recurrence and idempotency. Observations never store transcript excerpts or sequence ranges. Prefixed API id: `O:<id>`.
+**Observation**: An immutable extracted assertion — a concise user preference or workspace fact produced by the dreamer, plus only the source-session identity and timestamps needed for recurrence and idempotency. Observations never store transcript excerpts or sequence ranges. Prefixed API id: `O:<id>`.
 
 **Memory**: A stable synthesized node built from one or more observations. Current text is a rebuildable projection of append-only **memory versions**. Prefixed API id: `M:<id>`.
 
 **Memory version**: An immutable text revision of a memory, linked to its predecessor. Ordinary supersession and forget never delete versions.
 
-**Summary**: A graph node that groups related memories (and sometimes other summaries) for progressive drill-down. Summary text is also versioned; a summary may carry `label_source = 'fallback'` when its text was produced by the deterministic maintenance fallback. Prefixed API id: `S:<id>`.
+**Summary**: A graph node that groups related memories (and sometimes other summaries) for progressive drill-down. Summary text is also versioned; a summary may carry `label_source = 'fallback'` when its text was produced by the deterministic consolidation fallback. Prefixed API id: `S:<id>`.
 
 **Graph edge**: A typed link between memory/summary nodes. Relation types: `contains`, `related_to`, `supersedes`, `conflicts_with`. Containment (`contains`) is created only by validated `summarize`/`promote`/lifecycle ops — never by `link` — and must remain acyclic; lateral links may form cycles. Edges carry a lifecycle state (`active`/`retired`): retiring an edge keeps the row for audit but removes it from the live tree.
 
@@ -18,13 +18,17 @@ Workspace-scoped **adaptive memory** for pi. Dream learns durable user preferenc
 
 **Tree root**: A node with no active `contains` edge pointing at it from an active parent summary (edges from retired parents do not block rootness). Conflicted, superseded, and retired nodes are never roots.
 
-**Top layer**: The set of all roots, capped by an estimated-token budget (`briefingTokenBudget`, 8000). The cap is enforced by maintenance — never by read-time truncation; an over-budget layer fails reads closed with an audit entry.
+**Top layer**: The set of all roots, capped by an estimated-token budget (`briefingTokenBudget`, 8000). The cap is enforced by consolidation — never by read-time truncation; an over-budget layer fails reads closed with an audit entry.
 
-**Maintenance pass**: A deterministic, cadence-scheduled consolidation phase (post-ingestion in every learner run, plus maintenance-only runs gated by `agent_settled`): roots whose heat is at or below the **cold threshold** (0.4) are paired by semantic nearest-neighbor (cosine over stored MiniLM embeddings, no similarity floor) and merged into summaries; if the top layer exceeds its budget, additional coldest roots are merged regardless of warmth (budget override). Fresh summaries are merge-ineligible inside a grace window of 3 activity generations. Model-written summary texts are repository-validated for strict measured compaction; consecutive rejections are counted per candidate and a deterministic fallback text applies at the third rejection.
+**Consolidation pass**: A deterministic, cadence-scheduled consolidation phase (post-ingestion in every dream, plus dream-only runs gated by `agent_settled`): roots whose heat is at or below the **cold threshold** (0.4) are paired by semantic nearest-neighbor (cosine over stored MiniLM embeddings, no similarity floor) and merged into summaries; if the top layer exceeds its budget, additional coldest roots are merged regardless of warmth (budget override). Fresh summaries are merge-ineligible inside a grace window of 3 activity generations. Model-written summary texts are repository-validated for strict measured compaction; consecutive rejections are counted per candidate and a deterministic fallback text applies at the third rejection.
+
+**Consolidation candidates**: The merge pairs and promote candidates a consolidation pass may cover. A dream is held to the candidates it was shown; a dream-only run is gated by their existence.
+
+**Ingestion**: The phase of a dream that reads source sessions and extracts observations and memories (the dreamer "mines" sessions). Consolidation runs post-ingestion; a dream-only run skips ingestion entirely.
 
 **Promote (resurfacing)**: Moving a hot child — heat at or above the **hot threshold** (1.5) — back out of its parent summary: the `contains` edge is retired, the parent is rewritten without it (new summary version) or retired when it drops to ≤ 1 member, resurfacing remaining active children as roots. The hysteresis gap between the cold and hot thresholds prevents flapping.
 
-**Synthesizer**: A single shared LLM loop serving both the first-turn briefing and `memory_search`. It reads the top layer, opens summaries only when it needs more detail (bounded to 8 steps within a 16000-token serialized-context envelope), refreshes its context after every model result (the learner can mutate the DB mid-loop), and returns `{answer, sources, openedSummaryIds}`. Only the synthesized answer is shown; any failure skips silently with an audit entry (fail-closed, no raw tree fallback).
+**Synthesizer**: A single shared LLM loop serving both the first-turn briefing and `memory_search`. It reads the top layer, opens summaries only when it needs more detail (bounded to 8 steps within a 16000-token serialized-context envelope), refreshes its context after every model result (the dreamer can mutate the DB mid-loop), and returns `{answer, sources, openedSummaryIds}`. Only the synthesized answer is shown; any failure skips silently with an audit entry (fail-closed, no raw tree fallback).
 
 **Recurrence**: The count of distinct source-session observations linked to a memory (`COUNT(DISTINCT source_session_id)` through `memory_observations`). Never a separately mutated counter.
 
@@ -34,7 +38,9 @@ Workspace-scoped **adaptive memory** for pi. Dream learns durable user preferenc
 
 **Novelty**: Temporary heat given to a newly activated memory so it has a chance to surface. Passive presence does not renew novelty. Memories mined from sessions older than the source-age cutoff enter cold.
 
-**Learning run**: A detached, extension-isolated pi child that mines eligible workspace sessions and commits validated operations per source session, plus maintenance operations. Tracked in SQLite for single-flight claims and parent notifications. A maintenance-only run has a zero-session manifest and is gated by the deterministic candidate predicate instead of transcripts.
+**Dream**: A unit of background work: a detached run that ingests eligible workspace sessions (mining) and then runs the consolidation pass. Executed by the **dreamer**; tracked in SQLite for single-flight claims and parent notifications, and surfaced to the user as a run (`run <id>`). A dream-only run has a zero-session manifest — no ingestion — and is gated by the deterministic candidate predicate instead of transcripts. The product is named after this unit of work; "a dream" is always one run.
+
+**Dreamer**: The detached `--no-session` pi child process that executes a dream. It holds no session of its own, so it can never mine itself.
 
 **Briefing**: The visible first-turn custom message (`customType: "pi-dream-briefing"`, `display: true`) containing the synthesized answer plus a one-line index of the remaining top-layer roots. Never hidden system-prompt content; never a raw dump of stored nodes.
 
@@ -48,16 +54,16 @@ Workspace-scoped **adaptive memory** for pi. Dream learns durable user preferenc
 
 Memory/summary `state`:
 
-- `active` — eligible for the top layer and maintenance
-- `conflicted` — ambiguous contradiction; excluded from the top layer and from maintenance until resolved
+- `active` — eligible for the top layer and consolidation
+- `conflicted` — ambiguous contradiction; excluded from the top layer and from consolidation until resolved
 - `superseded` — replaced by a newer memory; excluded; history retained
 - `retired` — soft-forgotten via `/memory forget`; excluded; provenance retained
 
 When a node becomes conflicted, superseded, or retired, its incoming `contains` edges are retired and every active ancestor summary whose member set contains the inactive node is retired with its outgoing edges, resurfacing remaining active children as roots (lifecycle reconciliation).
 
-## Learner operations
+## Dreamer operations
 
-The detached learner submits only structured ops: `create`, `reinforce`, `revise`, `supersede`, `conflict`, `link`, `summarize`, `promote`, or `no_op`. Code validates references, text shape, strict-tree invariants (summarize members must be roots; `link` never creates `contains`), strict measured compaction for summary text, and checkpoints before one atomic transaction commits a source session. Maintenance commits (`summarize`/`promote` only) additionally re-measure the top layer with the actual written texts and reject non-compacting merges with a persisted attempt counter; the third consecutive rejection applies the deterministic fallback text.
+The detached dreamer submits only structured ops: `create`, `reinforce`, `revise`, `supersede`, `conflict`, `link`, `summarize`, `promote`, or `no_op`. Code validates references, text shape, strict-tree invariants (summarize members must be roots; `link` never creates `contains`), strict measured compaction for summary text, and checkpoints before one atomic transaction commits a source session. Consolidation commits (`summarize`/`promote` only) additionally re-measure the top layer with the actual written texts and reject non-compacting merges with a persisted attempt counter; the third consecutive rejection applies the deterministic fallback text.
 
 ## Out of vocabulary
 

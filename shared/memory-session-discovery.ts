@@ -1,10 +1,10 @@
 /**
- * Discover eligible workspace sessions for learning.
+ * Discover eligible workspace sessions for dreaming.
  * Re-exports workspace listing helpers and builds run manifests.
  *
  * Each manifest entry carries an immutable byte snapshot of the session taken
- * at discovery time plus its sha256. The detached learner reads only the
- * snapshot, so live appends made while the learner runs are never mined and
+ * at discovery time plus its sha256. The detached dreamer reads only the
+ * snapshot, so live appends made while the dreamer runs are never mined and
  * identical content is never re-processed.
  */
 
@@ -28,7 +28,7 @@ export {
   type MemorySessionFileInfo,
 };
 
-export interface MemoryLearningManifestEntry {
+export interface MemoryDreamManifestEntry {
   sessionId: string;
   /** Live session file path (recorded in the checkpoint for provenance). */
   sessionPath: string;
@@ -75,7 +75,7 @@ function hashSessionFile(filePath: string): string | null {
 }
 
 /**
- * Whether a session still needs learning, judged by checkpoint state.
+ * Whether a session still needs to be dreamed, judged by checkpoint state.
  * A newer mtime wins without hashing (the common append case). When the
  * mtime is not newer, the stored content hash is the tiebreaker: changed
  * bytes with a preserved mtime must still be discovered, while identical
@@ -97,24 +97,24 @@ function isSessionCheckpointCurrent(
  * Build a list of sessions eligible for mining: missing checkpoint, newer mtime,
  * or content that differs from the checkpoint hash (even under a preserved mtime).
  * Each entry carries an immutable byte snapshot + content hash taken now, so the
- * learner processes exactly this point-in-time content (never live appends).
+ * dreamer processes exactly this point-in-time content (never live appends).
  * Files that cannot be snapshotted are skipped.
  */
-export function buildMemoryLearningManifest(
+export function buildMemoryDreamManifest(
   db: DatabaseSync,
   cwd: string,
   workspaceId: string,
   opts: { cap?: number; snapshotDir: string },
-): MemoryLearningManifestEntry[] {
+): MemoryDreamManifestEntry[] {
   const cap = opts.cap ?? 30;
   const files = listMemoryWorkspaceSessionFiles(cwd, workspaceId, {
     includeForeignClones: true,
   });
-  const eligible: MemoryLearningManifestEntry[] = [];
+  const eligible: MemoryDreamManifestEntry[] = [];
 
   for (const file of files) {
     if (eligible.length >= cap) break;
-    const sessionId = resolveMemoryLearningSessionId(file);
+    const sessionId = resolveMemoryDreamSessionId(file);
     const checkpoint = getSourceSessionCheckpoint(db, sessionId);
     if (isSessionCheckpointCurrent(checkpoint, file)) {
       continue;
@@ -139,19 +139,19 @@ export function buildMemoryLearningManifest(
 }
 
 /** Resolve the source-session id used consistently for eligibility and checkpoints. */
-function resolveMemoryLearningSessionId(file: MemorySessionFileInfo): string {
+function resolveMemoryDreamSessionId(file: MemorySessionFileInfo): string {
   if (file.sessionId) return file.sessionId;
   const header = readMemorySessionHeader(file.path);
   return deriveMemorySessionFallbackId(file.path, header?.cwd ?? file.cwd);
 }
 
 /**
- * Return whether any workspace transcript still needs a learning checkpoint.
+ * Return whether any workspace transcript still needs a dream checkpoint.
  * This examines every eligible source, not just the newest mtime, so capped runs
  * cannot strand older transcripts behind a global watermark. Content changes
  * under a preserved mtime are detected via the checkpoint content hash.
  */
-export function hasMemoryLearningEligibleSession(
+export function hasMemoryDreamEligibleSession(
   db: DatabaseSync,
   cwd: string,
   workspaceId: string,
@@ -162,16 +162,16 @@ export function hasMemoryLearningEligibleSession(
   return files.some((file) => {
     const checkpoint = getSourceSessionCheckpoint(
       db,
-      resolveMemoryLearningSessionId(file),
+      resolveMemoryDreamSessionId(file),
     );
     return !isSessionCheckpointCurrent(checkpoint, file);
   });
 }
 
 /** Write a run manifest JSON file. */
-export function writeMemoryLearningManifest(
+export function writeMemoryDreamManifest(
   manifestPath: string,
-  entries: MemoryLearningManifestEntry[],
+  entries: MemoryDreamManifestEntry[],
 ): void {
   fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
   fs.writeFileSync(
@@ -182,16 +182,16 @@ export function writeMemoryLearningManifest(
 }
 
 /** Read a run manifest JSON file. */
-export function readMemoryLearningManifest(
+export function readMemoryDreamManifest(
   manifestPath: string,
-): MemoryLearningManifestEntry[] {
+): MemoryDreamManifestEntry[] {
   const raw = fs.readFileSync(manifestPath, "utf-8");
   const parsed = JSON.parse(raw) as {
     version?: number;
-    sessions?: Array<Partial<MemoryLearningManifestEntry>>;
+    sessions?: Array<Partial<MemoryDreamManifestEntry>>;
   };
   if (!Array.isArray(parsed.sessions)) {
-    throw new Error(`Invalid memory learning manifest: ${manifestPath}`);
+    throw new Error(`Invalid memory dream manifest: ${manifestPath}`);
   }
   for (const s of parsed.sessions) {
     if (
@@ -199,9 +199,9 @@ export function readMemoryLearningManifest(
       typeof s.contentHash !== "string"
     ) {
       throw new Error(
-        `Invalid memory learning manifest (missing snapshot): ${manifestPath}`,
+        `Invalid memory dream manifest (missing snapshot): ${manifestPath}`,
       );
     }
   }
-  return parsed.sessions as MemoryLearningManifestEntry[];
+  return parsed.sessions as MemoryDreamManifestEntry[];
 }

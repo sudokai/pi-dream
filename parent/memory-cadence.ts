@@ -1,5 +1,5 @@
 /**
- * Automatic learning cadence: turns + elapsed time + transcript advancement.
+ * Automatic dreaming cadence: turns + elapsed time + transcript advancement.
  * Evaluated on agent_settled.
  */
 
@@ -9,11 +9,11 @@ import {
   getMemoryWorkspaceState,
   updateMemoryCadenceState,
 } from "../shared/memory-repository.ts";
-import { hasMemoryLearningEligibleSession } from "../shared/memory-session-discovery.ts";
-import { hasMemoryMaintenanceCandidates } from "../shared/memory-maintenance.ts";
+import { hasMemoryDreamEligibleSession } from "../shared/memory-session-discovery.ts";
+import { hasMemoryConsolidationCandidates } from "../shared/memory-consolidation.ts";
 
 export interface MemoryCadenceEvaluation {
-  shouldLearn: boolean;
+  shouldDream: boolean;
   turnsSinceLastRun: number;
   minutesSinceLastRun: number;
   transcriptAdvanced: boolean;
@@ -22,9 +22,9 @@ export interface MemoryCadenceEvaluation {
 
 /**
  * Update turn counter on settle and evaluate the three automatic gates.
- * Does not launch learning — caller decides.
+ * Does not launch a dream — caller decides.
  */
-export function evaluateMemoryLearningCadence(
+export function evaluateMemoryDreamCadence(
   db: DatabaseSync,
   input: {
     cwd: string;
@@ -49,14 +49,14 @@ export function evaluateMemoryLearningCadence(
   // A global mtime watermark cannot represent capped runs: a newer processed
   // transcript would hide older uncheckpointed sessions. Check per-session
   // eligibility instead; the watermark remains diagnostic state only.
-  const transcriptAdvanced = hasMemoryLearningEligibleSession(
+  const transcriptAdvanced = hasMemoryDreamEligibleSession(
     db,
     input.cwd,
     input.workspaceId,
   );
-  // Maintenance-only mode: deterministic tree candidates replace the transcript
+  // Dream-only mode: deterministic tree candidates replace the transcript
   // gate (pure SQL/heat — no embedder load on the interactive settle path).
-  const maintenanceCandidates = hasMemoryMaintenanceCandidates(db, {
+  const consolidationCandidates = hasMemoryConsolidationCandidates(db, {
     config: input.config,
   });
 
@@ -70,18 +70,18 @@ export function evaluateMemoryLearningCadence(
       `minutes ${minutesSince === Number.POSITIVE_INFINITY ? "∞" : minutesSince.toFixed(1)}/${input.config.minMinutes}`,
     );
   }
-  if (!transcriptAdvanced && !maintenanceCandidates) {
+  if (!transcriptAdvanced && !consolidationCandidates) {
     reasons.push("no uncheckpointed transcripts");
   }
 
-  const shouldLearn =
+  const shouldDream =
     enabled &&
     turns >= input.config.minTurns &&
     minutesSince >= input.config.minMinutes &&
-    (transcriptAdvanced || maintenanceCandidates);
+    (transcriptAdvanced || consolidationCandidates);
 
   return {
-    shouldLearn,
+    shouldDream,
     turnsSinceLastRun: turns,
     minutesSinceLastRun:
       minutesSince === Number.POSITIVE_INFINITY ? -1 : minutesSince,
@@ -96,7 +96,7 @@ export function evaluateMemoryLearningCadence(
  * processed session mtime so the same transcript content does not retrigger
  * immediately. Failed runs leave cadence state untouched and stay retryable.
  */
-export function markMemoryLearningCompleted(
+export function markMemoryDreamCompleted(
   db: DatabaseSync,
   opts?: { nowMs?: number; transcriptMtimeMs?: number | null },
 ): void {

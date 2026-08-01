@@ -1,5 +1,5 @@
 /**
- * Detached learner launch: claim, manifest, spawn, unref.
+ * Detached dreamer launch: claim, manifest, spawn, unref.
  */
 
 import { spawn } from "node:child_process";
@@ -13,17 +13,17 @@ import {
   releaseMemoryRunClaim,
 } from "../shared/memory-run-claim.ts";
 import {
-  buildMemoryLearningManifest,
-  writeMemoryLearningManifest,
+  buildMemoryDreamManifest,
+  writeMemoryDreamManifest,
 } from "../shared/memory-session-discovery.ts";
-import { hasMemoryMaintenanceCandidates } from "../shared/memory-maintenance.ts";
+import { hasMemoryConsolidationCandidates } from "../shared/memory-consolidation.ts";
 import {
   formatSessionModelId,
   resolveMemoryModel,
   type MemoryModelRegistryLike,
 } from "../shared/memory-model.ts";
 import {
-  buildMemoryLearnerSpawnArgs,
+  buildMemoryDreamerSpawnArgs,
   getMemoryPiInvocation,
 } from "../shared/pi-process-invocation.ts";
 import {
@@ -37,7 +37,7 @@ import {
 } from "../shared/memory-workspace-id.ts";
 import { ensureMemorySecureDir } from "../shared/memory-fs.ts";
 
-export interface LaunchMemoryLearningInput {
+export interface LaunchMemoryDreamInput {
   db: DatabaseSync;
   cwd: string;
   workspaceId: string;
@@ -47,25 +47,25 @@ export interface LaunchMemoryLearningInput {
   currentSessionModel?: { provider?: string; id?: string } | null;
 }
 
-export type LaunchMemoryLearningResult =
+export type LaunchMemoryDreamResult =
   | { ok: true; runId: string; sessionCount: number }
   | { ok: false; reason: string };
 
 /**
- * Acquire claim, snapshot eligible sessions, write manifest, spawn detached learner.
- * On child spawn/exit failure, mark the active run failed and release its claim.
+ * Acquire claim, snapshot eligible sessions, write manifest, spawn detached dreamer.
+ * On child spawn/exit failure, mark the active dream failed and release its claim.
  * Launching never consumes cadence state; it resets only when the run completes.
  */
-export function launchMemoryLearningRun(
-  input: LaunchMemoryLearningInput,
-): LaunchMemoryLearningResult {
+export function launchMemoryDreamRun(
+  input: LaunchMemoryDreamInput,
+): LaunchMemoryDreamResult {
   const sessionModelId = formatSessionModelId(input.currentSessionModel);
   const resolved = resolveMemoryModel(
-    "learningModel",
-    input.config.learningModel,
+    "dreamModel",
+    input.config.dreamModel,
     sessionModelId,
     input.modelRegistry,
-    input.config.learningThinking,
+    input.config.dreamThinking,
   );
   if (!resolved.ok) {
     return { ok: false, reason: resolved.error };
@@ -77,7 +77,7 @@ export function launchMemoryLearningRun(
   if (!claim.acquired || !claim.runId) {
     return {
       ok: false,
-      reason: claim.reason ?? "could not acquire learning claim",
+      reason: claim.reason ?? "could not acquire dream claim",
     };
   }
   const runId = claim.runId;
@@ -88,20 +88,20 @@ export function launchMemoryLearningRun(
     runDir = path.join(memoryWorkspaceRunsDir(input.workspaceId), runId);
     ensureMemorySecureDir(runDir);
     // Snapshot every eligible session into the run dir at discovery time so
-    // the detached learner mines immutable bytes, not live appends.
-    const manifest = buildMemoryLearningManifest(
+    // the detached dreamer mines immutable bytes, not live appends.
+    const manifest = buildMemoryDreamManifest(
       input.db,
       input.cwd,
       input.workspaceId,
       { snapshotDir: runDir },
     );
-    // Maintenance-only mode: an empty manifest is valid when deterministic
-    // maintenance candidates exist (pure SQL/heat gate — no embedder here).
-    const maintenanceCandidates =
+    // Dream-only mode: an empty manifest is valid when deterministic
+    // consolidation candidates exist (pure SQL/heat gate — no embedder here).
+    const consolidationCandidates =
       manifest.length === 0 &&
-      hasMemoryMaintenanceCandidates(input.db, { config: input.config });
-    if (manifest.length === 0 && !maintenanceCandidates) {
-      releaseMemoryRunClaim(input.db, runId, "No eligible sessions to learn");
+      hasMemoryConsolidationCandidates(input.db, { config: input.config });
+    if (manifest.length === 0 && !consolidationCandidates) {
+      releaseMemoryRunClaim(input.db, runId, "No eligible sessions to dream");
       try {
         fs.rmSync(runDir, { recursive: true, force: true });
       } catch {
@@ -111,18 +111,18 @@ export function launchMemoryLearningRun(
     }
 
     const manifestPath = path.join(runDir, "manifest.json");
-    writeMemoryLearningManifest(manifestPath, manifest);
+    writeMemoryDreamManifest(manifestPath, manifest);
 
     const dbPath = memoryWorkspaceDbPath(input.workspaceId);
     const stderrPath = path.join(runDir, "child.stderr.log");
-    const { args, env } = buildMemoryLearnerSpawnArgs({
+    const { args, env } = buildMemoryDreamerSpawnArgs({
       cwd: input.cwd,
       workspaceId: input.workspaceId,
       dbPath,
       manifestPath,
       runId,
-      learningModel: resolved.resolved.modelId,
-      learningThinking: resolved.resolved.thinking,
+      dreamModel: resolved.resolved.modelId,
+      dreamThinking: resolved.resolved.thinking,
     });
 
     const invocation = getMemoryPiInvocation(args);
@@ -135,7 +135,7 @@ export function launchMemoryLearningRun(
     });
     fs.closeSync(stderrFd);
 
-    const releaseMemoryLearningRunAfterChildExit = (reason: string): void => {
+    const releaseMemoryDreamRunAfterChildExit = (reason: string): void => {
       let freshDb: DatabaseSync | null = null;
       try {
         freshDb = openMemoryDatabaseAtPath(dbPath);
@@ -150,13 +150,13 @@ export function launchMemoryLearningRun(
       }
     };
     child.once("error", () => {
-      releaseMemoryLearningRunAfterChildExit(
-        "Failed to spawn memory learner process",
+      releaseMemoryDreamRunAfterChildExit(
+        "Failed to spawn memory dreamer process",
       );
     });
     child.once("exit", (code, signal) => {
-      releaseMemoryLearningRunAfterChildExit(
-        `Memory learner exited before finalization (code=${code ?? "null"}, signal=${signal ?? "none"})`,
+      releaseMemoryDreamRunAfterChildExit(
+        `Memory dreamer exited before finalization (code=${code ?? "null"}, signal=${signal ?? "none"})`,
       );
     });
     child.unref();

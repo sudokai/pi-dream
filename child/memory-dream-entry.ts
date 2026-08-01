@@ -1,8 +1,8 @@
 /**
- * Detached memory learner child extension entry.
- * Registers internal learning tools and finalizes the run on agent_settled
+ * Detached memory dreamer child extension entry.
+ * Registers internal dreamer tools and finalizes the run on agent_settled
  * (after retries and compaction have finished). Finalization is async and
- * awaited: the DB closes only after the post-ingestion maintenance recompute
+ * awaited: the DB closes only after the post-ingestion consolidation recompute
  * settles.
  */
 
@@ -16,8 +16,8 @@ import {
   markMemoryRunRunning,
   releaseMemoryRunClaim,
 } from "../shared/memory-run-claim.ts";
-import { registerMemoryLearningTools } from "./memory-learning-tools.ts";
-import { finalizeMemoryLearningRun } from "./memory-learning-finalize.ts";
+import { registerMemoryDreamTools } from "./memory-dream-tools.ts";
+import { finalizeMemoryDreamRun } from "./memory-dream-finalize.ts";
 import {
   defaultMemoryWorkspaceConfig,
   loadMemoryWorkspaceConfig,
@@ -27,12 +27,12 @@ import { memoryWorkspaceConfigPath } from "../shared/memory-workspace-id.ts";
 function requireEnv(name: string): string {
   const v = process.env[name];
   if (!v || !v.trim()) {
-    throw new Error(`Memory learner missing required env ${name}`);
+    throw new Error(`Memory dreamer missing required env ${name}`);
   }
   return v.trim();
 }
 
-export default function memoryLearningChildExtension(pi: ExtensionAPI) {
+export default function memoryDreamChildExtension(pi: ExtensionAPI) {
   if (process.env.PI_DREAM_CHILD !== "1") {
     return;
   }
@@ -49,8 +49,8 @@ export default function memoryLearningChildExtension(pi: ExtensionAPI) {
     markMemoryRunRunning(db, runId);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    console.error(`Memory learner failed to open DB: ${detail}`);
-    const failureReason = `Memory learner failed to open DB: ${detail}`;
+    console.error(`Memory dreamer failed to open DB: ${detail}`);
+    const failureReason = `Memory dreamer failed to open DB: ${detail}`;
     try {
       if (db) {
         releaseMemoryRunClaim(db, runId, failureReason);
@@ -67,7 +67,7 @@ export default function memoryLearningChildExtension(pi: ExtensionAPI) {
       const releaseDetail =
         releaseErr instanceof Error ? releaseErr.message : String(releaseErr);
       console.error(
-        `Memory learner could not release claim ${runId}: ${releaseDetail}`,
+        `Memory dreamer could not release claim ${runId}: ${releaseDetail}`,
       );
     }
     return;
@@ -80,7 +80,7 @@ export default function memoryLearningChildExtension(pi: ExtensionAPI) {
   );
   const config = loaded.ok ? loaded.config : defaultMemoryWorkspaceConfig();
 
-  registerMemoryLearningTools(pi, {
+  registerMemoryDreamTools(pi, {
     db,
     runId,
     workspaceId,
@@ -95,7 +95,7 @@ export default function memoryLearningChildExtension(pi: ExtensionAPI) {
     finalized = true;
     void (async () => {
       try {
-        await finalizeMemoryLearningRun({
+        await finalizeMemoryDreamRun({
           db,
           runId,
           manifestPath,
@@ -104,7 +104,7 @@ export default function memoryLearningChildExtension(pi: ExtensionAPI) {
         });
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
-        console.error(`Memory learner finalization failed: ${detail}`);
+        console.error(`Memory dreamer finalization failed: ${detail}`);
         try {
           releaseMemoryRunClaim(db, runId, detail);
         } catch {

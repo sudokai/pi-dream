@@ -1,5 +1,5 @@
 /**
- * Repository reads and atomic learning commits with invariant validation.
+ * Repository reads and atomic dream commits with invariant validation.
  */
 
 import type { DatabaseSync } from "node:sqlite";
@@ -7,7 +7,7 @@ import {
   formatMemoryNodeId,
   formatSummaryNodeId,
   estimateMemoryTextTokens,
-  MEMORY_MAINTENANCE_MAX_ATTEMPTS,
+  MEMORY_CONSOLIDATION_MAX_ATTEMPTS,
   MEMORY_MAX_SUMMARY_CHARS,
   MEMORY_MAX_TEXT_CHARS,
   MEMORY_NOVELTY_GENERATIONS,
@@ -16,8 +16,8 @@ import {
   parsePrefixedNodeId,
   validateMemoryBodyText,
   type MemoryKnowledgeKind,
-  type MemoryLearnerOperation,
-  type MemoryLearningCommitInput,
+  type MemoryDreamerOperation,
+  type MemoryDreamCommitInput,
   type MemorySearchableNodeType,
   type SourceSessionRow,
   type WorkspaceStateRow,
@@ -43,13 +43,13 @@ import {
 } from "./memory-tree.ts";
 import {
   buildMemoryFallbackSummaryText,
-  clearMemoryMaintenanceAttempt,
-  getMemoryMaintenanceAttempts,
-  incrementMemoryMaintenanceAttempt,
-  memoryMaintenanceMergeKey,
-  memoryMaintenancePromoteKey,
+  clearMemoryConsolidationAttempt,
+  getMemoryConsolidationAttempts,
+  incrementMemoryConsolidationAttempt,
+  memoryConsolidationMergeKey,
+  memoryConsolidationPromoteKey,
   simulateMemoryPromoteLayer,
-} from "./memory-maintenance.ts";
+} from "./memory-consolidation.ts";
 import type { MemoryWorkspaceConfig } from "./memory-config.ts";
 import { memoryRunOwnsClaim } from "./memory-run-claim.ts";
 import { normalizeMemoryCwd } from "./memory-workspace-id.ts";
@@ -383,7 +383,7 @@ function insertEdge(
 
 function applyOperation(
   db: DatabaseSync,
-  op: MemoryLearnerOperation,
+  op: MemoryDreamerOperation,
   ctx: {
     sourceSessionId: string;
     generation: number;
@@ -685,7 +685,7 @@ function applyOperation(
           );
         }
         // Summary updates are compare-and-swap writes: require the version the
-        // learner observed so a stale plan cannot replace a newer summary.
+        // dreamer observed so a stale plan cannot replace a newer summary.
         if (
           !Number.isSafeInteger(op.expectedVersionId) ||
           op.expectedVersionId <= 0
@@ -787,7 +787,7 @@ function applyOperation(
           );
         }
         // A model-authored rewrite supersedes the mechanical fallback label
-        // (the maintenance commit re-asserts 'fallback' when it applies the
+        // (the consolidation commit re-asserts 'fallback' when it applies the
         // deterministic text itself). An unchanged text keeps the old label.
         if (op.text.trim() !== existing.text) {
           db.prepare(
@@ -980,23 +980,23 @@ function applyOperation(
     default: {
       const _exhaustive: never = op;
       throw new Error(
-        `Unknown learner operation: ${JSON.stringify(_exhaustive)}`,
+        `Unknown dreamer operation: ${JSON.stringify(_exhaustive)}`,
       );
     }
   }
 }
 
 /**
- * Atomically commit one source session's learning plan.
+ * Atomically commit one source session's dream plan.
  * Validates claim ownership, graph invariants, text shape; checkpoints the session.
  * Replay of an unchanged checkpoint is a no-op success.
  */
-export function commitMemoryLearningSession(
+export function commitMemoryDreamSession(
   db: DatabaseSync,
-  input: MemoryLearningCommitInput,
+  input: MemoryDreamCommitInput,
 ): { applied: boolean; reason?: string } {
   if (!memoryRunOwnsClaim(db, input.runId)) {
-    throw new Error("Memory learning run no longer owns the workspace claim");
+    throw new Error("Memory dream no longer owns the workspace claim");
   }
 
   const operations = input.plan.operations ?? [];
@@ -1013,7 +1013,7 @@ export function commitMemoryLearningSession(
   db.exec("BEGIN IMMEDIATE");
   try {
     if (!memoryRunOwnsClaim(db, input.runId)) {
-      throw new Error("Memory learning run no longer owns the workspace claim");
+      throw new Error("Memory dream no longer owns the workspace claim");
     }
 
     const existing = getSourceSessionCheckpoint(db, input.sourceSessionId);
@@ -1093,7 +1093,7 @@ export function commitMemoryLearningSession(
   }
 }
 
-/** List active memories/summaries for the learner inspection tool. */
+/** List active memories/summaries for the dreamer inspection tool. */
 export function listMemoryGraphSnapshot(db: DatabaseSync): {
   memories: Array<{
     id: string;
@@ -1125,13 +1125,13 @@ export function listMemoryGraphSnapshot(db: DatabaseSync): {
   return { memories, summaries };
 }
 
-export interface MemoryMaintenanceCommitInput {
+export interface MemoryConsolidationCommitInput {
   runId: string;
-  operations: MemoryLearnerOperation[];
+  operations: MemoryDreamerOperation[];
   config: MemoryWorkspaceConfig;
 }
 
-export interface MemoryMaintenanceCommitResult {
+export interface MemoryConsolidationCommitResult {
   applied: boolean;
   /** Candidate keys covered by applied ops (incl. fallback merges). */
   coveredKeys: string[];
@@ -1146,9 +1146,9 @@ export interface MemoryMaintenanceCommitResult {
   layerOverBudget: boolean;
 }
 
-interface MaintenanceOpAnalysis {
+interface ConsolidationOpAnalysis {
   index: number;
-  op: MemoryLearnerOperation;
+  op: MemoryDreamerOperation;
   kind: "merge-create" | "merge-extend" | "promote";
   key: string;
   /** Estimated tokens removed from the top layer (baseline - est(text)). */
@@ -1173,7 +1173,7 @@ interface MaintenanceOpAnalysis {
   reason?: "cold" | "budget";
 }
 
-function maintenanceMergeKeyForOps(
+function consolidationMergeKeyForOps(
   summary: { nodeType: MemorySearchableNodeType; nodeId: number } | null,
   members: Array<{ nodeType: MemorySearchableNodeType; nodeId: number }>,
 ): string {
@@ -1181,7 +1181,7 @@ function maintenanceMergeKeyForOps(
   if (parts.length === 2) {
     // Same stable key as the planner's attempt counters (merge:<a>+<b>,
     // sorted ids); a second implementation would let the two drift.
-    return memoryMaintenanceMergeKey(parts[0]!, parts[1]!);
+    return memoryConsolidationMergeKey(parts[0]!, parts[1]!);
   }
   const ids = parts.map((m) => `${m.nodeType}:${m.nodeId}`);
   ids.sort();
@@ -1189,18 +1189,18 @@ function maintenanceMergeKeyForOps(
 }
 
 /**
- * Pre-apply analysis of a maintenance batch: validates every op against the
+ * Pre-apply analysis of a consolidation batch: validates every op against the
  * strict-tree and strict-compaction rules, resolves promote attempt counters,
  * and projects the resulting top layer from the actual written texts.
  */
-function analyzeMemoryMaintenanceOps(
+function analyzeMemoryConsolidationOps(
   db: DatabaseSync,
-  operations: MemoryLearnerOperation[],
+  operations: MemoryDreamerOperation[],
   generation: number,
-): MaintenanceOpAnalysis[] {
-  const analyses: MaintenanceOpAnalysis[] = [];
+): ConsolidationOpAnalysis[] {
+  const analyses: ConsolidationOpAnalysis[] = [];
 
-  const promoteAnalyses: MaintenanceOpAnalysis[] = [];
+  const promoteAnalyses: ConsolidationOpAnalysis[] = [];
   for (let index = 0; index < operations.length; index++) {
     const op = operations[index]!;
     if (op.op !== "promote") continue;
@@ -1250,7 +1250,7 @@ function analyzeMemoryMaintenanceOps(
     const remaining = children.filter(
       (c) => !(c.nodeType === child.type && c.nodeId === child.id),
     );
-    const key = memoryMaintenancePromoteKey(
+    const key = memoryConsolidationPromoteKey(
       child.type,
       child.id,
       parentParsed.id,
@@ -1274,16 +1274,16 @@ function analyzeMemoryMaintenanceOps(
       ) {
         // Rewrite fails the non-strict shrink: attempt-counter path. The K-th
         // consecutive failure keeps the old summary text (satisfies <= by equality).
-        const attempts = getMemoryMaintenanceAttempts(db, key);
-        if (attempts + 1 >= MEMORY_MAINTENANCE_MAX_ATTEMPTS) {
+        const attempts = getMemoryConsolidationAttempts(db, key);
+        if (attempts + 1 >= MEMORY_CONSOLIDATION_MAX_ATTEMPTS) {
           newSummaryText = parent.text;
-          clearMemoryMaintenanceAttempt(db, key);
+          clearMemoryConsolidationAttempt(db, key);
         } else {
-          incrementMemoryMaintenanceAttempt(db, key, generation);
+          incrementMemoryConsolidationAttempt(db, key, generation);
           rejected = true;
         }
       } else {
-        clearMemoryMaintenanceAttempt(db, key);
+        clearMemoryConsolidationAttempt(db, key);
         newSummaryText = op.newSummaryText;
       }
     } else if (op.newSummaryText !== undefined && op.newSummaryText.trim()) {
@@ -1346,7 +1346,7 @@ function analyzeMemoryMaintenanceOps(
       const parsed = parsePrefixedNodeId(raw);
       if (!parsed.ok || parsed.type === "observation") {
         throw new Error(
-          `maintenance summarize member must be M:<n> or S:<n>: ${raw}`,
+          `consolidation summarize member must be M:<n> or S:<n>: ${raw}`,
         );
       }
       const node =
@@ -1420,7 +1420,7 @@ function analyzeMemoryMaintenanceOps(
         index,
         op,
         kind: "merge-extend",
-        key: maintenanceMergeKeyForOps(
+        key: consolidationMergeKeyForOps(
           { nodeType: "summary", nodeId: parsed.id },
           members,
         ),
@@ -1443,7 +1443,7 @@ function analyzeMemoryMaintenanceOps(
         index,
         op,
         kind: "merge-create",
-        key: maintenanceMergeKeyForOps(null, members),
+        key: consolidationMergeKeyForOps(null, members),
         savings: baseline - textTokens,
         memberKeys: members.map((m) => `${m.nodeType}:${m.nodeId}`),
         reason: op.reason,
@@ -1457,28 +1457,28 @@ function analyzeMemoryMaintenanceOps(
     ...promoteAnalyses,
     ...analyses.sort((a, b) => a.index - b.index),
   ];
-  // Ensure promote-first ordering for the apply phase (matches the learner
+  // Ensure promote-first ordering for the apply phase (matches the dreamer
   // prompt mandate; a wrong order fails loudly at apply time).
   ordered.sort((a, b) => a.index - b.index);
   return ordered;
 }
 
 /**
- * Session-less claim-owned maintenance commit: applies only summarize /
+ * Session-less claim-owned consolidation commit: applies only summarize /
  * promote / no_op ops (no source-session write), validates strict-tree and
  * strict-compaction rules per op, projects the resulting top layer from the
  * actual written texts, and rejects non-compacting merges when the batch still
  * exceeds `briefingTokenBudget` (partial progress: ops that pass stay).
  * Consecutive rejections increment per-candidate attempt counters; at
- * MEMORY_MAINTENANCE_MAX_ATTEMPTS the deterministic fallback text applies
+ * MEMORY_CONSOLIDATION_MAX_ATTEMPTS the deterministic fallback text applies
  * instead of rejection, making convergence unconditional.
  */
-export function commitMemoryLearningOps(
+export function commitMemoryDreamOps(
   db: DatabaseSync,
-  input: MemoryMaintenanceCommitInput,
-): MemoryMaintenanceCommitResult {
+  input: MemoryConsolidationCommitInput,
+): MemoryConsolidationCommitResult {
   if (!memoryRunOwnsClaim(db, input.runId)) {
-    throw new Error("Memory learning run no longer owns the workspace claim");
+    throw new Error("Memory dream no longer owns the workspace claim");
   }
 
   const operations = input.operations ?? [];
@@ -1488,12 +1488,12 @@ export function commitMemoryLearningOps(
   db.exec("BEGIN IMMEDIATE");
   try {
     if (!memoryRunOwnsClaim(db, input.runId)) {
-      throw new Error("Memory learning run no longer owns the workspace claim");
+      throw new Error("Memory dream no longer owns the workspace claim");
     }
     for (const op of operations) {
       if (op.op !== "summarize" && op.op !== "promote" && op.op !== "no_op") {
         throw new Error(
-          `Maintenance commit rejected ${op.op} op; only summarize, promote, and no_op are allowed`,
+          `Consolidation commit rejected ${op.op} op; only summarize, promote, and no_op are allowed`,
         );
       }
     }
@@ -1503,7 +1503,7 @@ export function commitMemoryLearningOps(
       0,
     );
 
-    const analyses = analyzeMemoryMaintenanceOps(db, operations, generation);
+    const analyses = analyzeMemoryConsolidationOps(db, operations, generation);
     const sim = simulateMemoryPromoteLayer(
       db,
       analyses
@@ -1522,17 +1522,17 @@ export function commitMemoryLearningOps(
         const tokens = rootTokens.get(key);
         if (tokens === undefined) {
           throw new Error(
-            `Maintenance merge member ${key} is not in the projected top layer; the tree changed since planning`,
+            `Consolidation merge member ${key} is not in the projected top layer; the tree changed since planning`,
           );
         }
         projected -= tokens;
       }
-      const op = a.op as Extract<MemoryLearnerOperation, { op: "summarize" }>;
+      const op = a.op as Extract<MemoryDreamerOperation, { op: "summarize" }>;
       if (a.kind === "merge-extend") {
         const targetTokens = rootTokens.get(`summary:${a.summaryId}`);
         if (targetTokens === undefined) {
           throw new Error(
-            `Maintenance extend target S:${a.summaryId} is not a root; only root summaries can be extended`,
+            `Consolidation extend target S:${a.summaryId} is not a root; only root summaries can be extended`,
           );
         }
         projected += estimateMemoryTextTokens(op.text) - targetTokens;
@@ -1556,7 +1556,7 @@ export function commitMemoryLearningOps(
         const baseline =
           a.savings +
           estimateMemoryTextTokens(
-            (a.op as Extract<MemoryLearnerOperation, { op: "summarize" }>).text,
+            (a.op as Extract<MemoryDreamerOperation, { op: "summarize" }>).text,
           );
         if (a.savings <= Math.floor(baseline / 2)) {
           dropped.add(a.index);
@@ -1572,18 +1572,22 @@ export function commitMemoryLearningOps(
     for (const a of mergeAnalyses) {
       if (!dropped.has(a.index)) {
         coveredKeys.push(a.key);
-        clearMemoryMaintenanceAttempt(db, a.key);
+        clearMemoryConsolidationAttempt(db, a.key);
         continue;
       }
-      const attempts = incrementMemoryMaintenanceAttempt(db, a.key, generation);
-      if (attempts >= MEMORY_MAINTENANCE_MAX_ATTEMPTS) {
+      const attempts = incrementMemoryConsolidationAttempt(
+        db,
+        a.key,
+        generation,
+      );
+      if (attempts >= MEMORY_CONSOLIDATION_MAX_ATTEMPTS) {
         a.fallbackText = buildMemoryFallbackSummaryText(
           a.kind === "merge-extend"
             ? (getSummaryById(db, a.summaryId!)?.text ?? null)
             : null,
           // Fallback member texts are read from the analysis (pre-apply state).
           (
-            a.op as Extract<MemoryLearnerOperation, { op: "summarize" }>
+            a.op as Extract<MemoryDreamerOperation, { op: "summarize" }>
           ).memberIds.map((raw) => {
             const parsed = parsePrefixedNodeId(raw);
             if (!parsed.ok || parsed.type === "observation") {
@@ -1602,7 +1606,7 @@ export function commitMemoryLearningOps(
             };
           }),
         );
-        clearMemoryMaintenanceAttempt(db, a.key);
+        clearMemoryConsolidationAttempt(db, a.key);
         fallbackKeys.push(a.key);
         coveredKeys.push(a.key);
         projected -= 1;
@@ -1611,12 +1615,12 @@ export function commitMemoryLearningOps(
       }
     }
 
-    // Apply kept ops in original order (promotes first per the learner prompt;
+    // Apply kept ops in original order (promotes first per the dreamer prompt;
     // applyOperation re-validates every op against the current state).
     const tempRefs = new Map<string, number>();
     const summaryTempRefs = new Map<string, number>();
     const ctx = {
-      sourceSessionId: "maintenance",
+      sourceSessionId: "consolidation",
       generation,
       noveltyUntil: null,
       tempRefs,
@@ -1627,8 +1631,8 @@ export function commitMemoryLearningOps(
       if (a.kind === "promote") {
         if (a.rejected) {
           auditEntries.push({
-            kind: "maintenance",
-            text: `maintenance reject promote ${a.childPrefixedId} from S:${a.parentId} (attempts=${getMemoryMaintenanceAttempts(db, a.key)}), est_before=${auditEstBefore}, budget=${budget}`,
+            kind: "consolidation",
+            text: `consolidation reject promote ${a.childPrefixedId} from S:${a.parentId} (attempts=${getMemoryConsolidationAttempts(db, a.key)}), est_before=${auditEstBefore}, budget=${budget}`,
           });
           continue;
         }
@@ -1642,28 +1646,28 @@ export function commitMemoryLearningOps(
             ? ({
                 ...a.op,
                 newSummaryText: a.sim.newSummaryText,
-              } as MemoryLearnerOperation)
+              } as MemoryDreamerOperation)
             : a.op;
         const result = applyOperation(db, op, ctx);
         void result;
         coveredKeys.push(a.key);
         auditEntries.push({
-          kind: "maintenance",
-          text: `maintenance promote ${a.childPrefixedId} from S:${a.parentId}, reason=hot, est_before=${auditEstBefore}, budget=${budget}`,
+          kind: "consolidation",
+          text: `consolidation promote ${a.childPrefixedId} from S:${a.parentId}, reason=hot, est_before=${auditEstBefore}, budget=${budget}`,
         });
         continue;
       }
       if (a.kind === "merge-create" || a.kind === "merge-extend") {
         if (dropped.has(a.index) && !a.fallbackText) {
           auditEntries.push({
-            kind: "maintenance",
-            text: `maintenance reject merge ${a.key} (attempts=${rejectedKeys.find((r) => r.key === a.key)?.attempts ?? getMemoryMaintenanceAttempts(db, a.key)}), est_before=${auditEstBefore}, budget=${budget}`,
+            kind: "consolidation",
+            text: `consolidation reject merge ${a.key} (attempts=${rejectedKeys.find((r) => r.key === a.key)?.attempts ?? getMemoryConsolidationAttempts(db, a.key)}), est_before=${auditEstBefore}, budget=${budget}`,
           });
           continue;
         }
         const op =
           a.fallbackText !== undefined && a.fallbackText !== null
-            ? ({ ...a.op, text: a.fallbackText } as MemoryLearnerOperation)
+            ? ({ ...a.op, text: a.fallbackText } as MemoryDreamerOperation)
             : a.op;
         const result = applyOperation(db, op, ctx);
         const fallbackSummaryId =
@@ -1682,13 +1686,13 @@ export function commitMemoryLearningOps(
               : "S:?";
         if (a.fallbackText) {
           auditEntries.push({
-            kind: "maintenance",
-            text: `maintenance fallback merge ${a.key} → ${target}, reason=${a.reason ?? "cold"}, est_before=${auditEstBefore}, budget=${budget}`,
+            kind: "consolidation",
+            text: `consolidation fallback merge ${a.key} → ${target}, reason=${a.reason ?? "cold"}, est_before=${auditEstBefore}, budget=${budget}`,
           });
         } else {
           auditEntries.push({
-            kind: "maintenance",
-            text: `maintenance merge ${a.key} → ${target}, reason=${a.reason ?? "cold"}, est_before=${auditEstBefore}, budget=${budget}`,
+            kind: "consolidation",
+            text: `consolidation merge ${a.key} → ${target}, reason=${a.reason ?? "cold"}, est_before=${auditEstBefore}, budget=${budget}`,
           });
         }
         continue;

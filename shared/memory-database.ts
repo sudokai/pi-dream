@@ -13,7 +13,7 @@ import {
 } from "./memory-workspace-id.ts";
 import { ensureMemorySecureDir } from "./memory-fs.ts";
 
-export const MEMORY_SCHEMA_VERSION = 2;
+export const MEMORY_SCHEMA_VERSION = 3;
 
 const SCHEMA_SQL = `
 CREATE TABLE workspace_state (
@@ -34,7 +34,7 @@ CREATE TABLE source_sessions (
   completed_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE learning_runs (
+CREATE TABLE dream_runs (
   id TEXT PRIMARY KEY,
   trigger TEXT NOT NULL CHECK (trigger IN ('auto', 'manual')),
   model TEXT,
@@ -135,7 +135,7 @@ CREATE TABLE search_documents (
   PRIMARY KEY (node_type, node_id)
 );
 
-CREATE TABLE maintenance_attempts (
+CREATE TABLE consolidation_attempts (
   key TEXT PRIMARY KEY,
   attempts INTEGER NOT NULL DEFAULT 0,
   last_generation INTEGER NOT NULL,
@@ -159,7 +159,7 @@ CREATE INDEX idx_memory_observations_obs ON memory_observations(observation_id);
 CREATE INDEX idx_graph_from ON graph_edges(from_type, from_id);
 CREATE INDEX idx_graph_to ON graph_edges(to_type, to_id);
 CREATE INDEX idx_recall_node ON recall_events(node_type, node_id);
-CREATE INDEX idx_learning_runs_status ON learning_runs(status, reported_to_parent);
+CREATE INDEX idx_dream_runs_status ON dream_runs(status, reported_to_parent);
 `;
 
 function tableExists(db: DatabaseSync, name: string): boolean {
@@ -193,7 +193,7 @@ function createFreshSchema(db: DatabaseSync): void {
 const REQUIRED_TABLES = [
   "workspace_state",
   "source_sessions",
-  "learning_runs",
+  "dream_runs",
   "observations",
   "memories",
   "memory_versions",
@@ -204,7 +204,7 @@ const REQUIRED_TABLES = [
   "recall_events",
   "search_documents",
   "embeddings",
-  "maintenance_attempts",
+  "consolidation_attempts",
 ] as const;
 
 function validateMemorySchema(db: DatabaseSync): void {
@@ -215,10 +215,13 @@ function validateMemorySchema(db: DatabaseSync): void {
   }
 }
 
-/** Every table the extension has ever created, including FTS shadow tables. */
+/** Every table the extension has ever created, including FTS shadow tables and
+ * retired table names from older schema versions (old stores are wiped, not
+ * migrated). */
 const ALL_KNOWN_TABLES = [
   "workspace_state",
   "source_sessions",
+  "dream_runs",
   "learning_runs",
   "observations",
   "memories",
@@ -236,6 +239,7 @@ const ALL_KNOWN_TABLES = [
   "search_fts_docsize",
   "search_fts_config",
   "embeddings",
+  "consolidation_attempts",
   "maintenance_attempts",
 ] as const;
 
@@ -276,7 +280,7 @@ function ensureSchema(db: DatabaseSync): void {
     return;
   }
   // Any older version (including a legacy v0/v1 store with data) is discarded
-  // and recreated fresh; the learner re-mines session transcripts from disk.
+  // and recreated fresh; the dreamer re-mines session transcripts from disk.
   wipeMemoryDatabase(db);
   createFreshSchema(db);
 }

@@ -6,7 +6,7 @@ import {
 } from "./memory-database.ts";
 import { acquireMemoryRunClaim } from "./memory-run-claim.ts";
 import {
-  commitMemoryLearningSession,
+  commitMemoryDreamSession,
   getSourceSessionCheckpoint,
   listMemoryGraphSnapshot,
 } from "./memory-repository.ts";
@@ -48,9 +48,9 @@ async function withClaimedDb(
   }
 }
 
-test("commitMemoryLearningSession create + reinforce is idempotent per session", async () => {
+test("commitMemoryDreamSession create + reinforce is idempotent per session", async () => {
   await withClaimedDb((db, runId) => {
-    const r1 = commitMemoryLearningSession(db, {
+    const r1 = commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "sess-1",
       sessionPath: "/tmp/s1.jsonl",
@@ -75,7 +75,7 @@ test("commitMemoryLearningSession create + reinforce is idempotent per session",
     assert.equal(memories[0]!.recurrence, 1);
 
     // Replay same session checkpoint → no-op
-    const r2 = commitMemoryLearningSession(db, {
+    const r2 = commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "sess-1",
       sessionPath: "/tmp/s1.jsonl",
@@ -97,7 +97,7 @@ test("commitMemoryLearningSession create + reinforce is idempotent per session",
     assert.equal(r2.applied, false);
 
     // New session reinforces
-    const r3 = commitMemoryLearningSession(db, {
+    const r3 = commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "sess-2",
       sessionPath: "/tmp/s2.jsonl",
@@ -123,7 +123,7 @@ test("commitMemoryLearningSession create + reinforce is idempotent per session",
 
 test("duplicate observation creates keep support: no orphan active memories", async () => {
   await withClaimedDb((db, runId) => {
-    const r = commitMemoryLearningSession(db, {
+    const r = commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",
@@ -167,7 +167,7 @@ test("duplicate observation creates keep support: no orphan active memories", as
 
 test("supersede excludes old memory from active search", async () => {
   await withClaimedDb((db, runId) => {
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",
@@ -187,7 +187,7 @@ test("supersede excludes old memory from active search", async () => {
       },
     });
     const old = listActiveMemories(db)[0]!;
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s2",
       sessionPath: "/tmp/s2.jsonl",
@@ -221,7 +221,7 @@ test("supersede excludes old memory from active search", async () => {
 
 test("openMemoryNodeExact exposes summary revision history", async () => {
   await withClaimedDb((db, runId) => {
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",
@@ -248,7 +248,7 @@ test("openMemoryNodeExact exposes summary revision history", async () => {
     });
     // The extend path absorbs a NEW root (strict-tree: members must be roots);
     // compaction is measured against the old summary text + the listed members.
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s2",
       sessionPath: "/tmp/s2.jsonl",
@@ -287,7 +287,7 @@ test("openMemoryNodeExact exposes summary revision history", async () => {
 
 test("conflict marks both memories conflicted", async () => {
   await withClaimedDb((db, runId) => {
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",
@@ -314,7 +314,7 @@ test("conflict marks both memories conflicted", async () => {
       },
     });
     const [m1, m2] = listActiveMemories(db);
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s2",
       sessionPath: "/tmp/s2.jsonl",
@@ -338,7 +338,7 @@ test("conflict marks both memories conflicted", async () => {
 
 test("contains edges stay acyclic", async () => {
   await withClaimedDb((db, runId) => {
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",
@@ -374,7 +374,7 @@ test("contains edges stay acyclic", async () => {
 
 test("forget soft-retires and preserves observations", async () => {
   await withClaimedDb((db, runId) => {
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",
@@ -433,7 +433,7 @@ test("heat warms with novelty and cools without recall", () => {
 
 test("top layer lists active root memories", async () => {
   await withClaimedDb((db, runId) => {
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",
@@ -461,7 +461,7 @@ test("top layer lists active root memories", async () => {
 
 test("summarize with a non-root member is rejected", async () => {
   await withClaimedDb((db, runId) => {
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",
@@ -489,7 +489,7 @@ test("summarize with a non-root member is rejected", async () => {
     // M:1 is now a child of S:1 — re-listing it in a new summary must fail.
     assert.throws(
       () =>
-        commitMemoryLearningSession(db, {
+        commitMemoryDreamSession(db, {
           runId,
           sourceSessionId: "s2",
           sessionPath: "/tmp/s2.jsonl",
@@ -514,7 +514,7 @@ test("summarize with a non-root member is rejected", async () => {
 
 test("summarize with non-compacting text is rejected", async () => {
   await withClaimedDb((db, runId) => {
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",
@@ -535,7 +535,7 @@ test("summarize with non-compacting text is rejected", async () => {
     });
     assert.throws(
       () =>
-        commitMemoryLearningSession(db, {
+        commitMemoryDreamSession(db, {
           runId,
           sourceSessionId: "s2",
           sessionPath: "/tmp/s2.jsonl",
@@ -559,7 +559,7 @@ test("summarize with non-compacting text is rejected", async () => {
 
 test("link with contains is rejected at the repository boundary", async () => {
   await withClaimedDb((db, runId) => {
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",
@@ -580,7 +580,7 @@ test("link with contains is rejected at the repository boundary", async () => {
     });
     assert.throws(
       () =>
-        commitMemoryLearningSession(db, {
+        commitMemoryDreamSession(db, {
           runId,
           sourceSessionId: "s2",
           sessionPath: "/tmp/s2.jsonl",
@@ -618,7 +618,7 @@ test("single-flight claim rejects second acquirer", () => {
 
 test("summarize never resurrects a forgotten summary", async () => {
   await withClaimedDb((db, runId) => {
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",
@@ -645,10 +645,10 @@ test("summarize never resurrects a forgotten summary", async () => {
     });
     retireMemoryNode(db, "S:1");
 
-    // A later learner run updating the forgotten summary must fail closed.
+    // A later dream updating the forgotten summary must fail closed.
     assert.throws(
       () =>
-        commitMemoryLearningSession(db, {
+        commitMemoryDreamSession(db, {
           runId,
           sourceSessionId: "s2",
           sessionPath: "/tmp/s2.jsonl",
@@ -679,7 +679,7 @@ test("summarize never resurrects a forgotten summary", async () => {
 
 test("summarize update honors the expectedVersionId CAS guard", async () => {
   await withClaimedDb((db, runId) => {
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",
@@ -717,7 +717,7 @@ test("summarize update honors the expectedVersionId CAS guard", async () => {
     // Runtime validation still rejects untyped tool input that omits CAS.
     assert.throws(
       () =>
-        commitMemoryLearningSession(db, {
+        commitMemoryDreamSession(db, {
           runId,
           sourceSessionId: "s-missing-version",
           sessionPath: "/tmp/s-missing-version.jsonl",
@@ -741,7 +741,7 @@ test("summarize update honors the expectedVersionId CAS guard", async () => {
     // Version 1 exists; a stale expectedVersionId must fail closed.
     assert.throws(
       () =>
-        commitMemoryLearningSession(db, {
+        commitMemoryDreamSession(db, {
           runId,
           sourceSessionId: "s2",
           sessionPath: "/tmp/s2.jsonl",
@@ -764,7 +764,7 @@ test("summarize update honors the expectedVersionId CAS guard", async () => {
     );
     // A matching CAS version succeeds with a NEW root member (strict-tree:
     // an extend absorbs roots only; members are not re-listed).
-    const applied = commitMemoryLearningSession(db, {
+    const applied = commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s3",
       sessionPath: "/tmp/s3.jsonl",
@@ -799,7 +799,7 @@ test("summarize update honors the expectedVersionId CAS guard", async () => {
 
 test("changed content with a preserved mtime is reprocessed, not skipped", async () => {
   await withClaimedDb((db, runId) => {
-    const r1 = commitMemoryLearningSession(db, {
+    const r1 = commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",
@@ -822,7 +822,7 @@ test("changed content with a preserved mtime is reprocessed, not skipped", async
     assert.equal(listActiveMemories(db).length, 1);
 
     // Same mtime (preserved), different content hash: must re-process.
-    const r2 = commitMemoryLearningSession(db, {
+    const r2 = commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",
@@ -845,7 +845,7 @@ test("changed content with a preserved mtime is reprocessed, not skipped", async
     assert.equal(listActiveMemories(db).length, 2);
 
     // Identical content hash + non-newer mtime remains a no-op.
-    const r3 = commitMemoryLearningSession(db, {
+    const r3 = commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",
@@ -858,7 +858,7 @@ test("changed content with a preserved mtime is reprocessed, not skipped", async
     assert.equal(r3.reason, "already checkpointed");
 
     // Legacy checkpoints without a stored hash still honor the mtime gate.
-    const legacy = commitMemoryLearningSession(db, {
+    const legacy = commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "legacy",
       sessionPath: "/tmp/legacy.jsonl",
@@ -868,7 +868,7 @@ test("changed content with a preserved mtime is reprocessed, not skipped", async
       plan: { operations: [{ op: "no_op", reason: "seed" }] },
     });
     assert.equal(legacy.applied, true);
-    const r4 = commitMemoryLearningSession(db, {
+    const r4 = commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "legacy",
       sessionPath: "/tmp/legacy.jsonl",
@@ -886,7 +886,7 @@ test("source session exactly at the age cutoff still receives novelty", async ()
   await withClaimedDb((db, runId) => {
     // One second inside the cutoff so wall-clock drift cannot flip the branch.
     const boundaryMtime = Date.now() - MEMORY_NOVELTY_MAX_SOURCE_AGE_MS + 1000;
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "boundary-sess",
       sessionPath: "/tmp/boundary.jsonl",
@@ -917,7 +917,7 @@ test("fresh session reinforcing a cold memory warms it", async () => {
   await withClaimedDb((db, runId) => {
     const oldMtime =
       Date.now() - (MEMORY_NOVELTY_MAX_SOURCE_AGE_DAYS + 1) * 86_400_000;
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "old-sess",
       sessionPath: "/tmp/old.jsonl",
@@ -939,7 +939,7 @@ test("fresh session reinforcing a cold memory warms it", async () => {
     const cold = listActiveMemories(db)[0]!;
     assert.equal(cold.noveltyUntilGeneration, null);
 
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "fresh-sess",
       sessionPath: "/tmp/fresh.jsonl",
@@ -966,7 +966,7 @@ test("fresh session reinforcing a cold memory warms it", async () => {
 
 test("fresh reinforce of an already-warm memory does not extend novelty", async () => {
   await withClaimedDb((db, runId) => {
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",
@@ -990,7 +990,7 @@ test("fresh reinforce of an already-warm memory does not extend novelty", async 
     // Advance a generation so a naive window extension would be observable.
     incrementMemoryActivityGeneration(db);
 
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s2",
       sessionPath: "/tmp/s2.jsonl",
@@ -1019,7 +1019,7 @@ test("backfilled old sessions create cold memories (no novelty boost)", async ()
     // Source session last touched past the source-age cutoff → cold entry.
     const oldMtime =
       Date.now() - (MEMORY_NOVELTY_MAX_SOURCE_AGE_DAYS + 1) * 86_400_000;
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "old-sess",
       sessionPath: "/tmp/old.jsonl",
@@ -1050,7 +1050,7 @@ test("backfilled old sessions create cold memories (no novelty boost)", async ()
     );
 
     // Fresh source session → novelty granted as before.
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "fresh-sess",
       sessionPath: "/tmp/fresh.jsonl",
@@ -1091,7 +1091,7 @@ function seedSummaryWithMembers(
     observationText: text,
     memoryText: text,
   }));
-  commitMemoryLearningSession(db, {
+  commitMemoryDreamSession(db, {
     runId,
     sourceSessionId: `seed-${Math.random().toString(36).slice(2)}`,
     sessionPath: "/tmp/seed.jsonl",
@@ -1131,7 +1131,7 @@ test("promote happy path: edge retired and parent rewritten (>= 2 members)", asy
       memoryIds,
     );
 
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "promote-1",
       sessionPath: "/tmp/p.jsonl",
@@ -1173,7 +1173,7 @@ test("promote to 1 member retires the parent and resurfaced the orphan", async (
       "Use tabs for indentation",
       "No emoji in commits",
     ]);
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "promote-1",
       sessionPath: "/tmp/p.jsonl",
@@ -1203,7 +1203,7 @@ test("promote to 0 members retires the parent", async () => {
     const { memoryIds, summaryId } = seedSummaryWithMembers(db, runId, [
       "Use tabs for indentation",
     ]);
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "promote-1",
       sessionPath: "/tmp/p.jsonl",
@@ -1234,7 +1234,7 @@ test("promote CAS mismatch, conflicted target, and non-child are rejected", asyn
       "No emoji in commits",
     ]);
     const commit = (op: Record<string, unknown>) =>
-      commitMemoryLearningSession(db, {
+      commitMemoryDreamSession(db, {
         runId,
         sourceSessionId: `x-${Math.random().toString(36).slice(2)}`,
         sessionPath: "/tmp/x.jsonl",
@@ -1293,7 +1293,7 @@ test("promote rewrite must not grow; newSummaryText required for >= 2 members", 
       "CI runs on Ubuntu",
     ]);
     const commit = (op: Record<string, unknown>) =>
-      commitMemoryLearningSession(db, {
+      commitMemoryDreamSession(db, {
         runId,
         sourceSessionId: `x-${Math.random().toString(36).slice(2)}`,
         sessionPath: "/tmp/x.jsonl",
@@ -1333,7 +1333,7 @@ test("supersede of a child retires its edge and resurfaced the ancestor summary"
       "Use spaces for indentation",
       "No emoji in commits",
     ]);
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "sup-1",
       sessionPath: "/tmp/s.jsonl",
@@ -1378,7 +1378,7 @@ test("conflict of a child retires the ancestor summary and resurfaced siblings",
       "API is GraphQL",
       "CI runs on Ubuntu",
     ]);
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "conf-1",
       sessionPath: "/tmp/c.jsonl",
@@ -1427,7 +1427,7 @@ test("extend merge that would grow the layer is rejected", async () => {
     const { summaryId } = seedSummaryWithMembers(db, runId, [
       "Use tabs for indentation",
     ]);
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "ext-1",
       sessionPath: "/tmp/e.jsonl",
@@ -1450,7 +1450,7 @@ test("extend merge that would grow the layer is rejected", async () => {
     // (5 tokens) = 7; a longer rewrite that does not stay below it is rejected.
     assert.throws(
       () =>
-        commitMemoryLearningSession(db, {
+        commitMemoryDreamSession(db, {
           runId,
           sourceSessionId: "ext-2",
           sessionPath: "/tmp/e2.jsonl",

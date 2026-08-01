@@ -1,5 +1,5 @@
 /**
- * Redact sensitive values before learner model input.
+ * Redact sensitive values before dreamer model input.
  */
 
 const REDACTION_PATTERNS: ReadonlyArray<{

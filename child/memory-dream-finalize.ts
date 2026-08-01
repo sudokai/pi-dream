@@ -1,12 +1,12 @@
 /**
- * Child-owned bookkeeping after a memory learning run.
+ * Child-owned bookkeeping after a memory dream.
  * Per-session commits own checkpoints. Finalization releases the claim and
  * removes temporary run state only after durable terminal bookkeeping,
- * including the post-ingestion maintenance recompute: completion coverage is
+ * including the post-ingestion consolidation recompute: completion coverage is
  * held to the last inspect-time batch (persisted by memory_inspect_graph), so
- * every candidate the learner was shown must be covered, dissolved, or
+ * every candidate the dreamer was shown must be covered, dissolved, or
  * rejected for compaction. Candidates born only of the post-ingestion
- * recompute are not a failure — they persist and the maintenance-only launcher
+ * recompute are not a failure — they persist and a dream-only run
  * picks them up at the next agent_settled.
  */
 
@@ -16,16 +16,16 @@ import type { DatabaseSync } from "node:sqlite";
 import type { MemoryWorkspaceConfig } from "../shared/memory-config.ts";
 import { getSourceSessionCheckpoint } from "../shared/memory-repository.ts";
 import { finalizeMemoryRun } from "../shared/memory-run-claim.ts";
-import { readMemoryLearningManifest } from "../shared/memory-session-discovery.ts";
+import { readMemoryDreamManifest } from "../shared/memory-session-discovery.ts";
 import {
-  getMemoryMaintenanceAttempts,
-  planMemoryMaintenance,
-  readMemoryLastMaintenanceInspect,
-} from "../shared/memory-maintenance.ts";
-import { MEMORY_MAINTENANCE_MAX_ATTEMPTS } from "../shared/memory-types.ts";
+  getMemoryConsolidationAttempts,
+  planMemoryConsolidation,
+  readMemoryLastConsolidationInspect,
+} from "../shared/memory-consolidation.ts";
+import { MEMORY_CONSOLIDATION_MAX_ATTEMPTS } from "../shared/memory-types.ts";
 import { memoryWorkspaceLastInspectPath } from "../shared/memory-workspace-id.ts";
 
-export interface FinalizeMemoryLearningRunInput {
+export interface FinalizeMemoryDreamRunInput {
   db: DatabaseSync;
   runId: string;
   manifestPath: string;
@@ -35,7 +35,7 @@ export interface FinalizeMemoryLearningRunInput {
   errorText?: string | null;
 }
 
-export interface FinalizeMemoryLearningRunResult {
+export interface FinalizeMemoryDreamRunResult {
   finalized: boolean;
   status: "completed" | "failed" | "unchanged";
   errorText?: string | null;
@@ -44,14 +44,14 @@ export interface FinalizeMemoryLearningRunResult {
 
 /**
  * Verify every manifest session was checkpointed from its exact immutable
- * snapshot. An empty manifest is valid only in maintenance mode (zero-session
- * maintenance-only runs); the maintenance coverage check decides validity.
+ * snapshot. An empty manifest is valid only in consolidation mode (zero-session
+ * dream-only runs); the consolidation coverage check decides validity.
  */
 function findMemoryCheckpointCompletionError(
   db: DatabaseSync,
   manifestPath: string,
 ): string | null {
-  const entries = readMemoryLearningManifest(manifestPath);
+  const entries = readMemoryDreamManifest(manifestPath);
   if (entries.length === 0) {
     return null;
   }
@@ -64,44 +64,44 @@ function findMemoryCheckpointCompletionError(
     );
   });
   if (uncheckpointed.length === 0) return null;
-  return `Memory learning left ${uncheckpointed.length} manifest session(s) uncheckpointed`;
+  return `Memory dream left ${uncheckpointed.length} manifest session(s) uncheckpointed`;
 }
 
 /**
- * Post-ingestion maintenance coverage: recompute the plan against the final DB
- * state and hold the learner to the last inspect-time batch. A candidate is
+ * Post-ingestion consolidation coverage: recompute the plan against the final DB
+ * state and hold the dreamer to the last inspect-time batch. A candidate is
  * covered when it is no longer jointly eligible (merged, promoted, or dissolved
  * by a supersede/conflict/retire), or when it was rejected for compaction
- * during this run (recorded by memory_commit_maintenance — partial progress is
+ * during this run (recorded by memory_commit_consolidation — partial progress is
  * a pass state). A still-eligible candidate with no covering op and no in-run
  * rejection fails the run loudly while its attempt counter is below the
- * fallback bound (catching a genuinely broken learner). Recompute-born
+ * fallback bound (catching a genuinely broken dreamer). Recompute-born
  * candidates (resurfaced cold siblings, post-reset cold creates, reshuffled
  * pairs) are not checked.
  */
-export async function findMemoryMaintenanceCoverageError(
+export async function findMemoryConsolidationCoverageError(
   db: DatabaseSync,
   runId: string,
   workspaceId: string,
   config: MemoryWorkspaceConfig,
 ): Promise<string | null> {
-  const persisted = readMemoryLastMaintenanceInspect(
+  const persisted = readMemoryLastConsolidationInspect(
     memoryWorkspaceLastInspectPath(workspaceId),
   );
   if (!persisted || persisted.runId !== runId) {
-    return null; // No inspect happened in this run: no maintenance obligation.
+    return null; // No inspect happened in this run: no consolidation obligation.
   }
 
   // Recompute needs the embedder for pairing; an unavailable embedder degrades
   // pairing (score 0) but never aborts the coverage check.
-  const plan = await planMemoryMaintenance(db, { config });
+  const plan = await planMemoryConsolidation(db, { config });
 
   const plannedKeys = new Set<string>([
     ...plan.promotes.map((p) => p.key),
     ...plan.merges.map((m) => m.key),
   ]);
   // Candidates rejected for compaction during THIS run (recorded by
-  // memory_commit_maintenance) are an acceptable completion state: the plan's
+  // memory_commit_consolidation) are an acceptable completion state: the plan's
   // completion rules pass "rejected for compaction (attempt counter
   // incremented; partial progress)". Only candidates with no covering op and
   // no in-run rejection are outstanding — the loud-failure case.
@@ -114,22 +114,22 @@ export async function findMemoryMaintenanceCoverageError(
   for (const key of persistedKeys) {
     if (!plannedKeys.has(key)) continue; // covered or dissolved
     if (rejectedInRun.has(key)) continue; // compaction-rejected this run
-    const attempts = getMemoryMaintenanceAttempts(db, key);
-    if (attempts >= MEMORY_MAINTENANCE_MAX_ATTEMPTS) continue; // fallback bound reached
+    const attempts = getMemoryConsolidationAttempts(db, key);
+    if (attempts >= MEMORY_CONSOLIDATION_MAX_ATTEMPTS) continue; // fallback bound reached
     outstanding.push(key);
   }
   if (outstanding.length === 0) return null;
-  return `Memory maintenance left ${outstanding.length} candidate(s) outstanding (no covering op in this run, attempt counters below the fallback bound): ${outstanding.join(", ")}`;
+  return `Memory consolidation left ${outstanding.length} candidate(s) outstanding (no covering op in this run, attempt counters below the fallback bound): ${outstanding.join(", ")}`;
 }
 
 /**
- * Finalize a learner: checkpoint coverage for non-empty manifests, then the
- * post-ingestion maintenance recompute coverage, then release the claim.
+ * Finalize a dreamer: checkpoint coverage for non-empty manifests, then the
+ * post-ingestion consolidation recompute coverage, then release the claim.
  * Retains the run directory when terminal bookkeeping cannot be written.
  */
-export async function finalizeMemoryLearningRun(
-  input: FinalizeMemoryLearningRunInput,
-): Promise<FinalizeMemoryLearningRunResult> {
+export async function finalizeMemoryDreamRun(
+  input: FinalizeMemoryDreamRunInput,
+): Promise<FinalizeMemoryDreamRunResult> {
   let errorText = input.errorText ?? null;
   if (!errorText) {
     try {
@@ -139,12 +139,12 @@ export async function finalizeMemoryLearningRun(
       );
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
-      errorText = `Memory learning manifest verification failed: ${detail}`;
+      errorText = `Memory dream manifest verification failed: ${detail}`;
     }
   }
   if (!errorText) {
     try {
-      errorText = await findMemoryMaintenanceCoverageError(
+      errorText = await findMemoryConsolidationCoverageError(
         input.db,
         input.runId,
         input.workspaceId,
@@ -152,7 +152,7 @@ export async function finalizeMemoryLearningRun(
       );
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
-      errorText = `Memory maintenance coverage check failed: ${detail}`;
+      errorText = `Memory consolidation coverage check failed: ${detail}`;
     }
   }
 
@@ -166,11 +166,11 @@ export async function finalizeMemoryLearningRun(
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     console.error(
-      `Memory learning finalizeMemoryRun failed for run ${input.runId}: ${detail}`,
+      `Memory dream finalizeMemoryRun failed for run ${input.runId}: ${detail}`,
     );
     finalized = false;
     if (!errorText) {
-      errorText = `Memory learning finalization failed: ${detail}`;
+      errorText = `Memory dream finalization failed: ${detail}`;
     }
   }
 
@@ -178,7 +178,7 @@ export async function finalizeMemoryLearningRun(
     return {
       finalized: false,
       status: "unchanged",
-      errorText: errorText ?? "Memory learning finalization failed",
+      errorText: errorText ?? "Memory dream finalization failed",
       runDirRetained: true,
     };
   }

@@ -1,0 +1,17 @@
+# Dream and consolidation terminology
+
+pi-dream's vocabulary originally described the detached background run as a "learning run" and the merge/promote phase as "maintenance" — generic engineer-speak that surfaced in notifications, `/memory`, status, and docs. We renamed to the sleep metaphor that is the product's identity: the background run is a **dream** (executed by the **dreamer** child), its session-mining phase is **ingestion**, and the merge/promote phase is **consolidation**. The run id survives only as an id handle (`run 123`), `/memory learn` became `/memory dream`, and "learns" was purged from user-facing prose (product descriptions now say "extracts").
+
+**Status**: accepted
+
+**Considered options**:
+
+- **Rename only "maintenance" → "dreams", keep "learning run"** — rejected: once `/memory dream` makes the run a dream, "maintenance" as "dreams" would mean dreams inside dreams. The phase needed its own accurate word; "consolidation" is also the sleep-science term for exactly this mechanism.
+- **Keep "maintenance"** — rejected: colorless and misleading. It implies upkeep of machinery, not the deliberate compaction of memories that gives the extension its name.
+- **Rename the tables with compatibility shims** — rejected: the store already follows a documented wipe-and-recreate policy ("no backwards-compatibility shims"), so schema v3 simply wipes v2 stores (`learning_runs`, `maintenance_attempts`) and the next dream re-mines everything from transcripts.
+
+**Consequences**:
+
+- Do not rename "consolidation" back to "maintenance", or collapse Dream/Dreamer — the split is load-bearing: a dream is the unit of work (tracked as a run in `dream_runs`), the dreamer is the process that executes it.
+- Config keys renamed (`dreamModel`, `dreamThinking`, `consolidationMergeBound`); config parsing is fail-closed, so pre-rename `config.json` files disable memory until their keys are repaired.
+- The only remaining "learning" in the package is the `continual-learning` keyword, kept for package discoverability.

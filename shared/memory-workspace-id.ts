@@ -191,19 +191,19 @@ export function memoryWorkspaceConfigPath(workspaceId: string): string {
   return path.join(memoryWorkspaceDataDir(workspaceId), "config.json");
 }
 
-/** Directory for temporary learning-run manifests. */
+/** Directory for temporary dream-run manifests. */
 export function memoryWorkspaceRunsDir(workspaceId: string): string {
   return path.join(memoryWorkspaceDataDir(workspaceId), "runs");
 }
 
 /**
- * Stable path for the child's persisted last inspect-time maintenance batch
+ * Stable path for the child's persisted last inspect-time consolidation batch
  * (survives run-dir cleanup at finalize; read by /memory status).
  */
 export function memoryWorkspaceLastInspectPath(workspaceId: string): string {
   return path.join(
     memoryWorkspaceDataDir(workspaceId),
-    "last-maintenance-inspect.json",
+    "last-consolidation-inspect.json",
   );
 }
 

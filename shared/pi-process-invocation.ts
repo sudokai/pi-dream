@@ -1,5 +1,5 @@
 /**
- * Stable pi child process invocation helpers for detached learners.
+ * Stable pi child process invocation helpers for detached dreamers.
  */
 
 import * as fs from "node:fs";
@@ -39,36 +39,36 @@ export function getMemoryPiInvocation(args: string[]): {
   return { command: "pi", args };
 }
 
-export const MEMORY_LEARNER_TASK =
-  "Run one workspace memory learning pass for the sessions in the run manifest.";
+export const MEMORY_DREAMER_TASK =
+  "Run one workspace memory dream pass for the sessions in the run manifest.";
 
-export const MEMORY_LEARNER_CHILD_TOOLS = [
+export const MEMORY_DREAMER_CHILD_TOOLS = [
   "memory_list_sessions",
   "memory_read_session",
   "memory_inspect_graph",
   "memory_commit_session",
-  "memory_commit_maintenance",
+  "memory_commit_consolidation",
 ] as const;
 
-export interface BuildMemoryLearnerSpawnInput {
+export interface BuildMemoryDreamerSpawnInput {
   cwd: string;
   workspaceId: string;
   dbPath: string;
   manifestPath: string;
   runId: string;
-  learningModel: string;
-  learningThinking?: string;
+  dreamModel: string;
+  dreamThinking?: string;
 }
 
 /**
- * Build argv/env for a detached learner child.
- * `--no-session` is load-bearing so the learner cannot mine itself.
+ * Build argv/env for a detached dreamer child.
+ * `--no-session` is load-bearing so the dreamer cannot mine itself.
  */
-export function buildMemoryLearnerSpawnArgs(
-  input: BuildMemoryLearnerSpawnInput,
+export function buildMemoryDreamerSpawnArgs(
+  input: BuildMemoryDreamerSpawnInput,
 ): { args: string[]; env: Record<string, string> } {
-  const childEntry = memoryExtensionPath("child", "memory-learning-entry.ts");
-  const learnerPrompt = memoryExtensionPath("prompts", "memory-learner.md");
+  const childEntry = memoryExtensionPath("child", "memory-dream-entry.ts");
+  const dreamerPrompt = memoryExtensionPath("prompts", "memory-dreamer.md");
 
   const args = [
     "--mode",
@@ -81,18 +81,18 @@ export function buildMemoryLearnerSpawnArgs(
     "--no-prompt-templates",
     "--no-themes",
     "--append-system-prompt",
-    learnerPrompt,
+    dreamerPrompt,
     "-e",
     childEntry,
     "--tools",
-    MEMORY_LEARNER_CHILD_TOOLS.join(","),
+    MEMORY_DREAMER_CHILD_TOOLS.join(","),
     "--model",
-    input.learningModel,
+    input.dreamModel,
   ];
-  if (input.learningThinking) {
-    args.push("--thinking", input.learningThinking);
+  if (input.dreamThinking) {
+    args.push("--thinking", input.dreamThinking);
   }
-  args.push(MEMORY_LEARNER_TASK);
+  args.push(MEMORY_DREAMER_TASK);
 
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),

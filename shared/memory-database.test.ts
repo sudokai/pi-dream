@@ -66,7 +66,7 @@ test("fresh schema has edge state, the partial unique index, and no FTS tables",
     assert.equal(Number(fts.n), 0, "no FTS tables in the fresh schema");
     const attempts = db
       .prepare(
-        `SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'maintenance_attempts'`,
+        `SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'consolidation_attempts'`,
       )
       .get() as { n: number };
     assert.equal(Number(attempts.n), 1);
@@ -150,11 +150,84 @@ test("a legacy v1-shaped DB with rows opens as an empty fresh store", () => {
     assert.equal(Number(fts.n), 0);
     const attempts = db
       .prepare(
-        `SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'maintenance_attempts'`,
+        `SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'consolidation_attempts'`,
       )
       .get() as { n: number };
     assert.equal(Number(attempts.n), 1);
     closeMemoryDatabase(db);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a legacy v2 store with retired table names wipes to the fresh schema", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-db-v2-"));
+  const dbPath = path.join(dir, "memory.db");
+  try {
+    // Build the v2 store by hand with its historical table names: a tracked
+    // dream and a consolidation attempt counter row.
+    const legacy = new DatabaseSync(dbPath);
+    legacy.exec(`
+      CREATE TABLE learning_runs (
+        id TEXT PRIMARY KEY,
+        trigger TEXT NOT NULL,
+        model TEXT,
+        status TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        error_text TEXT,
+        reported_to_parent INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE maintenance_attempts (
+        key TEXT PRIMARY KEY,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_generation INTEGER NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO learning_runs (id, trigger, status, started_at)
+        VALUES ('run-1', 'auto', 'completed', datetime('now'));
+      INSERT INTO maintenance_attempts (key, attempts, last_generation)
+        VALUES ('merge:memory:1+memory:2', 2, 5);
+      PRAGMA user_version = 2;
+    `);
+    legacy.close();
+
+    const db = openMemoryDatabaseAtPath(dbPath);
+    try {
+      assert.equal(
+        (db.prepare("PRAGMA user_version").get() as { user_version: number })
+          .user_version,
+        MEMORY_SCHEMA_VERSION,
+      );
+      const dreamRuns = db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'dream_runs'`,
+        )
+        .get() as { n: number };
+      assert.equal(Number(dreamRuns.n), 1, "dream_runs exists after wipe");
+      const oldRuns = db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'learning_runs'`,
+        )
+        .get() as { n: number };
+      assert.equal(
+        Number(oldRuns.n),
+        0,
+        "retired learning_runs must be wiped, not migrated",
+      );
+      const oldAttempts = db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'maintenance_attempts'`,
+        )
+        .get() as { n: number };
+      assert.equal(
+        Number(oldAttempts.n),
+        0,
+        "retired maintenance_attempts must be wiped, not migrated",
+      );
+    } finally {
+      closeMemoryDatabase(db);
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

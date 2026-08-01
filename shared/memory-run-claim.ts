@@ -1,13 +1,13 @@
 /**
- * Single-flight learning-run claims stored in the learning_runs table.
+ * Single-flight dream-run claims stored in the dream_runs table.
  * Stale claimed/running rows can be recovered after MEMORY_STALE_RUN_MS.
  */
 
 import type { DatabaseSync } from "node:sqlite";
 import {
   MEMORY_STALE_RUN_MS,
-  type LearningRunStatus,
-  type LearningRunTrigger,
+  type DreamRunStatus,
+  type DreamRunTrigger,
 } from "./memory-types.ts";
 
 export interface MemoryRunClaimResult {
@@ -26,7 +26,7 @@ function newRunId(nowMs: number): string {
  */
 export function acquireMemoryRunClaim(
   db: DatabaseSync,
-  trigger: LearningRunTrigger,
+  trigger: DreamRunTrigger,
   opts?: { nowMs?: number; model?: string | null; staleMs?: number },
 ): MemoryRunClaimResult {
   const nowMs = opts?.nowMs ?? Date.now();
@@ -41,12 +41,12 @@ export function acquireMemoryRunClaim(
   try {
     const active = db
       .prepare(
-        `SELECT id, started_at, status FROM learning_runs
+        `SELECT id, started_at, status FROM dream_runs
          WHERE status IN ('claimed', 'running')
          ORDER BY started_at DESC LIMIT 1`,
       )
       .get() as
-      { id: string; started_at: string; status: LearningRunStatus } | undefined;
+      { id: string; started_at: string; status: DreamRunStatus } | undefined;
 
     if (active) {
       const startedAtMs = Date.parse(active.started_at);
@@ -56,17 +56,17 @@ export function acquireMemoryRunClaim(
       }
       // Stale: mark failed so a new claim can proceed.
       db.prepare(
-        `UPDATE learning_runs
+        `UPDATE dream_runs
          SET status = 'failed',
              finished_at = ?,
-             error_text = 'Stale learning run recovered'
+             error_text = 'Stale dream recovered'
          WHERE id = ? AND status IN ('claimed', 'running')`,
       ).run(new Date(nowMs).toISOString(), active.id);
     }
 
     const runId = newRunId(nowMs);
     db.prepare(
-      `INSERT INTO learning_runs (id, trigger, model, status, started_at, reported_to_parent)
+      `INSERT INTO dream_runs (id, trigger, model, status, started_at, reported_to_parent)
        VALUES (?, ?, ?, 'claimed', ?, 0)`,
     ).run(runId, trigger, opts?.model ?? null, new Date(nowMs).toISOString());
     db.exec("COMMIT");
@@ -84,7 +84,7 @@ export function acquireMemoryRunClaim(
 /** Transition a claimed run to running (child start). */
 export function markMemoryRunRunning(db: DatabaseSync, runId: string): void {
   db.prepare(
-    `UPDATE learning_runs SET status = 'running' WHERE id = ? AND status = 'claimed'`,
+    `UPDATE dream_runs SET status = 'running' WHERE id = ? AND status = 'claimed'`,
   ).run(runId);
 }
 
@@ -104,14 +104,14 @@ export function finalizeMemoryRun(
   }
   try {
     const row = db
-      .prepare(`SELECT status FROM learning_runs WHERE id = ?`)
+      .prepare(`SELECT status FROM dream_runs WHERE id = ?`)
       .get(runId) as { status: string } | undefined;
     if (!row || (row.status !== "claimed" && row.status !== "running")) {
       db.exec("ROLLBACK");
       return false;
     }
     db.prepare(
-      `UPDATE learning_runs
+      `UPDATE dream_runs
        SET status = ?,
            finished_at = ?,
            error_text = ?
@@ -145,7 +145,7 @@ export function releaseMemoryRunClaim(
 ): void {
   finalizeMemoryRun(db, runId, {
     status: "failed",
-    errorText: errorText ?? "Learning run released before completion",
+    errorText: errorText ?? "Dream released before completion",
   });
 }
 
@@ -154,13 +154,13 @@ export function listUnreportedMemoryRuns(db: DatabaseSync): Array<{
   id: string;
   status: "completed" | "failed";
   errorText: string | null;
-  trigger: LearningRunTrigger;
+  trigger: DreamRunTrigger;
   finishedAt: string | null;
 }> {
   const rows = db
     .prepare(
       `SELECT id, status, error_text, trigger, finished_at
-       FROM learning_runs
+       FROM dream_runs
        WHERE reported_to_parent = 0 AND status IN ('completed', 'failed')
        ORDER BY finished_at ASC, id ASC`,
     )
@@ -168,7 +168,7 @@ export function listUnreportedMemoryRuns(db: DatabaseSync): Array<{
     id: string;
     status: "completed" | "failed";
     error_text: string | null;
-    trigger: LearningRunTrigger;
+    trigger: DreamRunTrigger;
     finished_at: string | null;
   }>;
   return rows.map((r) => ({
@@ -182,9 +182,9 @@ export function listUnreportedMemoryRuns(db: DatabaseSync): Array<{
 
 /** Mark a run as reported to the parent UI. */
 export function markMemoryRunReported(db: DatabaseSync, runId: string): void {
-  db.prepare(
-    `UPDATE learning_runs SET reported_to_parent = 1 WHERE id = ?`,
-  ).run(runId);
+  db.prepare(`UPDATE dream_runs SET reported_to_parent = 1 WHERE id = ?`).run(
+    runId,
+  );
 }
 
 /** Atomically claim one unreported terminal run for parent notification. */
@@ -200,7 +200,7 @@ export function consumeOneUnreportedMemoryRun(
       id: string;
       status: "completed" | "failed";
       errorText: string | null;
-      trigger: LearningRunTrigger;
+      trigger: DreamRunTrigger;
       finishedAt: string | null;
     }) => void;
   },
@@ -208,7 +208,7 @@ export function consumeOneUnreportedMemoryRun(
   id: string;
   status: "completed" | "failed";
   errorText: string | null;
-  trigger: LearningRunTrigger;
+  trigger: DreamRunTrigger;
   finishedAt: string | null;
 } | null {
   try {
@@ -221,7 +221,7 @@ export function consumeOneUnreportedMemoryRun(
     const row = db
       .prepare(
         `SELECT id, status, error_text, trigger, finished_at
-         FROM learning_runs
+         FROM dream_runs
          WHERE reported_to_parent = 0 AND status IN ('completed', 'failed')
          ORDER BY finished_at ASC, id ASC
          LIMIT 1`,
@@ -231,7 +231,7 @@ export function consumeOneUnreportedMemoryRun(
           id: string;
           status: "completed" | "failed";
           error_text: string | null;
-          trigger: LearningRunTrigger;
+          trigger: DreamRunTrigger;
           finished_at: string | null;
         }
       | undefined;
@@ -241,7 +241,7 @@ export function consumeOneUnreportedMemoryRun(
     }
     const updated = db
       .prepare(
-        `UPDATE learning_runs SET reported_to_parent = 1
+        `UPDATE dream_runs SET reported_to_parent = 1
          WHERE id = ? AND reported_to_parent = 0`,
       )
       .run(row.id);
@@ -272,7 +272,7 @@ export function consumeOneUnreportedMemoryRun(
 /** Whether a run has reached a terminal state. */
 export function isMemoryRunTerminal(db: DatabaseSync, runId: string): boolean {
   const row = db
-    .prepare(`SELECT status FROM learning_runs WHERE id = ?`)
+    .prepare(`SELECT status FROM dream_runs WHERE id = ?`)
     .get(runId) as { status: string } | undefined;
   return row?.status === "completed" || row?.status === "failed";
 }
@@ -286,7 +286,7 @@ export function activeMemoryRunId(
   const staleMs = opts?.staleMs ?? MEMORY_STALE_RUN_MS;
   const row = db
     .prepare(
-      `SELECT id, started_at FROM learning_runs
+      `SELECT id, started_at FROM dream_runs
        WHERE status IN ('claimed', 'running')
        ORDER BY started_at DESC LIMIT 1`,
     )
@@ -303,7 +303,7 @@ export function activeMemoryRunId(
 export function memoryRunOwnsClaim(db: DatabaseSync, runId: string): boolean {
   const row = db
     .prepare(
-      `SELECT id FROM learning_runs
+      `SELECT id FROM dream_runs
        WHERE id = ? AND status IN ('claimed', 'running')`,
     )
     .get(runId) as { id: string } | undefined;

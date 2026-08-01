@@ -158,7 +158,7 @@ function recordedPathChain(path: string): number[] {
 }
 
 /**
- * Re-verify every context node against the current DB (the learner can mutate
+ * Re-verify every context node against the current DB (the dreamer can mutate
  * the tree while a model call is in flight): still active, non-conflicted,
  * unchanged version/text, and still on its recorded containment path.
  */

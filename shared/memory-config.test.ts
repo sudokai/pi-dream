@@ -34,13 +34,13 @@ test("parseMemoryWorkspaceConfig accepts optional models", () => {
   const r = parseMemoryWorkspaceConfig({
     version: 1,
     enabled: false,
-    learningModel: "anthropic/claude-sonnet-4-5",
+    dreamModel: "anthropic/claude-sonnet-4-5",
     recallModel: "openai/gpt-4.1",
   });
   assert.equal(r.ok, true);
   if (r.ok) {
     assert.equal(r.config.enabled, false);
-    assert.equal(r.config.learningModel, "anthropic/claude-sonnet-4-5");
+    assert.equal(r.config.dreamModel, "anthropic/claude-sonnet-4-5");
     assert.equal(r.config.recallModel, "openai/gpt-4.1");
   }
 });
@@ -122,24 +122,24 @@ test("splitMemoryModelId and validateOptionalMemoryModel", () => {
   });
   assert.equal(splitMemoryModelId("bad"), null);
   assert.equal(
-    validateOptionalMemoryModel("learningModel", undefined, () => ({})),
+    validateOptionalMemoryModel("dreamModel", undefined, () => ({})),
     null,
   );
   assert.match(
-    validateOptionalMemoryModel("learningModel", "bad", () => ({})) ?? "",
+    validateOptionalMemoryModel("dreamModel", "bad", () => ({})) ?? "",
     /provider\/model/,
   );
   assert.match(
-    validateOptionalMemoryModel("learningModel", "a/b", () => null) ?? "",
+    validateOptionalMemoryModel("dreamModel", "a/b", () => null) ?? "",
     /does not resolve/,
   );
   assert.equal(
-    validateOptionalMemoryModel("learningModel", "a/b", () => ({ id: "b" })),
+    validateOptionalMemoryModel("dreamModel", "a/b", () => ({ id: "b" })),
     null,
   );
 });
 
-test("new maintenance/synthesizer keys parse with defaults", () => {
+test("new consolidation/synthesizer keys parse with defaults", () => {
   const r = parseMemoryWorkspaceConfig({
     version: 1,
     enabled: true,
@@ -148,7 +148,7 @@ test("new maintenance/synthesizer keys parse with defaults", () => {
   if (r.ok) {
     assert.equal(r.config.coldHeatThreshold, 0.4);
     assert.equal(r.config.hotHeatThreshold, 1.5);
-    assert.equal(r.config.maintenanceMergeBound, 3);
+    assert.equal(r.config.consolidationMergeBound, 3);
     assert.equal(r.config.synthesizerMaxSteps, 8);
     assert.equal(r.config.synthesizerContextBudget, 16000);
     assert.equal(r.config.synthesizerAnswerBudget, 2000);

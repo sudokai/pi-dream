@@ -126,7 +126,7 @@ test("decodeMemorySession maps tool results", () => {
   assert.equal(decoded.messages[1]!.parts[0]!.tool, "bash");
 });
 
-test("generated briefings keep provenance and are not learner evidence", () => {
+test("generated briefings keep provenance and are not dreamer evidence", () => {
   const decoded = decodeMemorySession([
     { type: "session", id: "1", cwd: "/x" },
     {
@@ -150,7 +150,7 @@ test("generated briefings keep provenance and are not learner evidence", () => {
   assert.equal(briefing.parts[0]!.type, "text");
 
   const page = formatMemorySessionPage(decoded);
-  assert.equal(page.totalMessages, 1, "briefing excluded from learner input");
+  assert.equal(page.totalMessages, 1, "briefing excluded from dreamer input");
   assert.equal(page.messages[0]!.role, "user");
   assert.equal(page.messages[0]!.text, "I like tabs");
 });

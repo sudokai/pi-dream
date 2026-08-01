@@ -7,17 +7,17 @@ import {
   parseMemoryCommandArgs,
 } from "./memory-command.ts";
 import {
-  buildMemoryLearnerSpawnArgs,
-  MEMORY_LEARNER_TASK,
+  buildMemoryDreamerSpawnArgs,
+  MEMORY_DREAMER_TASK,
 } from "../shared/pi-process-invocation.ts";
-import { evaluateMemoryLearningCadence } from "./memory-cadence.ts";
+import { evaluateMemoryDreamCadence } from "./memory-cadence.ts";
 import {
   closeMemoryDatabase,
   openMemoryDatabaseAtPath,
 } from "../shared/memory-database.ts";
 import { defaultMemoryWorkspaceConfig } from "../shared/memory-config.ts";
 import {
-  commitMemoryLearningSession,
+  commitMemoryDreamSession,
   getMemoryWorkspaceState,
   updateMemoryCadenceState,
 } from "../shared/memory-repository.ts";
@@ -45,7 +45,7 @@ test("parseMemoryCommandArgs", () => {
   });
   assert.equal(parseMemoryCommandArgs("open M:1 cursor=abc").action, "error");
   assert.equal(parseMemoryCommandArgs("open M:1 bogus").action, "error");
-  assert.deepEqual(parseMemoryCommandArgs("learn"), { action: "learn" });
+  assert.deepEqual(parseMemoryCommandArgs("dream"), { action: "dream" });
   assert.deepEqual(parseMemoryCommandArgs("pause"), { action: "pause" });
   assert.deepEqual(parseMemoryCommandArgs("resume"), { action: "resume" });
   assert.deepEqual(parseMemoryCommandArgs("forget S:2"), {
@@ -61,24 +61,24 @@ test("getMemoryCommandArgumentCompletions", () => {
   assert.equal(getMemoryCommandArgumentCompletions("list x"), null);
 });
 
-test("buildMemoryLearnerSpawnArgs is stable and isolated", () => {
-  const { args, env } = buildMemoryLearnerSpawnArgs({
+test("buildMemoryDreamerSpawnArgs is stable and isolated", () => {
+  const { args, env } = buildMemoryDreamerSpawnArgs({
     cwd: "/tmp/proj",
     workspaceId: "abc_widget",
     dbPath: "/tmp/memory.db",
     manifestPath: "/tmp/manifest.json",
     runId: "run-1",
-    learningModel: "anthropic/claude-sonnet-4-5",
+    dreamModel: "anthropic/claude-sonnet-4-5",
   });
   assert.ok(args.includes("--no-session"));
   assert.ok(args.includes("--no-extensions"));
-  assert.ok(args.includes(MEMORY_LEARNER_TASK));
+  assert.ok(args.includes(MEMORY_DREAMER_TASK));
   assert.equal(env.PI_DREAM_CHILD, "1");
   assert.equal(env.PI_DREAM_RUN_ID, "run-1");
   assert.equal(env.PI_DREAM_WORKSPACE_ID, "abc_widget");
 });
 
-test("evaluateMemoryLearningCadence requires three gates", () => {
+test("evaluateMemoryDreamCadence requires three gates", () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     const config = {
@@ -87,24 +87,24 @@ test("evaluateMemoryLearningCadence requires three gates", () => {
       minMinutes: 1,
     };
     // First settle: turns=1, not enough
-    const e1 = evaluateMemoryLearningCadence(db, {
+    const e1 = evaluateMemoryDreamCadence(db, {
       cwd: "/nonexistent-dream-path",
       workspaceId: "ws",
       config,
       nowMs: 1_000_000,
     });
-    assert.equal(e1.shouldLearn, false);
+    assert.equal(e1.shouldDream, false);
     assert.equal(e1.turnsSinceLastRun, 1);
 
     // Still no transcript advancement (no sessions)
     updateMemoryCadenceState(db, { lastSuccessfulRunAtMs: 0 });
-    const e2 = evaluateMemoryLearningCadence(db, {
+    const e2 = evaluateMemoryDreamCadence(db, {
       cwd: "/nonexistent-dream-path",
       workspaceId: "ws",
       config,
       nowMs: 1_000_000 + 120_000,
     });
-    assert.equal(e2.shouldLearn, false);
+    assert.equal(e2.shouldDream, false);
     assert.equal(e2.transcriptAdvanced, false);
   } finally {
     closeMemoryDatabase(db);
@@ -126,27 +126,27 @@ test("paused or gated evaluations never consume the transcript watermark", () =>
     });
 
     // Paused: gates fail, but the watermark must not advance.
-    const e1 = evaluateMemoryLearningCadence(db, {
+    const e1 = evaluateMemoryDreamCadence(db, {
       cwd: "/nonexistent-dream-path",
       workspaceId: "ws",
       config,
       enabled: false,
       nowMs: 2_000_000,
     });
-    assert.equal(e1.shouldLearn, false);
+    assert.equal(e1.shouldDream, false);
     assert.equal(
       getMemoryWorkspaceState(db).lastObservedTranscriptMtimeMs,
       100,
     );
 
     // Gates fail (turns unmet): watermark still untouched.
-    const e2 = evaluateMemoryLearningCadence(db, {
+    const e2 = evaluateMemoryDreamCadence(db, {
       cwd: "/nonexistent-dream-path",
       workspaceId: "ws",
       config,
       nowMs: 3_000_000,
     });
-    assert.equal(e2.shouldLearn, false);
+    assert.equal(e2.shouldDream, false);
     assert.equal(
       getMemoryWorkspaceState(db).lastObservedTranscriptMtimeMs,
       100,
@@ -214,7 +214,7 @@ test("finished_at is stored as ISO-8601 UTC and round-trips through Date.parse",
     finalizeMemoryRun(db, claim.runId!, { status: "completed" });
 
     const row = db
-      .prepare(`SELECT finished_at FROM learning_runs WHERE id = ?`)
+      .prepare(`SELECT finished_at FROM dream_runs WHERE id = ?`)
       .get(claim.runId!) as { finished_at: string | null };
     assert.ok(row.finished_at, "finished_at must be set");
     assert.match(
@@ -254,9 +254,7 @@ test("consume rolls back reported flag when cadence reset throws", () => {
     );
 
     const row = db
-      .prepare(
-        `SELECT reported_to_parent, status FROM learning_runs WHERE id = ?`,
-      )
+      .prepare(`SELECT reported_to_parent, status FROM dream_runs WHERE id = ?`)
       .get(claim.runId!) as { reported_to_parent: number; status: string };
     assert.equal(
       row.reported_to_parent,
@@ -277,7 +275,7 @@ test("buildMemoryStatusText shows the tree section, attempts, and OVER BUDGET fl
   try {
     const claim = acquireMemoryRunClaim(db, "auto");
     assert.ok(claim.runId);
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId: claim.runId!,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",
@@ -304,7 +302,7 @@ test("buildMemoryStatusText shows the tree section, attempts, and OVER BUDGET fl
       },
     });
     db.prepare(
-      `INSERT INTO maintenance_attempts (key, attempts, last_generation) VALUES ('merge:memory:1+memory:2', 1, 0)`,
+      `INSERT INTO consolidation_attempts (key, attempts, last_generation) VALUES ('merge:memory:1+memory:2', 1, 0)`,
     ).run();
     const cfg = { ...defaultMemoryWorkspaceConfig(), briefingTokenBudget: 1 };
     const text = buildMemoryStatusText({
@@ -315,19 +313,19 @@ test("buildMemoryStatusText shows the tree section, attempts, and OVER BUDGET fl
     assert.match(text, /tree roots:\s+2/);
     assert.match(text, /OVER BUDGET: \d+\/1 tokens/);
     assert.match(text, /pending attempts: merge:memory:1\+memory:2 \(1\/3\)/);
-    assert.match(text, /embedder:\s+tree maintenance \+ learning only/);
-    assert.match(text, /last maintenance: none/);
+    assert.match(text, /embedder:\s+consolidation \+ dreaming only/);
+    assert.match(text, /last dream:\s+none/);
   } finally {
     closeMemoryDatabase(db);
   }
 });
 
-test("cadence fires a maintenance-only run with no transcripts when candidates exist", () => {
+test("cadence fires a dream-only run with no transcripts when candidates exist", () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     const claim = acquireMemoryRunClaim(db, "auto");
     assert.ok(claim.runId);
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId: claim.runId!,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",
@@ -363,25 +361,25 @@ test("cadence fires a maintenance-only run with no transcripts when candidates e
       minMinutes: 1,
     };
     // Without candidates: transcript gate blocks.
-    const noCandidates = evaluateMemoryLearningCadence(db, {
+    const noCandidates = evaluateMemoryDreamCadence(db, {
       cwd: "/nonexistent-dream-path",
       workspaceId: "ws",
       config,
       nowMs: 2_000_000,
     });
-    assert.equal(noCandidates.shouldLearn, false);
+    assert.equal(noCandidates.shouldDream, false);
 
-    // Cold roots -> maintenance candidates -> shouldLearn without transcripts.
-    const withCandidates = evaluateMemoryLearningCadence(db, {
+    // Cold roots -> consolidation candidates -> shouldDream without transcripts.
+    const withCandidates = evaluateMemoryDreamCadence(db, {
       cwd: "/nonexistent-dream-path",
       workspaceId: "ws",
       config,
       nowMs: 2_000_000 + 120_000,
     });
-    assert.equal(withCandidates.shouldLearn, true);
+    assert.equal(withCandidates.shouldDream, true);
     assert.ok(
       !withCandidates.reasons.some((r) => r.includes("no uncheckpointed")),
-      "maintenance candidates replace the transcript gate",
+      "consolidation candidates replace the transcript gate",
     );
   } finally {
     closeMemoryDatabase(db);
@@ -393,7 +391,7 @@ test("buildMemoryListText renders the tree indented", () => {
   try {
     const claim = acquireMemoryRunClaim(db, "auto");
     assert.ok(claim.runId);
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId: claim.runId!,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Quality cases for the memory learner: include durable preferences/facts; exclude trivia, secrets, one-offs, activity logs.",
+  "description": "Quality cases for the memory dreamer: include durable preferences/facts; exclude trivia, secrets, one-offs, activity logs.",
   "cases": [
     {
       "id": "explicit-preference",

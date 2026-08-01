@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
  * Offline report for eval/memory-recall-corpus.json.
- * Prints tree-maintenance and synthesizer scenarios for recall quality review.
+ * Prints tree-consolidation and synthesizer scenarios for recall quality review.
  *
  * Live model scoring is not part of this script. Use the corpus as a fixture
- * when exercising the synthesizer, the maintenance planner, and the cap
+ * when exercising the synthesizer, the consolidation planner, and the cap
  * enforcement against a configured model. Exit code is always 0 — the unit
- * tests in shared/memory-maintenance.test.ts and shared/memory-synthesizer.test.ts
+ * tests in shared/memory-consolidation.test.ts and shared/memory-synthesizer.test.ts
  * are the real gate.
  */
 

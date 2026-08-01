@@ -1,5 +1,5 @@
 /**
- * Model resolution helpers for learning and recall.
+ * Model resolution helpers for dreaming and recall.
  */
 
 import type { Api, Model, Provider } from "@earendil-works/pi-ai";
@@ -24,7 +24,7 @@ export type MemoryAuthResultLike =
 export type MemoryCompletionProviderLike = Pick<Provider, "streamSimple">;
 
 /**
- * Extension-facing model registry surface used by recall/learning paths.
+ * Extension-facing model registry surface used by dream/recall paths.
  * Matches pi 0.83's extension ModelRegistry: a synchronous facade exposing
  * find/getProvider/getApiKeyAndHeaders — not internal completeSimple.
  */
@@ -45,7 +45,7 @@ export interface ResolvedMemoryModel {
 }
 
 /**
- * Resolve learning or recall model from optional config + current session model.
+ * Resolve dream or recall model from optional config + current session model.
  * Returns null with error when configured model is invalid or none available.
  */
 export function resolveMemoryModel(

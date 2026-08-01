@@ -10,7 +10,7 @@ import {
   openMemoryDatabaseAtPath,
 } from "../shared/memory-database.ts";
 import { acquireMemoryRunClaim } from "../shared/memory-run-claim.ts";
-import { commitMemoryLearningSession } from "../shared/memory-repository.ts";
+import { commitMemoryDreamSession } from "../shared/memory-repository.ts";
 import { defaultMemoryWorkspaceConfig } from "../shared/memory-config.ts";
 import { getMemoryActivityGeneration } from "../shared/memory-graph.ts";
 import { listMemoryTreeRoots } from "../shared/memory-tree.ts";
@@ -26,7 +26,7 @@ function seed(
   db: ReturnType<typeof openMemoryDatabaseAtPath>,
   runId: string,
 ): void {
-  commitMemoryLearningSession(db, {
+  commitMemoryDreamSession(db, {
     runId,
     sourceSessionId: "s1",
     sessionPath: "/tmp/s1.jsonl",
@@ -73,7 +73,7 @@ test("success renders the synthesized answer + index and records startup/open ev
     seed(db, claim.runId!);
     // Wrap m1+m2 so the synthesizer can open a summary; M:3 stays a root so
     // the rendered briefing has an "Other memories" index line.
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId: claim.runId!,
       sourceSessionId: "s2",
       sessionPath: "/tmp/s2.jsonl",
@@ -188,7 +188,7 @@ test("sources get startup events; both opened+source summaries get one event", a
     const claim = acquireMemoryRunClaim(db, "manual");
     assert.equal(claim.acquired, true);
     seed(db, claim.runId!);
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId: claim.runId!,
       sourceSessionId: "s2",
       sessionPath: "/tmp/s2.jsonl",
@@ -423,7 +423,7 @@ test("renderMemoryBriefingMessage caps the index at 50 lines with a tail", () =>
       observationText: `Fact ${i}`,
       memoryText: `Fact ${i}`,
     }));
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId: claim.runId!,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",
@@ -447,7 +447,7 @@ test("renderMemoryBriefingMessage shows full memory text, never truncated", () =
     const claim = acquireMemoryRunClaim(db, "manual");
     assert.equal(claim.acquired, true);
     const longText = `Long memory text. ${"x".repeat(300)}`;
-    commitMemoryLearningSession(db, {
+    commitMemoryDreamSession(db, {
       runId: claim.runId!,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",

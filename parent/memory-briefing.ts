@@ -106,20 +106,21 @@ export function renderMemoryBriefingMessage(
     let shown = 0;
     for (const root of roots) {
       if (shown >= MEMORY_BRIEFING_INDEX_MAX_LINES) break;
-      const truncated =
-        root.text.length > 60 ? `${root.text.slice(0, 60)}…` : root.text;
-      lines.push(`- ${root.prefixedId} (${root.kind}): ${truncated}`);
+      // Full text, never truncated: the index is render-only and the top layer
+      // is already bounded by the briefing token budget. Texts are guaranteed
+      // single-line by validateMemoryBodyText on every write path.
+      lines.push(`- ${root.prefixedId} (${root.kind}): ${root.text}`);
       shown++;
     }
     if (roots.length > shown) {
       lines.push(
-        `… and ${roots.length - shown} more (use memory_open /memory list)`,
+        `… and ${roots.length - shown} more (see /memory list for all)`,
       );
     }
   }
   lines.push(
     "",
-    "_Use `memory_search` or `memory_open` for more detail. IDs are stable._",
+    "`memory_search` — ask a question in your own words; the synthesizer answers from the memory tree. `memory_open <id>` — open a memory to see everything beneath it; a summary opens into the raw memories it compresses, with the detail the compression drops.",
   );
   return lines.join("\n");
 }

@@ -440,3 +440,49 @@ test("renderMemoryBriefingMessage caps the index at 50 lines with a tail", () =>
     closeMemoryDatabase(db);
   }
 });
+
+test("renderMemoryBriefingMessage shows full memory text, never truncated", () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "manual");
+    assert.equal(claim.acquired, true);
+    const longText = `Long memory text. ${"x".repeat(300)}`;
+    commitMemoryLearningSession(db, {
+      runId: claim.runId!,
+      sourceSessionId: "s1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1,
+      contentHash: "h1",
+      plan: {
+        operations: [
+          {
+            op: "create" as const,
+            tempRef: "m0",
+            kind: "fact" as const,
+            observationText: "obs",
+            memoryText: longText,
+          },
+        ],
+      },
+    });
+    const content = renderMemoryBriefingMessage(db, "Answer.", []);
+    assert.ok(content.includes(longText), "long memory text renders in full");
+    assert.ok(!content.includes("…"), "no truncation marker in the index");
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
+test("renderMemoryBriefingMessage footer points to memory_search and memory_open", () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const content = renderMemoryBriefingMessage(db, "Answer.", []);
+    const footer = content.trimEnd().split("\n").at(-1)!;
+    assert.ok(footer.startsWith("`memory_search`"));
+    assert.ok(footer.includes("`memory_open <id>`"));
+    assert.ok(!footer.startsWith("_") && !footer.endsWith("_"));
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});

@@ -225,16 +225,25 @@ export default function piDreamExtension(pi: ExtensionAPI) {
       if (result.message) {
         return { message: result.message };
       }
+      if (result.audit) {
+        // Silent skip (top-layer over budget or synthesizer failure): record
+        // the audit entry best-effort; never show raw tree content.
+        try {
+          pi.appendEntry(MEMORY_AUDIT_CUSTOM_TYPE, result.audit);
+        } catch {
+          // appendEntry is optional outside interactive TUI sessions.
+        }
+      }
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
-      return {
-        message: {
-          customType: MEMORY_BRIEFING_CUSTOM_TYPE,
-          content: `Memory retrieval unavailable: ${detail}`,
-          display: true as const,
-          details: { status: "unavailable", error: detail },
-        },
-      };
+      try {
+        pi.appendEntry(MEMORY_AUDIT_CUSTOM_TYPE, {
+          status: "synthesizer_failed",
+          error: detail,
+        });
+      } catch {
+        // appendEntry is optional outside interactive TUI sessions.
+      }
     }
   });
 

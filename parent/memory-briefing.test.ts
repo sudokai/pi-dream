@@ -3,6 +3,7 @@ import * as assert from "node:assert/strict";
 import {
   buildMemorySessionBriefing,
   createMemoryBriefingSignal,
+  renderMemoryBriefingMessage,
 } from "./memory-briefing.ts";
 import {
   closeMemoryDatabase,
@@ -11,15 +12,8 @@ import {
 import { acquireMemoryRunClaim } from "../shared/memory-run-claim.ts";
 import { commitMemoryLearningSession } from "../shared/memory-repository.ts";
 import { defaultMemoryWorkspaceConfig } from "../shared/memory-config.ts";
-import {
-  resetMemoryEmbedderForTests,
-  setMemoryEmbedderForTests,
-} from "../shared/memory-embedding.ts";
 import { getMemoryActivityGeneration } from "../shared/memory-graph.ts";
-
-function fakeEmbed(texts: string[]): Promise<Float32Array[]> {
-  return Promise.resolve(texts.map(() => new Float32Array([0.25, 0.5, 0.75])));
-}
+import { listMemoryTreeRoots } from "../shared/memory-tree.ts";
 
 test("briefing signal uses a bounded timeout before pi exposes a run signal", async () => {
   const signal = createMemoryBriefingSignal(undefined, 10);
@@ -28,33 +22,93 @@ test("briefing signal uses a bounded timeout before pi exposes a run signal", as
   assert.equal(signal.aborted, true);
 });
 
-test("buildMemorySessionBriefing completes through the pi-ai provider adapter by default", async () => {
+function seed(
+  db: ReturnType<typeof openMemoryDatabaseAtPath>,
+  runId: string,
+): void {
+  commitMemoryLearningSession(db, {
+    runId,
+    sourceSessionId: "s1",
+    sessionPath: "/tmp/s1.jsonl",
+    cwd: "/tmp",
+    processedMtimeMs: 1,
+    contentHash: "h1",
+    plan: {
+      operations: [
+        {
+          op: "create",
+          tempRef: "m1",
+          kind: "preference",
+          observationText: "User avoids emoji",
+          memoryText: "Do not use emoji in commits",
+        },
+        {
+          op: "create",
+          tempRef: "m2",
+          kind: "fact",
+          observationText: "Build uses pnpm",
+          memoryText: "The build uses pnpm",
+        },
+      ],
+    },
+  });
+}
+
+function registry() {
+  return {
+    find: () => ({ id: "fake-model" }),
+    getProvider: () => undefined,
+  };
+}
+
+function completeWith(response: string) {
+  return async () => ({ text: response });
+}
+
+test("success renders the synthesized answer + index and records startup/open events", async () => {
   const db = openMemoryDatabaseAtPath(":memory:");
-  setMemoryEmbedderForTests(fakeEmbed);
   try {
     const claim = acquireMemoryRunClaim(db, "manual");
     assert.equal(claim.acquired, true);
+    seed(db, claim.runId!);
+    // Wrap m1+m2 so the synthesizer can open a summary; M:3 stays a root so
+    // the rendered briefing has an "Other memories" index line.
     commitMemoryLearningSession(db, {
       runId: claim.runId!,
-      sourceSessionId: "s1",
-      sessionPath: "/tmp/s1.jsonl",
+      sourceSessionId: "s2",
+      sessionPath: "/tmp/s2.jsonl",
       cwd: "/tmp",
       processedMtimeMs: 1,
-      contentHash: "h1",
+      contentHash: "h2",
       plan: {
         operations: [
           {
             op: "create",
-            tempRef: "t",
-            kind: "preference",
-            observationText: "User avoids emoji",
-            memoryText: "Do not use emoji in commits",
+            tempRef: "m3",
+            kind: "fact",
+            observationText: "CI runs on Ubuntu",
+            memoryText: "CI runs on Ubuntu",
+          },
+          {
+            op: "summarize",
+            tempRef: "s1",
+            text: "Tooling",
+            memberIds: ["M:1", "M:2"],
           },
         ],
       },
     });
 
     const calls: Array<Record<string, unknown>> = [];
+    const responses = [
+      JSON.stringify({ action: "open", id: "S:1" }),
+      JSON.stringify({
+        action: "finalize",
+        answer: "What should I know? Avoid emoji and use pnpm.",
+        sources: ["S:1"],
+      }),
+    ];
+    let callIndex = 0;
     const modelRegistry = {
       find: () => ({ id: "fake-model" }),
       getProvider: (providerId: string) => {
@@ -71,14 +125,9 @@ test("buildMemorySessionBriefing completes through the pi-ai provider adapter by
                 content: [
                   {
                     type: "text",
-                    text: JSON.stringify({
-                      sections: [
-                        {
-                          id: "learned_user_preferences",
-                          ids: ["M:1"],
-                        },
-                      ],
-                    }),
+                    text: responses[
+                      Math.min(callIndex++, responses.length - 1)
+                    ]!,
                   },
                 ],
                 usage: { inputTokens: 10, outputTokens: 3 },
@@ -103,9 +152,12 @@ test("buildMemorySessionBriefing completes through the pi-ai provider adapter by
 
     assert.equal(result.ok, true);
     if (!result.ok) return;
-    assert.ok(result.message, "planner-approved memory must render a briefing");
-    assert.match(result.message!.content, /Do not use emoji in commits/);
-    assert.deepEqual(result.plan.selectedIds, ["M:1"]);
+    assert.ok(result.message, "successful synthesis must render a briefing");
+    assert.match(result.message!.content, /What should I know/);
+    assert.match(result.message!.content, /Other memories:/);
+    assert.match(result.message!.content, /memory_open/);
+    assert.equal(result.audit, null);
+    assert.equal(callIndex, 2, "open then finalize: two model calls");
 
     // The default completion path went through provider.streamSimple with
     // recallThinking mapped to SimpleStreamOptions.reasoning.
@@ -117,31 +169,147 @@ test("buildMemorySessionBriefing completes through the pi-ai provider adapter by
     const options = streamCall!.options as Record<string, unknown>;
     assert.equal(options.reasoning, "high");
     assert.equal(options.apiKey, "sk-test");
-    const context = streamCall!.context as {
-      systemPrompt: string;
-      messages: Array<{ role: string; content: string; timestamp?: unknown }>;
-    };
-    assert.equal(typeof context.systemPrompt, "string");
-    assert.ok(context.systemPrompt.includes("briefing planner"));
-    assert.equal(context.messages.length, 1);
-    assert.equal(context.messages[0]!.role, "user");
-    assert.match(context.messages[0]!.content, /Do not use emoji in commits/);
-    assert.equal(typeof context.messages[0]!.timestamp, "number");
 
-    // Recalled nodes record startup recall events.
+    // S:1 was opened and then cited as the source: exactly one event (startup).
     const events = db
       .prepare(`SELECT node_type, node_id, source FROM recall_events`)
       .all() as Array<{ node_type: string; node_id: number; source: string }>;
     assert.equal(events.length, 1);
-    assert.equal(events[0]!.node_type, "memory");
     assert.equal(events[0]!.source, "startup");
+    assert.equal(events[0]!.node_type, "summary");
   } finally {
     closeMemoryDatabase(db);
-    resetMemoryEmbedderForTests();
   }
 });
 
-test("briefing with no candidates renders nothing and never calls the model", async () => {
+test("sources get startup events; both opened+source summaries get one event", async () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "manual");
+    assert.equal(claim.acquired, true);
+    seed(db, claim.runId!);
+    commitMemoryLearningSession(db, {
+      runId: claim.runId!,
+      sourceSessionId: "s2",
+      sessionPath: "/tmp/s2.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1,
+      contentHash: "h2",
+      plan: {
+        operations: [
+          {
+            op: "summarize",
+            tempRef: "s1",
+            text: "Tooling",
+            memberIds: ["M:1", "M:2"],
+          },
+        ],
+      },
+    });
+    const responses = [
+      JSON.stringify({ action: "open", id: "S:1" }),
+      JSON.stringify({
+        action: "finalize",
+        answer: "Tooling: no emoji, pnpm.",
+        sources: ["S:1"],
+      }),
+    ];
+    let i = 0;
+    const result = await buildMemorySessionBriefing({
+      db,
+      query: "tooling?",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: {
+        find: () => ({ id: "fake-model" }),
+        getProvider: () => ({
+          streamSimple: () => ({
+            result: async () => ({
+              content: [{ type: "text", text: responses[i++] }],
+            }),
+          }),
+        }),
+      } as never,
+      currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.ok(result.message);
+    // S:1 was both opened and sourced: exactly one event (startup wins).
+    const events = db
+      .prepare(`SELECT node_type, node_id, source FROM recall_events`)
+      .all() as Array<{ node_type: string; node_id: number; source: string }>;
+    assert.equal(events.length, 1);
+    assert.equal(events[0]!.node_type, "summary");
+    assert.equal(events[0]!.source, "startup");
+    assert.equal(events[0]!.node_id, 1);
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
+test("synthesizer failure skips silently with an audit payload and no events", async () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "manual");
+    assert.equal(claim.acquired, true);
+    seed(db, claim.runId!);
+    const result = await buildMemorySessionBriefing({
+      db,
+      query: "anything",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: registry() as never,
+      currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
+      complete: completeWith("not-json"),
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.message, null);
+    assert.deepEqual(result.audit, {
+      status: "synthesizer_failed",
+      error: result.audit?.error,
+    });
+    const events = db
+      .prepare(`SELECT COUNT(*) AS n FROM recall_events`)
+      .get() as {
+      n: number;
+    };
+    assert.equal(Number(events.n), 0, "no reheat on failure");
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
+test("an over-budget top layer yields the top_layer_over_budget audit", async () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "manual");
+    assert.equal(claim.acquired, true);
+    seed(db, claim.runId!);
+    const result = await buildMemorySessionBriefing({
+      db,
+      query: "anything",
+      config: {
+        ...defaultMemoryWorkspaceConfig(),
+        briefingTokenBudget: 1,
+      },
+      modelRegistry: registry() as never,
+      currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
+      complete: async () => {
+        throw new Error("model must not be called for an over-budget layer");
+      },
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.message, null);
+    assert.equal(result.audit?.status, "top_layer_over_budget");
+    assert.ok(typeof result.audit?.tokens === "number");
+    assert.equal(result.audit?.budget, 1);
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
+test("empty top layer yields no message and no model call", async () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     let called = false;
@@ -157,139 +325,74 @@ test("briefing with no candidates renders nothing and never calls the model", as
         },
       } as never,
       currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
-      embed: fakeEmbed,
     });
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.equal(result.message, null);
+    assert.equal(result.audit, null);
     assert.equal(called, false, "empty workspace must not touch the provider");
   } finally {
     closeMemoryDatabase(db);
   }
 });
 
-test("unresolved recall model fails closed with a visible notice", async () => {
+test("generation advances on model-resolution failure, synthesizer failure, and empty layer", async () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
+    // Model-resolution failure (no model anywhere).
+    const r1 = await buildMemorySessionBriefing({
+      db,
+      query: "anything",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: { find: () => undefined } as never,
+      currentSessionModel: undefined,
+    });
+    assert.equal(r1.ok, true);
+    assert.equal(getMemoryActivityGeneration(db), 1);
+
+    // Synthesizer failure with memories present.
     const claim = acquireMemoryRunClaim(db, "manual");
     assert.equal(claim.acquired, true);
-    commitMemoryLearningSession(db, {
-      runId: claim.runId!,
-      sourceSessionId: "s1",
-      sessionPath: "/tmp/s1.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: 1,
-      contentHash: "h1",
-      plan: {
-        operations: [
-          {
-            op: "create",
-            tempRef: "t",
-            kind: "fact",
-            observationText: "Build uses pnpm",
-            memoryText: "The build uses pnpm",
-          },
-        ],
-      },
-    });
-
-    const result = await buildMemorySessionBriefing({
+    seed(db, claim.runId!);
+    const r2 = await buildMemorySessionBriefing({
       db,
       query: "anything",
       config: defaultMemoryWorkspaceConfig(),
-      modelRegistry: { find: () => undefined } as never,
-      currentSessionModel: undefined,
-      embed: fakeEmbed,
-    });
-    assert.equal(result.ok, false);
-    if (result.ok) return;
-    assert.match(result.error, /no configured model/);
-    assert.equal(result.notice.customType, "pi-dream-briefing");
-    assert.match(result.notice.content, /unavailable/i);
-    const gen = db
-      .prepare(`SELECT activity_generation FROM workspace_state WHERE id = 1`)
-      .get() as { activity_generation: number };
-    assert.equal(
-      gen.activity_generation,
-      0,
-      "unavailable recall must not cool heat via activity generation",
-    );
-  } finally {
-    closeMemoryDatabase(db);
-  }
-});
-
-test("unresolved recall model with an empty index fails closed without advancing activity generation", async () => {
-  const db = openMemoryDatabaseAtPath(":memory:");
-  try {
-    const result = await buildMemorySessionBriefing({
-      db,
-      query: "anything",
-      config: defaultMemoryWorkspaceConfig(),
-      modelRegistry: { find: () => undefined } as never,
-      currentSessionModel: undefined,
-      embed: fakeEmbed,
-    });
-    assert.equal(result.ok, false);
-    if (result.ok) return;
-    assert.match(result.error, /no configured model/);
-    assert.equal(result.notice.customType, "pi-dream-briefing");
-    assert.equal(
-      getMemoryActivityGeneration(db),
-      0,
-      "unresolved recall model must not advance activity generation, even on an empty index",
-    );
-  } finally {
-    closeMemoryDatabase(db);
-  }
-});
-
-test("empty briefing still advances activity generation once", async () => {
-  const db = openMemoryDatabaseAtPath(":memory:");
-  try {
-    const result = await buildMemorySessionBriefing({
-      db,
-      query: "anything",
-      config: defaultMemoryWorkspaceConfig(),
-      modelRegistry: { find: () => ({ id: "fake-model" }) } as never,
+      modelRegistry: registry() as never,
       currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
-      embed: fakeEmbed,
+      complete: completeWith("garbage"),
     });
-    assert.equal(result.ok, true);
-    const gen = db
-      .prepare(`SELECT activity_generation FROM workspace_state WHERE id = 1`)
-      .get() as { activity_generation: number };
-    assert.equal(gen.activity_generation, 1);
+    assert.equal(r2.ok, true);
+    if (!r2.ok) return;
+    assert.equal(r2.message, null);
+    assert.equal(getMemoryActivityGeneration(db), 2);
+
+    // Empty top layer (everything retired).
+    for (const m of listMemoryTreeRoots(db)) {
+      db.prepare(
+        `UPDATE ${m.nodeType === "memory" ? "memories" : "summaries"} SET state = 'retired' WHERE id = ?`,
+      ).run(m.nodeId);
+    }
+    const r3 = await buildMemorySessionBriefing({
+      db,
+      query: "anything",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: registry() as never,
+      currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
+    });
+    assert.equal(r3.ok, true);
+    assert.equal(getMemoryActivityGeneration(db), 3);
   } finally {
     closeMemoryDatabase(db);
   }
 });
 
-test("aborted briefing before planning does not advance activity generation", async () => {
+test("a pre-aborted attempt does not advance the generation", async () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     const claim = acquireMemoryRunClaim(db, "manual");
     assert.equal(claim.acquired, true);
-    commitMemoryLearningSession(db, {
-      runId: claim.runId!,
-      sourceSessionId: "s1",
-      sessionPath: "/tmp/s1.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: 1,
-      contentHash: "h1",
-      plan: {
-        operations: [
-          {
-            op: "create",
-            tempRef: "t",
-            kind: "preference",
-            observationText: "User avoids emoji",
-            memoryText: "Do not use emoji in commits",
-          },
-        ],
-      },
-    });
-
+    seed(db, claim.runId!);
     const controller = new AbortController();
     controller.abort();
     await assert.rejects(() =>
@@ -297,19 +400,42 @@ test("aborted briefing before planning does not advance activity generation", as
         db,
         query: "what should I know?",
         config: defaultMemoryWorkspaceConfig(),
-        modelRegistry: {
-          find: () => ({ id: "fake-model" }),
-          getProvider: () => undefined,
-        } as never,
+        modelRegistry: registry() as never,
         currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
-        embed: fakeEmbed,
         signal: controller.signal,
       }),
     );
-    const gen = db
-      .prepare(`SELECT activity_generation FROM workspace_state WHERE id = 1`)
-      .get() as { activity_generation: number };
-    assert.equal(gen.activity_generation, 0);
+    assert.equal(getMemoryActivityGeneration(db), 0);
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
+test("renderMemoryBriefingMessage caps the index at 50 lines with a tail", () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "manual");
+    assert.equal(claim.acquired, true);
+    const ops = Array.from({ length: 60 }, (_, i) => ({
+      op: "create" as const,
+      tempRef: `m${i}`,
+      kind: "fact" as const,
+      observationText: `Fact ${i}`,
+      memoryText: `Fact ${i}`,
+    }));
+    commitMemoryLearningSession(db, {
+      runId: claim.runId!,
+      sourceSessionId: "s1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1,
+      contentHash: "h1",
+      plan: { operations: ops },
+    });
+    const content = renderMemoryBriefingMessage(db, "Answer.", []);
+    const indexLines = content.split("\n").filter((l) => l.startsWith("- M:"));
+    assert.equal(indexLines.length, 50);
+    assert.match(content, /… and 10 more/);
   } finally {
     closeMemoryDatabase(db);
   }

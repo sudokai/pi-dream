@@ -196,6 +196,17 @@ export function memoryWorkspaceRunsDir(workspaceId: string): string {
   return path.join(memoryWorkspaceDataDir(workspaceId), "runs");
 }
 
+/**
+ * Stable path for the child's persisted last inspect-time maintenance batch
+ * (survives run-dir cleanup at finalize; read by /memory status).
+ */
+export function memoryWorkspaceLastInspectPath(workspaceId: string): string {
+  return path.join(
+    memoryWorkspaceDataDir(workspaceId),
+    "last-maintenance-inspect.json",
+  );
+}
+
 /** Ensure the workspace data directory exists with restrictive permissions. */
 export function ensureMemoryWorkspaceDataDir(workspaceId: string): string {
   const dir = memoryWorkspaceDataDir(workspaceId);

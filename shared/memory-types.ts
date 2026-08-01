@@ -27,6 +27,13 @@ export type MemoryKnowledgeKind =
 export type MemoryGraphRelation =
   "contains" | "related_to" | "supersedes" | "conflicts_with";
 
+/** Relations the learner `link` op may create (containment is ops-only). */
+export type MemoryLearnerLinkRelation =
+  "related_to" | "supersedes" | "conflicts_with";
+
+/** Lifecycle state of a graph edge (retired edges are append-only history). */
+export type MemoryGraphEdgeState = "active" | "retired";
+
 /** Where a recall event originated. */
 export type MemoryRecallSource = "startup" | "search" | "open";
 
@@ -58,14 +65,41 @@ export const MEMORY_BRIEFING_TOKEN_BUDGET = 8000;
 /** Rough chars-per-token estimate used for budget packing. */
 export const MEMORY_CHARS_PER_TOKEN_ESTIMATE = 4;
 
-/** Hybrid retrieval pool size before the LLM planner. */
-export const MEMORY_HYBRID_POOL_SIZE = 50;
+/** Heat at or below which a root is merge-eligible (cold). */
+export const MEMORY_COLD_HEAT_THRESHOLD = 0.4;
 
-/** Reciprocal-rank-fusion constant (short-list tuned, not textbook 60). */
-export const MEMORY_RRF_K = 20;
+/** Heat at or above which a child is promote-eligible (hot). */
+export const MEMORY_HOT_HEAT_THRESHOLD = 1.5;
 
-/** MiniLM cosine floor for semantic candidates. */
-export const MEMORY_SEMANTIC_FLOOR = 0.25;
+/** Maximum cold-eligible merge pairs per maintenance pass. */
+export const MEMORY_MAINTENANCE_MERGE_BOUND = 3;
+
+/** Hard ceiling on synthesizer navigation steps per answer. */
+export const MEMORY_SYNTHESIZER_MAX_STEPS = 8;
+
+/** Serialized-context envelope: framing + request + layer + navigation + answer. */
+export const MEMORY_SYNTHESIZER_CONTEXT_BUDGET = 16000;
+
+/** Answer token cap inside the synthesizer envelope. */
+export const MEMORY_SYNTHESIZER_ANSWER_BUDGET = 2000;
+
+/** Render-only cap for the briefing "Other memories" index lines. */
+export const MEMORY_BRIEFING_INDEX_MAX_LINES = 50;
+
+/** Fresh summaries are merge-ineligible for this many activity generations. */
+export const MEMORY_MAINTENANCE_SUMMARY_GRACE_GENERATIONS = 3;
+
+/** Consecutive compaction rejections before the deterministic fallback applies. */
+export const MEMORY_MAINTENANCE_MAX_ATTEMPTS = 3;
+
+/** Truncation cap on credited sources per synthesized answer. */
+export const MEMORY_SYNTHESIZER_MAX_SOURCES = 6;
+
+/** Tokens reserved inside the synthesizer envelope for navigation actions. */
+export const MEMORY_SYNTHESIZER_NAV_RESERVE = 256;
+
+/** Rough tokens reserved for framing + request inside the synthesizer envelope. */
+export const MEMORY_SYNTHESIZER_FRAMING_BUDGET = 512;
 
 /** Default automatic learning cadence: settled turns. */
 export const MEMORY_DEFAULT_MIN_TURNS = 10;
@@ -198,6 +232,7 @@ export interface GraphEdgeRow {
   fromId: number;
   toType: MemorySearchableNodeType;
   toId: number;
+  state: MemoryGraphEdgeState;
   createdAt: string;
 }
 
@@ -287,6 +322,8 @@ export type MemoryLearnerSummaryOperation =
       text: string;
       /** Prefixed M:/S: ids or in-commit temp refs from create/summarize. */
       memberIds: string[];
+      /** Why the maintenance pass planned this merge (audit only). */
+      reason?: "cold" | "budget";
     }
   | {
       op: "summarize";
@@ -297,6 +334,8 @@ export type MemoryLearnerSummaryOperation =
       text: string;
       /** Prefixed M:/S: ids or in-commit temp refs from create/summarize. */
       memberIds: string[];
+      /** Why the maintenance pass planned this merge (audit only). */
+      reason?: "cold" | "budget";
     };
 
 export type MemoryLearnerOperation =
@@ -326,15 +365,34 @@ export type MemoryLearnerOperation =
       kind: MemoryKnowledgeKind;
       observationText: string;
       memoryText: string;
+      /** Keep the direct parent summary alive by rewriting it without the excluded node. */
+      newSummaryText?: string;
+      /** CAS version of the parent summary when newSummaryText is provided. */
+      expectedSummaryVersionId?: number;
     }
   | {
       op: "conflict";
       memoryIds: MemoryNodeId[];
       observationText?: string;
+      /** Keep the direct parent summary alive by rewriting it without the excluded node. */
+      newSummaryText?: string;
+      /** CAS version of the parent summary when newSummaryText is provided. */
+      expectedSummaryVersionId?: number;
+    }
+  | {
+      op: "promote";
+      /** Hot child to resurface out of its parent summary. */
+      nodeId: MemoryNodeId | SummaryNodeId;
+      /** Parent summary id (must be the child's single active parent). */
+      summaryId: SummaryNodeId;
+      /** CAS version of the parent summary. */
+      expectedSummaryVersionId: number;
+      /** Rewritten parent text when the parent keeps >= 2 members. */
+      newSummaryText?: string;
     }
   | {
       op: "link";
-      relation: MemoryGraphRelation;
+      relation: MemoryLearnerLinkRelation;
       /** Prefixed M:/S: ids or in-commit temp refs. */
       fromId: string;
       toId: string;

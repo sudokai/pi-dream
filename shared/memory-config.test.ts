@@ -138,3 +138,93 @@ test("splitMemoryModelId and validateOptionalMemoryModel", () => {
     null,
   );
 });
+
+test("new maintenance/synthesizer keys parse with defaults", () => {
+  const r = parseMemoryWorkspaceConfig({
+    version: 1,
+    enabled: true,
+  });
+  assert.equal(r.ok, true);
+  if (r.ok) {
+    assert.equal(r.config.coldHeatThreshold, 0.4);
+    assert.equal(r.config.hotHeatThreshold, 1.5);
+    assert.equal(r.config.maintenanceMergeBound, 3);
+    assert.equal(r.config.synthesizerMaxSteps, 8);
+    assert.equal(r.config.synthesizerContextBudget, 16000);
+    assert.equal(r.config.synthesizerAnswerBudget, 2000);
+  }
+});
+
+test("removed hybrid keys fail closed like any unknown key", () => {
+  for (const key of ["hybridPoolSize", "rrfK", "semanticFloor"]) {
+    const r = parseMemoryWorkspaceConfig({
+      version: 1,
+      enabled: true,
+      [key]: 1,
+    });
+    assert.equal(r.ok, false, `${key} must be rejected`);
+    assert.match(r.ok ? "" : r.error, /unknown key/i);
+  }
+});
+
+test("reversed cold/hot thresholds are rejected", () => {
+  const r = parseMemoryWorkspaceConfig({
+    version: 1,
+    enabled: true,
+    coldHeatThreshold: 1.5,
+    hotHeatThreshold: 0.4,
+  });
+  assert.equal(r.ok, false);
+  if (!r.ok) assert.match(r.error, /coldHeatThreshold/);
+
+  const equal = parseMemoryWorkspaceConfig({
+    version: 1,
+    enabled: true,
+    coldHeatThreshold: 1.0,
+    hotHeatThreshold: 1.0,
+  });
+  assert.equal(equal.ok, false, "cold == hot must be rejected (no hysteresis)");
+});
+
+test("briefingTokenBudget below the single-node floor is rejected", () => {
+  const r = parseMemoryWorkspaceConfig({
+    version: 1,
+    enabled: true,
+    briefingTokenBudget: 199,
+  });
+  assert.equal(r.ok, false);
+  if (!r.ok) assert.match(r.error, /single-node floor/);
+
+  const ok = parseMemoryWorkspaceConfig({
+    version: 1,
+    enabled: true,
+    briefingTokenBudget: 200,
+  });
+  assert.equal(ok.ok, true);
+});
+
+test("loadMemoryWorkspaceConfig with legacy hybrid keys disables memory", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-cfg-legacy-"));
+  try {
+    const p = path.join(dir, "config.json");
+    fs.writeFileSync(
+      p,
+      JSON.stringify({
+        version: 1,
+        enabled: true,
+        hybridPoolSize: 50,
+        rrfK: 20,
+        semanticFloor: 0.25,
+      }),
+      "utf-8",
+    );
+    const r = loadMemoryWorkspaceConfig(p);
+    assert.equal(r.ok, true);
+    if (r.ok) {
+      assert.equal(r.config.enabled, false);
+      assert.equal(r.invalidFallback, true);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

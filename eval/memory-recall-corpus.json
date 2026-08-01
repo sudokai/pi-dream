@@ -1,53 +1,105 @@
 {
-  "version": 1,
-  "description": "Recall cases for hybrid search + LLM planner: precision, cold rediscovery, summary vs detail, contradictions.",
+  "version": 2,
+  "description": "Tree-based memory with synthesizer recall: cap enforcement, merge pairing quality, promote/split correctness, synthesizer navigation/source selection, reheat correctness, failure-skip.",
   "cases": [
     {
-      "id": "relevant-preference",
-      "query": "How should I format indentation?",
-      "memories": [
-        { "id": "M:1", "kind": "preference", "text": "Use tabs for indentation", "relevant": true },
-        { "id": "M:2", "kind": "fact", "text": "CI runs on Ubuntu 24.04", "relevant": false }
+      "id": "cap-enforced-not-truncated",
+      "query": "What should I know before we start?",
+      "scenario": "top-layer-over-budget",
+      "layers": [
+        { "id": "M:1", "kind": "preference", "text": "Use tabs for indentation" },
+        { "id": "M:2", "kind": "fact", "text": "CI runs on Ubuntu 24.04" },
+        { "id": "S:1", "kind": "summary", "text": "Tooling preferences" }
       ],
-      "expectSelected": ["M:1"]
+      "expect": "fail-closed",
+      "notes": "A top layer exceeding briefingTokenBudget never truncates at read time; the read fails closed with an audit and maintenance must compact."
     },
     {
-      "id": "adjacent-but-irrelevant",
+      "id": "merge-pairing-quality",
+      "query": "What are the tooling preferences?",
+      "scenario": "merge-pairing",
+      "layers": [
+        { "id": "M:1", "kind": "preference", "text": "Use tabs for indentation", "heat": 0.0 },
+        { "id": "M:2", "kind": "preference", "text": "Prefer tabs in every file", "heat": 0.0 },
+        { "id": "M:3", "kind": "fact", "text": "CI runs on Ubuntu", "heat": 0.0 },
+        { "id": "M:4", "kind": "fact", "text": "CI caches pnpm store", "heat": 0.0 }
+      ],
+      "expectPairing": [["M:1", "M:2"], ["M:3", "M:4"]],
+      "notes": "Cold roots pair by semantic nearest-neighbor; similar topics merge together."
+    },
+    {
+      "id": "promote-resurfaces-hot-child",
+      "query": "Do we use emoji in commits?",
+      "scenario": "promote",
+      "layers": [
+        { "id": "S:1", "kind": "summary", "text": "Coding style", "children": [
+          { "id": "M:1", "kind": "preference", "text": "No emoji in commits", "heat": 1.7 },
+          { "id": "M:2", "kind": "preference", "text": "Use tabs", "heat": 0.1 }
+        ] }
+      ],
+      "expectPromoted": ["M:1"],
+      "notes": "A child at or above the hot threshold is promoted back to the top layer; the parent is rewritten or retired."
+    },
+    {
+      "id": "synthesizer-opens-summary",
+      "query": "What exactly are our commit style rules?",
+      "scenario": "synthesizer-navigation",
+      "layers": [
+        { "id": "S:1", "kind": "summary", "text": "Commit style", "children": [
+          { "id": "M:1", "kind": "preference", "text": "No emoji in commits" },
+          { "id": "M:2", "kind": "preference", "text": "Conventional commit prefixes" },
+          { "id": "M:3", "kind": "preference", "text": "Max 72 char subject" }
+        ] }
+      ],
+      "expectAction": "open-then-finalize",
+      "expectSources": ["S:1"],
+      "notes": "The synthesizer opens a summary when its condensation is insufficient and cites what the answer relies on."
+    },
+    {
+      "id": "synthesizer-finalizes-from-layer",
+      "query": "Is there a workspace preference about indentation?",
+      "scenario": "synthesizer-navigation",
+      "layers": [
+        { "id": "M:1", "kind": "preference", "text": "Use tabs for indentation" },
+        { "id": "M:2", "kind": "fact", "text": "CI runs on Ubuntu" }
+      ],
+      "expectAction": "finalize-direct",
+      "expectSources": ["M:1"],
+      "notes": "Relevant roots are answered directly from the top layer; unrelated roots are not cited."
+    },
+    {
+      "id": "reheat-selection-only",
       "query": "What is the package manager?",
-      "memories": [
-        { "id": "M:1", "kind": "fact", "text": "Package manager is pnpm", "relevant": true },
-        { "id": "M:2", "kind": "fact", "text": "Package name is pi-dream", "relevant": false }
+      "scenario": "reheat",
+      "layers": [
+        { "id": "M:1", "kind": "fact", "text": "Package manager is pnpm" },
+        { "id": "M:2", "kind": "fact", "text": "CI runs on Ubuntu" }
       ],
-      "expectSelected": ["M:1"]
+      "expectSourceEvents": ["M:1"],
+      "expectNoHeatFor": ["display-only roots"],
+      "notes": "Selection credits heat; deterministic display and hit-listing never heat anything."
     },
     {
-      "id": "contradictory-excluded",
+      "id": "synthesizer-failure-skips",
+      "query": "Anything relevant?",
+      "scenario": "synthesizer-failure",
+      "layers": [
+        { "id": "M:1", "kind": "preference", "text": "Use tabs" }
+      ],
+      "expect": "silent-skip-with-audit",
+      "notes": "Synthesizer failure (malformed JSON, timeout, step exhaustion) skips silently with an audit entry; no raw node dump is shown."
+    },
+    {
+      "id": "conflicted-excluded",
       "query": "What API style do we use?",
-      "memories": [
-        { "id": "M:1", "kind": "fact", "text": "API is REST", "state": "conflicted", "relevant": false },
-        { "id": "M:2", "kind": "fact", "text": "API is GraphQL", "state": "conflicted", "relevant": false }
+      "scenario": "exclusion",
+      "layers": [
+        { "id": "M:1", "kind": "fact", "text": "API is REST", "state": "conflicted" },
+        { "id": "M:2", "kind": "fact", "text": "API is GraphQL", "state": "conflicted" },
+        { "id": "M:3", "kind": "fact", "text": "CI runs on Ubuntu" }
       ],
-      "expectSelected": []
-    },
-    {
-      "id": "cold-rediscovery",
-      "query": "Where do we deploy production?",
-      "memories": [
-        { "id": "M:9", "kind": "fact", "text": "Production deploys to Fly.io", "heat": 0.01, "relevant": true }
-      ],
-      "expectSelected": ["M:9"],
-      "notes": "Low heat must not prevent selection when relevant"
-    },
-    {
-      "id": "summary-over-details",
-      "query": "Remind me about our coding style",
-      "memories": [
-        { "id": "S:1", "kind": "summary", "text": "Coding style: tabs, minimal comments, no emoji commits", "relevant": true },
-        { "id": "M:1", "kind": "preference", "text": "Use tabs for indentation", "relevant": true },
-        { "id": "M:2", "kind": "preference", "text": "Prefer minimal comments", "relevant": true }
-      ],
-      "preferSummary": true,
-      "notes": "Planner may choose S:1 instead of multiple cold details"
+      "expectSources": [],
+      "notes": "Conflicted nodes are excluded from the top layer and from maintenance until resolved."
     }
   ]
 }

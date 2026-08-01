@@ -6,11 +6,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { MemoryWorkspaceConfig } from "../shared/memory-config.ts";
-import { searchMemoryHybrid } from "../shared/memory-search-index.ts";
-import {
-  planRelevantMemoryBriefing,
-  refreshMemoryBriefingPlanNodes,
-} from "../shared/memory-recall-planner.ts";
+import { synthesizeMemoryAnswer } from "../shared/memory-synthesizer.ts";
 import {
   formatSessionModelId,
   resolveMemoryModel,
@@ -21,13 +17,16 @@ import {
   openMemoryNodeExact,
   recordMemoryRecallEvent,
 } from "../shared/memory-graph.ts";
-import { loadBriefingPlannerPrompt } from "../shared/memory-prompts.ts";
+import { listMemoryTreeRoots } from "../shared/memory-tree.ts";
 import {
   composeMemoryAbortSignal,
   isMemoryQueryBlank,
   throwIfMemoryAborted,
 } from "../shared/memory-abort.ts";
-import { MEMORY_RECALL_OPERATION_TIMEOUT_MS } from "../shared/memory-types.ts";
+import {
+  MEMORY_RECALL_OPERATION_TIMEOUT_MS,
+  parsePrefixedNodeId,
+} from "../shared/memory-types.ts";
 
 export interface MemoryToolsContext {
   getDb: () => DatabaseSync;
@@ -93,11 +92,11 @@ export function registerMemoryAgentTools(
     name: "memory_search",
     label: "Memory Search",
     description:
-      "Search workspace memory with hybrid retrieval and LLM filtering. Returns only complete, planner-approved nodes (never raw BM25 hits).",
+      "Search workspace memory with the memory synthesizer. Returns a synthesized answer grounded in the memory tree, never raw hits.",
     promptSnippet: "Search durable workspace memory with memory_search",
     promptGuidelines: [
       "Use memory_search when you need preferences or workspace facts beyond the opening briefing.",
-      "Use memory_open to drill into a specific M:/S:/O: id from search or the briefing.",
+      "Use memory_open to drill into a specific M:/S:/O: id from the briefing or a search answer.",
     ],
     parameters: Type.Object({
       query: Type.String({ description: "Natural-language search query" }),
@@ -110,37 +109,30 @@ export function registerMemoryAgentTools(
       throwIfMemoryAborted(effectiveSignal);
       if (isMemoryQueryBlank(params.query)) {
         return {
-          content: [{ type: "text" as const, text: "No matching memories." }],
+          content: [
+            { type: "text" as const, text: "No relevant memories found." },
+          ],
           details: {
-            count: 0,
-            semanticDegraded: false,
-            semanticError: null,
+            sources: [] as string[],
+            openedSummaryIds: [] as string[],
+            steps: 0,
             usage: undefined as unknown,
-            selectedIds: [] as string[],
           },
         };
       }
 
       const db = ctx.getDb();
       const config = ctx.getConfig();
-      const hybrid = await searchMemoryHybrid(db, params.query, {
-        limit: config.hybridPoolSize,
-        rrfK: config.rrfK,
-        modelId: config.embeddingModel,
-        semanticFloor: config.semanticFloor,
-        signal: effectiveSignal,
-      });
-      throwIfMemoryAborted(effectiveSignal);
-
-      if (hybrid.candidates.length === 0) {
+      if (listMemoryTreeRoots(db).length === 0) {
         return {
-          content: [{ type: "text" as const, text: "No matching memories." }],
+          content: [
+            { type: "text" as const, text: "No relevant memories found." },
+          ],
           details: {
-            count: 0,
-            semanticDegraded: hybrid.semanticDegraded,
-            semanticError: hybrid.semanticError ?? null,
+            sources: [] as string[],
+            openedSummaryIds: [] as string[],
+            steps: 0,
             usage: undefined as unknown,
-            selectedIds: [] as string[],
           },
         };
       }
@@ -157,16 +149,15 @@ export function registerMemoryAgentTools(
         throw new Error(`memory_search: ${resolved.error}`);
       }
 
-      const registry = ctx.getModelRegistry();
-      const planned = await planRelevantMemoryBriefing({
-        query: params.query,
-        candidates: hybrid.candidates,
-        tokenBudget: config.briefingTokenBudget,
-        signal: effectiveSignal,
+      const result = await synthesizeMemoryAnswer({
         db,
-        plannerPrompt: loadBriefingPlannerPrompt(),
+        request: params.query,
+        config,
+        modelRegistry: ctx.getModelRegistry(),
+        sessionModel: resolved.resolved,
+        signal: effectiveSignal,
         complete: ({ system, user, signal: s }) =>
-          completeMemoryModelCall(registry, resolved.resolved, {
+          completeMemoryModelCall(ctx.getModelRegistry(), resolved.resolved, {
             system,
             user,
             signal: s,
@@ -174,56 +165,49 @@ export function registerMemoryAgentTools(
       });
       throwIfMemoryAborted(effectiveSignal);
 
-      if (!planned.ok) {
-        throw new Error(`memory_search planner failed: ${planned.error}`);
-      }
-
-      // Re-read selected nodes before rendering; drop any that are no longer
-      // active or whose text changed since planning.
-      const refreshed = refreshMemoryBriefingPlanNodes(db, planned.plan);
-      throwIfMemoryAborted(effectiveSignal);
-
-      if (refreshed.selectedIds.length === 0) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: "No relevant memories after filtering.",
-            },
-          ],
-          details: {
-            count: 0,
-            usage: planned.usage as unknown,
-            selectedIds: [] as string[],
-            semanticDegraded: hybrid.semanticDegraded,
-            semanticError: hybrid.semanticError ?? null,
-          },
-        };
-      }
-
-      const lines: string[] = ["# Memory search results", ""];
-      for (const section of refreshed.sections) {
-        lines.push(`## ${section.label}`);
-        for (const node of section.nodes) {
-          lines.push(`- **${node.prefixedId}** (${node.kind}): ${node.text}`);
-          recordMemoryRecallEvent(db, {
-            nodeType: node.nodeType,
-            nodeId: Number(node.prefixedId.slice(2)),
-            source: "search",
-            piSessionId: ctx.getPiSessionId(),
-          });
+      if (!result.ok) {
+        if (result.error === "top_layer_over_budget") {
+          throw new Error(
+            `top layer over budget (${result.layerTokens}/${result.budget} tokens); maintenance has not yet compacted it`,
+          );
         }
-        lines.push("");
+        throw new Error(`memory_search synthesizer failed: ${result.error}`);
+      }
+
+      // Record recall events: sources are selection (search); opened summaries
+      // are browse (open). A node that is both gets exactly one event.
+      const recorded = new Set<string>();
+      for (const sourceId of result.sources) {
+        const parsed = parsePrefixedNodeId(sourceId);
+        if (!parsed.ok || parsed.type === "observation") continue;
+        recordMemoryRecallEvent(db, {
+          nodeType: parsed.type,
+          nodeId: parsed.id,
+          source: "search",
+          piSessionId: ctx.getPiSessionId(),
+        });
+        recorded.add(`${parsed.type}:${parsed.id}`);
+      }
+      for (const openedId of result.openedSummaryIds) {
+        const parsed = parsePrefixedNodeId(openedId);
+        if (!parsed.ok || parsed.type !== "summary") continue;
+        if (recorded.has(`summary:${parsed.id}`)) continue;
+        recordMemoryRecallEvent(db, {
+          nodeType: "summary",
+          nodeId: parsed.id,
+          source: "open",
+          piSessionId: ctx.getPiSessionId(),
+        });
+        recorded.add(`summary:${parsed.id}`);
       }
 
       return {
-        content: [{ type: "text" as const, text: lines.join("\n").trim() }],
+        content: [{ type: "text" as const, text: result.answer }],
         details: {
-          count: refreshed.selectedIds.length,
-          selectedIds: refreshed.selectedIds as string[],
-          usage: planned.usage as unknown,
-          semanticDegraded: hybrid.semanticDegraded,
-          semanticError: hybrid.semanticError ?? null,
+          sources: result.sources as string[],
+          openedSummaryIds: result.openedSummaryIds as string[],
+          steps: result.steps,
+          usage: result.usage as unknown,
         },
       };
     },

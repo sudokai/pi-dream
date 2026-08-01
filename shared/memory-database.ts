@@ -13,7 +13,7 @@ import {
 } from "./memory-workspace-id.ts";
 import { ensureMemorySecureDir } from "./memory-fs.ts";
 
-export const MEMORY_SCHEMA_VERSION = 1;
+export const MEMORY_SCHEMA_VERSION = 2;
 
 const SCHEMA_SQL = `
 CREATE TABLE workspace_state (
@@ -86,6 +86,7 @@ CREATE TABLE summaries (
   state TEXT NOT NULL CHECK (state IN ('active', 'conflicted', 'superseded', 'retired')),
   current_version_id INTEGER,
   creation_generation INTEGER NOT NULL,
+  label_source TEXT NOT NULL DEFAULT 'model' CHECK (label_source IN ('model', 'fallback')),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -105,9 +106,14 @@ CREATE TABLE graph_edges (
   from_id INTEGER NOT NULL,
   to_type TEXT NOT NULL CHECK (to_type IN ('memory', 'summary')),
   to_id INTEGER NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE (relation, from_type, from_id, to_type, to_id)
+  state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'retired')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Only active rows must be unique: append-only retired history never blocks a
+-- new active edge (retire -> re-merge under the same parent after promote).
+CREATE UNIQUE INDEX idx_graph_edges_active_unique ON graph_edges
+  (relation, from_type, from_id, to_type, to_id) WHERE state = 'active';
 
 CREATE TABLE recall_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -129,13 +135,11 @@ CREATE TABLE search_documents (
   PRIMARY KEY (node_type, node_id)
 );
 
--- FTS5 index of active memory/summary text for BM25 ranking.
-CREATE VIRTUAL TABLE search_fts USING fts5(
-  text,
-  node_type UNINDEXED,
-  node_id UNINDEXED,
-  kind UNINDEXED,
-  tokenize = 'porter unicode61'
+CREATE TABLE maintenance_attempts (
+  key TEXT PRIMARY KEY,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_generation INTEGER NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE embeddings (
@@ -199,8 +203,8 @@ const REQUIRED_TABLES = [
   "graph_edges",
   "recall_events",
   "search_documents",
-  "search_fts",
   "embeddings",
+  "maintenance_attempts",
 ] as const;
 
 function validateMemorySchema(db: DatabaseSync): void {
@@ -211,15 +215,57 @@ function validateMemorySchema(db: DatabaseSync): void {
   }
 }
 
+/** Every table the extension has ever created, including FTS shadow tables. */
+const ALL_KNOWN_TABLES = [
+  "workspace_state",
+  "source_sessions",
+  "learning_runs",
+  "observations",
+  "memories",
+  "memory_versions",
+  "memory_observations",
+  "summaries",
+  "summary_versions",
+  "graph_edges",
+  "recall_events",
+  "search_documents",
+  "search_fts",
+  "search_fts_data",
+  "search_fts_idx",
+  "search_fts_content",
+  "search_fts_docsize",
+  "search_fts_config",
+  "embeddings",
+  "maintenance_attempts",
+] as const;
+
+/**
+ * Discard an out-of-date store wholesale (no backwards-compatibility shims):
+ * any version below the current schema is wiped and recreated fresh. Only
+ * `version > current` refuses, so an older extension never destroys a newer store.
+ */
+function wipeMemoryDatabase(db: DatabaseSync): void {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    for (const name of ALL_KNOWN_TABLES) {
+      db.exec(`DROP TABLE IF EXISTS ${name}`);
+    }
+    db.exec("COMMIT");
+  } catch (err) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      // Nested rollback failure is ignored.
+    }
+    throw err;
+  }
+}
+
 function ensureSchema(db: DatabaseSync): void {
   const version = Number(
     (db.prepare("PRAGMA user_version").get() as { user_version: number })
       .user_version,
   );
-  if (version === 0 && !tableExists(db, "workspace_state")) {
-    createFreshSchema(db);
-    return;
-  }
   if (version > MEMORY_SCHEMA_VERSION) {
     throw new Error(
       `Memory database version ${version} is newer than this extension (${MEMORY_SCHEMA_VERSION}); upgrade pi-dream before opening this workspace.`,
@@ -229,14 +275,10 @@ function ensureSchema(db: DatabaseSync): void {
     validateMemorySchema(db);
     return;
   }
-  if (version === 0 && tableExists(db, "workspace_state")) {
-    validateMemorySchema(db);
-    db.exec(`PRAGMA user_version = ${MEMORY_SCHEMA_VERSION}`);
-    return;
-  }
-  throw new Error(
-    `Unsupported memory database schema version ${version}; expected ${MEMORY_SCHEMA_VERSION}`,
-  );
+  // Any older version (including a legacy v0/v1 store with data) is discarded
+  // and recreated fresh; the learner re-mines session transcripts from disk.
+  wipeMemoryDatabase(db);
+  createFreshSchema(db);
 }
 
 export interface OpenMemoryDatabaseOptions {
@@ -305,28 +347,7 @@ export function closeMemoryDatabase(db: DatabaseSync | null | undefined): void {
   }
 }
 
-/** Clear and rebuild the standalone FTS index from search_documents. */
-export function rebuildMemorySearchFts(db: DatabaseSync): void {
-  db.exec("DELETE FROM search_fts");
-  const rows = db
-    .prepare(
-      `SELECT node_type, node_id, text, kind FROM search_documents WHERE state = 'active'`,
-    )
-    .all() as Array<{
-    node_type: string;
-    node_id: number;
-    text: string;
-    kind: string;
-  }>;
-  const insert = db.prepare(
-    `INSERT INTO search_fts (text, node_type, node_id, kind) VALUES (?, ?, ?, ?)`,
-  );
-  for (const row of rows) {
-    insert.run(row.text, row.node_type, row.node_id, row.kind);
-  }
-}
-
-/** Upsert one search document and keep the FTS row in sync. */
+/** Upsert one search document (canonical node-text projection). */
 export function upsertMemorySearchDocument(
   db: DatabaseSync,
   doc: {
@@ -337,10 +358,6 @@ export function upsertMemorySearchDocument(
     state: string;
   },
 ): void {
-  db.prepare("DELETE FROM search_fts WHERE node_type = ? AND node_id = ?").run(
-    doc.nodeType,
-    doc.nodeId,
-  );
   db.prepare(
     "DELETE FROM search_documents WHERE node_type = ? AND node_id = ?",
   ).run(doc.nodeType, doc.nodeId);
@@ -348,23 +365,14 @@ export function upsertMemorySearchDocument(
     `INSERT INTO search_documents (node_type, node_id, text, kind, state, updated_at)
      VALUES (?, ?, ?, ?, ?, datetime('now'))`,
   ).run(doc.nodeType, doc.nodeId, doc.text, doc.kind, doc.state);
-  if (doc.state === "active") {
-    db.prepare(
-      `INSERT INTO search_fts (text, node_type, node_id, kind) VALUES (?, ?, ?, ?)`,
-    ).run(doc.text, doc.nodeType, doc.nodeId, doc.kind);
-  }
 }
 
-/** Remove a node from the derived search index (FTS, documents, embeddings). */
+/** Remove a node from the derived search projection (documents + embeddings). */
 export function deleteMemorySearchDocument(
   db: DatabaseSync,
   nodeType: "memory" | "summary",
   nodeId: number,
 ): void {
-  db.prepare("DELETE FROM search_fts WHERE node_type = ? AND node_id = ?").run(
-    nodeType,
-    nodeId,
-  );
   db.prepare(
     "DELETE FROM search_documents WHERE node_type = ? AND node_id = ?",
   ).run(nodeType, nodeId);
@@ -372,40 +380,4 @@ export function deleteMemorySearchDocument(
     nodeType,
     nodeId,
   );
-}
-
-/**
- * Rebuild all active search documents from current memory/summary versions.
- * Also rebuilds the FTS index.
- */
-export function rebuildMemorySearchDocuments(db: DatabaseSync): void {
-  db.exec("DELETE FROM search_documents");
-  const memories = db
-    .prepare(
-      `SELECT m.id, m.kind, m.state, v.text
-       FROM memories m
-       JOIN memory_versions v ON v.id = m.current_version_id
-       WHERE m.state = 'active'`,
-    )
-    .all() as Array<{ id: number; kind: string; state: string; text: string }>;
-  const summaries = db
-    .prepare(
-      `SELECT s.id, s.state, v.text
-       FROM summaries s
-       JOIN summary_versions v ON v.id = s.current_version_id
-       WHERE s.state = 'active'`,
-    )
-    .all() as Array<{ id: number; state: string; text: string }>;
-
-  const insert = db.prepare(
-    `INSERT INTO search_documents (node_type, node_id, text, kind, state, updated_at)
-     VALUES (?, ?, ?, ?, ?, datetime('now'))`,
-  );
-  for (const row of memories) {
-    insert.run("memory", row.id, row.text, row.kind, row.state);
-  }
-  for (const row of summaries) {
-    insert.run("summary", row.id, row.text, "summary", row.state);
-  }
-  rebuildMemorySearchFts(db);
 }

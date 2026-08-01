@@ -5,10 +5,7 @@
 
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import {
-  MEMORY_EMBEDDING_MODEL_ID,
-  MEMORY_SEMANTIC_FLOOR,
-} from "./memory-types.ts";
+import { MEMORY_EMBEDDING_MODEL_ID } from "./memory-types.ts";
 
 export type MemoryEmbedFn = (texts: string[]) => Promise<Float32Array[]>;
 
@@ -64,19 +61,6 @@ export function cosineSimilarityMemoryVectors(
 
 function float32ToBuffer(v: Float32Array): Buffer {
   return Buffer.from(v.buffer, v.byteOffset, v.byteLength);
-}
-
-function bufferToFloat32(buf: Buffer | Uint8Array): Float32Array {
-  const copy = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
-  // Ensure alignment
-  const aligned = new Float32Array(copy.byteLength / 4);
-  const view = new Uint8Array(
-    aligned.buffer,
-    aligned.byteOffset,
-    aligned.byteLength,
-  );
-  view.set(copy.subarray(0, aligned.byteLength));
-  return aligned;
 }
 
 /** Create an embedder without binding it to any one caller's abort signal. */
@@ -433,112 +417,4 @@ export async function ensureMemoryEmbeddings(
     updated++;
   }
   return { updated, degraded: false };
-}
-
-export interface MemorySemanticHit {
-  nodeType: "memory" | "summary";
-  nodeId: number;
-  score: number;
-}
-
-/**
- * Rank active nodes by cosine similarity to the query embedding.
- * An empty index short-circuits before the embedder loads, so semantic
- * search never triggers a MiniLM download for a workspace with no memories.
- */
-export async function searchMemorySemantic(
-  db: DatabaseSync,
-  query: string,
-  opts?: {
-    modelId?: string;
-    embed?: MemoryEmbedFn | null;
-    floor?: number;
-    limit?: number;
-    signal?: AbortSignal;
-  },
-): Promise<{ hits: MemorySemanticHit[]; degraded: boolean; error?: string }> {
-  const modelId = opts?.modelId ?? MEMORY_EMBEDDING_MODEL_ID;
-  const floor = opts?.floor ?? MEMORY_SEMANTIC_FLOOR;
-  const limit = opts?.limit ?? 50;
-  const signal = opts?.signal;
-  if (signal?.aborted) {
-    return { hits: [], degraded: true, error: "aborted" };
-  }
-
-  const docCount = db
-    .prepare(
-      `SELECT COUNT(*) AS n FROM search_documents WHERE state = 'active'`,
-    )
-    .get() as { n: number };
-  if (Number(docCount.n) === 0) {
-    return { hits: [], degraded: false };
-  }
-
-  const embed =
-    opts?.embed !== undefined
-      ? opts.embed
-      : await loadMemoryEmbedder(modelId, signal);
-  if (!embed) {
-    return {
-      hits: [],
-      degraded: true,
-      error: signal?.aborted
-        ? "aborted"
-        : (getMemoryEmbedderCacheEntry(modelId).loadError ??
-          "Semantic embedder unavailable"),
-    };
-  }
-
-  try {
-    await ensureMemoryEmbeddings(db, { modelId, embed, signal });
-
-    if (signal?.aborted) {
-      return { hits: [], degraded: true, error: "aborted" };
-    }
-    const [queryVec] = await embed([query]);
-    if (signal?.aborted) {
-      return { hits: [], degraded: true, error: "aborted" };
-    }
-    if (!queryVec) {
-      return { hits: [], degraded: true, error: "Failed to embed query" };
-    }
-
-    const rows = db
-      .prepare(
-        `SELECT e.node_type, e.node_id, e.vector
-         FROM embeddings e
-         JOIN search_documents d
-           ON d.node_type = e.node_type AND d.node_id = e.node_id
-         WHERE e.model_id = ? AND d.state = 'active'`,
-      )
-      .all(modelId) as Array<{
-      node_type: "memory" | "summary";
-      node_id: number;
-      vector: Buffer;
-    }>;
-
-    const scored: MemorySemanticHit[] = [];
-    for (const row of rows) {
-      const vec = bufferToFloat32(row.vector);
-      const score = cosineSimilarityMemoryVectors(queryVec, vec);
-      if (score >= floor) {
-        scored.push({
-          nodeType: row.node_type,
-          nodeId: Number(row.node_id),
-          score,
-        });
-      }
-    }
-    scored.sort((a, b) => b.score - a.score);
-    return { hits: scored.slice(0, limit), degraded: false };
-  } catch (err) {
-    if (signal?.aborted) {
-      return { hits: [], degraded: true, error: "aborted" };
-    }
-    // Unexpected errors (corrupt index, IO, embedder failure) are not recall
-    // degradation: propagate so the boundary handlers surface them visibly
-    // instead of an empty result indistinguishable from a genuinely empty
-    // index. Only aborts soft-return as degraded.
-    throw err;
-  }
 }

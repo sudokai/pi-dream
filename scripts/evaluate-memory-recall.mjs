@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 /**
  * Offline report for eval/memory-recall-corpus.json.
- * Prints queries and expected selected IDs for recall quality review.
+ * Prints tree-maintenance and synthesizer scenarios for recall quality review.
  *
  * Live model scoring is not part of this script. Use the corpus as a fixture
- * when exercising hybrid search and the briefing planner against a configured model.
+ * when exercising the synthesizer, the maintenance planner, and the cap
+ * enforcement against a configured model. Exit code is always 0 — the unit
+ * tests in shared/memory-maintenance.test.ts and shared/memory-synthesizer.test.ts
+ * are the real gate.
  */
 
 import { readFileSync } from "node:fs";
@@ -16,14 +19,22 @@ const corpus = JSON.parse(
   readFileSync(join(root, "eval", "memory-recall-corpus.json"), "utf-8"),
 );
 
-console.log("Memory recall corpus");
-console.log("====================");
+console.log("Memory recall corpus (tree + synthesizer)");
+console.log("==========================================");
 console.log(`cases: ${corpus.cases.length}`);
 for (const c of corpus.cases) {
-  const expected = c.expectSelected
-    ? c.expectSelected.join(", ") || "(none)"
-    : c.preferSummary
-      ? "prefer summary"
-      : "?";
-  console.log(`- ${c.id}: query=${JSON.stringify(c.query)} expect=${expected}`);
+  const line = [`- ${c.id}: ${c.scenario ?? "?"}`];
+  if (c.expectPairing) {
+    line.push(`pairing=${c.expectPairing.map((p) => p.join("+")).join(" | ")}`);
+  }
+  if (c.expectPromoted) line.push(`promote=${c.expectPromoted.join(", ")}`);
+  if (c.expectAction) line.push(`action=${c.expectAction}`);
+  if (c.expectSources) {
+    line.push(`sources=${c.expectSources.join(", ") || "(none)"}`);
+  }
+  if (c.expect) line.push(`expect=${c.expect}`);
+  if (c.expectSourceEvents) {
+    line.push(`events=${c.expectSourceEvents.join(", ")}`);
+  }
+  console.log(line.join(" "));
 }

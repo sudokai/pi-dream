@@ -1,31 +1,35 @@
 /**
- * First-turn visible memory briefing: hybrid search → LLM planner → custom message.
+ * First-turn visible memory briefing: activity generation advance → synthesizer
+ * → synthesized answer + one-line index of the remaining top layer.
+ *
+ * The activity generation advances on every first-turn recall opportunity
+ * (after the abort guard, before model resolution) whether synthesis succeeds
+ * or fails; only a pre-aborted attempt does not advance. Synthesizer failure
+ * skips silently (no message, no reheat) with an audit payload for the call
+ * site to append via pi.appendEntry.
  */
 
 import type { DatabaseSync } from "node:sqlite";
 import type { MemoryWorkspaceConfig } from "../shared/memory-config.ts";
+import { synthesizeMemoryAnswer } from "../shared/memory-synthesizer.ts";
 import {
-  formatMemoryBriefingMessage,
-  planRelevantMemoryBriefing,
-  refreshMemoryBriefingPlanNodes,
-} from "../shared/memory-recall-planner.ts";
-import { searchMemoryHybrid } from "../shared/memory-search-index.ts";
-import { completeMemoryModelCall } from "../shared/memory-completion.ts";
+  incrementMemoryActivityGeneration,
+  recordMemoryRecallEvent,
+} from "../shared/memory-graph.ts";
+import { listMemoryTreeRoots } from "../shared/memory-tree.ts";
 import {
   formatSessionModelId,
   resolveMemoryModel,
   type MemoryModelRegistryLike,
 } from "../shared/memory-model.ts";
 import {
-  incrementMemoryActivityGeneration,
-  recordMemoryRecallEvent,
-} from "../shared/memory-graph.ts";
-import {
   MEMORY_BRIEFING_CUSTOM_TYPE,
+  MEMORY_BRIEFING_INDEX_MAX_LINES,
   MEMORY_RECALL_OPERATION_TIMEOUT_MS,
-  type MemoryBriefingPlan,
+  parsePrefixedNodeId,
+  type MemoryNodeId,
+  type SummaryNodeId,
 } from "../shared/memory-types.ts";
-import { loadBriefingPlannerPrompt } from "../shared/memory-prompts.ts";
 import {
   composeMemoryAbortSignal,
   throwIfMemoryAborted,
@@ -58,20 +62,19 @@ export interface BuildMemoryBriefingInput {
     user: string;
     signal?: AbortSignal;
   }) => Promise<{ text: string; usage?: unknown }>;
-  /** Injected embedder for tests; defaults to the local MiniLM pipeline. */
-  embed?: (texts: string[]) => Promise<Float32Array[]>;
 }
 
 export type BuildMemoryBriefingResult =
   | {
       ok: true;
-      plan: MemoryBriefingPlan;
       message: {
         customType: string;
         content: string;
         display: true;
         details: Record<string, unknown>;
       } | null;
+      /** Audit payload for the call site to append (pi.appendEntry). */
+      audit: Record<string, unknown> | null;
     }
   | {
       ok: false;
@@ -85,16 +88,57 @@ export type BuildMemoryBriefingResult =
     };
 
 /**
- * Run the full first-turn recall pipeline once.
- * Advances activity generation only after recall-model resolution and
- * abort-gated search/planning succeed.
- * Records recall only for rendered nodes.
+ * Render the visible briefing: the synthesized answer plus a one-line index of
+ * top-layer roots not among the answer's sources (render-only; never heats).
+ */
+export function renderMemoryBriefingMessage(
+  db: DatabaseSync,
+  answer: string,
+  sources: Array<MemoryNodeId | SummaryNodeId>,
+): string {
+  const sourceKeys = new Set(sources as string[]);
+  const lines: string[] = [answer.trim(), ""];
+  const roots = listMemoryTreeRoots(db).filter(
+    (r) => !sourceKeys.has(r.prefixedId),
+  );
+  if (roots.length > 0) {
+    lines.push("Other memories:");
+    let shown = 0;
+    for (const root of roots) {
+      if (shown >= MEMORY_BRIEFING_INDEX_MAX_LINES) break;
+      const truncated =
+        root.text.length > 60 ? `${root.text.slice(0, 60)}…` : root.text;
+      lines.push(`- ${root.prefixedId} (${root.kind}): ${truncated}`);
+      shown++;
+    }
+    if (roots.length > shown) {
+      lines.push(
+        `… and ${roots.length - shown} more (use memory_open /memory list)`,
+      );
+    }
+  }
+  lines.push(
+    "",
+    "_Use `memory_search` or `memory_open` for more detail. IDs are stable._",
+  );
+  return lines.join("\n");
+}
+
+/**
+ * Run the first-turn recall pipeline once: advance the activity generation,
+ * synthesize an answer from the top layer, record recall events for sources
+ * and opened summaries, and render the answer + index. Failures skip silently
+ * with an audit payload.
  */
 export async function buildMemorySessionBriefing(
   input: BuildMemoryBriefingInput,
 ): Promise<BuildMemoryBriefingResult> {
   const signal = input.signal;
   throwIfMemoryAborted(signal);
+
+  // Every first-turn recall opportunity advances the generation — on success
+  // and failure alike; heat decays with time, not with success.
+  incrementMemoryActivityGeneration(input.db);
 
   const sessionModelId = formatSessionModelId(input.currentSessionModel);
   const resolved = resolveMemoryModel(
@@ -104,111 +148,93 @@ export async function buildMemorySessionBriefing(
     input.modelRegistry,
     input.config.recallThinking,
   );
-
-  const hybrid = await searchMemoryHybrid(input.db, input.query, {
-    limit: input.config.hybridPoolSize,
-    rrfK: input.config.rrfK,
-    modelId: input.config.embeddingModel,
-    semanticFloor: input.config.semanticFloor,
-    embed: input.embed,
-    signal,
-  });
-  throwIfMemoryAborted(signal);
-
   if (!resolved.ok) {
     return {
-      ok: false,
-      error: resolved.error,
-      notice: {
-        customType: MEMORY_BRIEFING_CUSTOM_TYPE,
-        content: `Memory retrieval unavailable: ${resolved.error}`,
-        display: true,
-        details: { status: "unavailable", error: resolved.error },
-      },
+      ok: true,
+      message: null,
+      audit: { status: "synthesizer_failed", error: resolved.error },
     };
   }
 
-  if (hybrid.candidates.length === 0) {
-    // Empty index after a successful model resolve is still a completed
-    // first-turn opportunity.
-    incrementMemoryActivityGeneration(input.db);
+  if (listMemoryTreeRoots(input.db).length === 0) {
+    return { ok: true, message: null, audit: null };
+  }
+
+  const result = await synthesizeMemoryAnswer({
+    db: input.db,
+    request: input.query,
+    config: input.config,
+    modelRegistry: input.modelRegistry,
+    sessionModel: resolved.resolved,
+    signal,
+    complete: input.complete,
+  });
+
+  if (!result.ok) {
+    if (result.error === "top_layer_over_budget") {
+      return {
+        ok: true,
+        message: null,
+        audit: {
+          status: "top_layer_over_budget",
+          tokens: result.layerTokens,
+          budget: result.budget,
+        },
+      };
+    }
     return {
       ok: true,
-      plan: { sections: [], estimatedTokens: 0, selectedIds: [] },
       message: null,
+      audit: { status: "synthesizer_failed", error: result.error },
     };
   }
 
-  const complete =
-    input.complete ??
-    (({ system, user, signal }) =>
-      completeMemoryModelCall(input.modelRegistry, resolved.resolved, {
-        system,
-        user,
-        signal,
-      }));
-
-  const planned = await planRelevantMemoryBriefing({
-    query: input.query,
-    candidates: hybrid.candidates,
-    tokenBudget: input.config.briefingTokenBudget,
-    complete,
-    signal,
-    db: input.db,
-    plannerPrompt: loadBriefingPlannerPrompt(),
-  });
-  throwIfMemoryAborted(signal);
-
-  if (!planned.ok) {
-    return {
-      ok: false,
-      error: planned.error,
-      notice: {
-        customType: MEMORY_BRIEFING_CUSTOM_TYPE,
-        content: `Memory retrieval unavailable: ${planned.error}`,
-        display: true,
-        details: { status: "unavailable", error: planned.error },
-      },
-    };
+  // Record recall events: sources are selection (startup); opened summaries
+  // are browse (open). A node that is both gets exactly one event.
+  const recorded = new Set<string>();
+  for (const sourceId of result.sources) {
+    const parsed = parsePrefixedNodeId(sourceId);
+    if (!parsed.ok || parsed.type === "observation") continue;
+    recordMemoryRecallEvent(input.db, {
+      nodeType: parsed.type,
+      nodeId: parsed.id,
+      source: "startup",
+      piSessionId: input.piSessionId,
+    });
+    recorded.add(`${parsed.type}:${parsed.id}`);
+  }
+  for (const openedId of result.openedSummaryIds) {
+    const parsed = parsePrefixedNodeId(openedId);
+    if (!parsed.ok || parsed.type !== "summary") continue;
+    if (recorded.has(`summary:${parsed.id}`)) continue;
+    recordMemoryRecallEvent(input.db, {
+      nodeType: "summary",
+      nodeId: parsed.id,
+      source: "open",
+      piSessionId: input.piSessionId,
+    });
+    recorded.add(`summary:${parsed.id}`);
   }
 
-  // Planning succeeded: advance generation before recording recall side effects.
-  incrementMemoryActivityGeneration(input.db);
-
-  // Re-read selected nodes from the database before rendering: only nodes
-  // still active with unchanged text are rendered.
-  const refreshed = refreshMemoryBriefingPlanNodes(input.db, planned.plan);
-  throwIfMemoryAborted(signal);
-  if (refreshed.selectedIds.length === 0) {
-    return { ok: true, plan: refreshed, message: null };
-  }
-
-  for (const section of refreshed.sections) {
-    for (const node of section.nodes) {
-      recordMemoryRecallEvent(input.db, {
-        nodeType: node.nodeType,
-        nodeId: Number(node.prefixedId.slice(2)),
-        source: "startup",
-        piSessionId: input.piSessionId,
-      });
-    }
-  }
-
-  const content = formatMemoryBriefingMessage(refreshed);
+  const content = renderMemoryBriefingMessage(
+    input.db,
+    result.answer,
+    result.sources,
+  );
   return {
     ok: true,
-    plan: refreshed,
     message: {
       customType: MEMORY_BRIEFING_CUSTOM_TYPE,
       content,
       display: true,
       details: {
         status: "ok",
-        selectedIds: refreshed.selectedIds,
-        estimatedTokens: refreshed.estimatedTokens,
-        semanticDegraded: hybrid.semanticDegraded,
-        semanticError: hybrid.semanticError ?? null,
+        sources: result.sources,
+        openedSummaryIds: result.openedSummaryIds,
+        steps: result.steps,
+        usage: result.usage,
       },
     },
+    audit: null,
   };
 }

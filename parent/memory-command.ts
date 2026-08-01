@@ -22,13 +22,22 @@ import {
 } from "../shared/memory-graph.ts";
 import { getMemoryWorkspaceState } from "../shared/memory-repository.ts";
 import {
+  listMemoryMaintenanceAttempts,
+  readMemoryLastMaintenanceInspect,
+} from "../shared/memory-maintenance.ts";
+import {
+  estimateTopLayerTokens,
+  listMemoryNodeChildren,
+  listMemoryTreeRoots,
+} from "../shared/memory-tree.ts";
+import {
   activeMemoryRunId,
   listUnreportedMemoryRuns,
 } from "../shared/memory-run-claim.ts";
-import { memoryEmbeddingStatus } from "../shared/memory-embedding.ts";
 import {
   memoryWorkspaceConfigPath,
   memoryWorkspaceDbPath,
+  memoryWorkspaceLastInspectPath,
 } from "../shared/memory-workspace-id.ts";
 import { MEMORY_AUDIT_CUSTOM_TYPE } from "../shared/memory-types.ts";
 import { formatSessionModelId } from "../shared/memory-model.ts";
@@ -130,21 +139,6 @@ export function getMemoryCommandArgumentCompletions(
   return filtered.map((value) => ({ value, label: value }));
 }
 
-function formatSemanticIndexLabel(
-  emb: ReturnType<typeof memoryEmbeddingStatus>,
-): string {
-  switch (emb.state) {
-    case "ready":
-      return "ready";
-    case "loading":
-      return "loading (first use may download the model)";
-    case "failed":
-      return `degraded${emb.error ? ` (${emb.error})` : ""}`;
-    case "not_loaded":
-      return "not loaded (loads on first use)";
-  }
-}
-
 function formatStatus(input: {
   workspaceId: string;
   dbPath: string;
@@ -154,9 +148,18 @@ function formatStatus(input: {
 }): string {
   const counts = countMemoryNodesByState(input.db);
   const state = getMemoryWorkspaceState(input.db);
-  const emb = memoryEmbeddingStatus();
   const activeRun = activeMemoryRunId(input.db);
   const lastRuns = listUnreportedMemoryRuns(input.db);
+  const roots = listMemoryTreeRoots(input.db);
+  const layerTokens = estimateTopLayerTokens(input.db, roots);
+  const overBudget = layerTokens > input.config.briefingTokenBudget;
+  const attempts = listMemoryMaintenanceAttempts(input.db);
+  const inspect = readMemoryLastMaintenanceInspect(
+    memoryWorkspaceLastInspectPath(input.workspaceId),
+  );
+  const inspectSummary = inspect
+    ? `${inspect.merges.length} merge(s) (${inspect.merges.filter((m) => m.reason === "budget").length} budget-forced), ${inspect.promotes.length} promote(s) (run ${inspect.runId})`
+    : "none";
   const lines = [
     "Memory status",
     "─────────────",
@@ -172,34 +175,128 @@ function formatStatus(input: {
     `memories:         active=${counts.memories.active} conflicted=${counts.memories.conflicted} superseded=${counts.memories.superseded} retired=${counts.memories.retired}`,
     `summaries:        active=${counts.summaries.active} retired=${counts.summaries.retired}`,
     `observations:     ${counts.observations}`,
-    `semantic index:   ${formatSemanticIndexLabel(emb)}`,
+    `embedder:         tree maintenance + learning only (never loaded for recall)`,
     `active run:       ${activeRun ?? "none"}`,
     `unreported runs:  ${lastRuns.length}`,
+    `tree roots:       ${roots.length} (${roots.filter((r) => r.nodeType === "memory").length} memories / ${roots.filter((r) => r.nodeType === "summary").length} summaries)`,
+    overBudget
+      ? `top layer:        OVER BUDGET: ${layerTokens}/${input.config.briefingTokenBudget} tokens`
+      : `top layer:        ${layerTokens} tokens (budget ${input.config.briefingTokenBudget})`,
+    `last maintenance: ${inspectSummary}`,
   ];
+  if (attempts.length > 0) {
+    lines.push(
+      `pending attempts: ${attempts
+        .map((a) => `${a.key} (${a.attempts}/${3})`)
+        .join(", ")}`,
+    );
+  }
   return lines.join("\n");
+}
+
+function memoryRecurrence(db: DatabaseSync, memoryId: number): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(DISTINCT o.source_session_id) AS n
+       FROM memory_observations mo
+       JOIN observations o ON o.id = mo.observation_id
+       WHERE mo.memory_id = ?`,
+    )
+    .get(memoryId) as { n: number } | undefined;
+  return row ? Number(row.n) : 0;
+}
+
+function summaryLabelSource(db: DatabaseSync, summaryId: number): string {
+  const row = db
+    .prepare(`SELECT label_source FROM summaries WHERE id = ?`)
+    .get(summaryId) as { label_source: string } | undefined;
+  return row?.label_source ?? "model";
 }
 
 function formatList(db: DatabaseSync, query: string): string {
   const q = query.trim().toLowerCase();
-  const memories = listAllMemories(db);
-  const summaries = listAllSummaries(db);
   const lines: string[] = ["# Memory list", ""];
   const match = (text: string, id: string) =>
     !q || text.toLowerCase().includes(q) || id.toLowerCase().includes(q);
 
-  lines.push("## Memories");
-  for (const m of memories) {
-    const id = `M:${m.id}`;
-    if (!match(m.text, id)) continue;
-    lines.push(
-      `- **${id}** [${m.state}/${m.kind}] (r=${m.recurrence}): ${m.text}`,
-    );
+  // The tree: roots, then children indented under summaries (recursive).
+  lines.push("## Tree");
+  const renderChild = (
+    nodeType: "memory" | "summary",
+    nodeId: number,
+    prefixedId: string,
+    text: string,
+    depth: number,
+  ): void => {
+    if (!match(text, prefixedId)) return;
+    const pad = "  ".repeat(depth);
+    void pad;
+    if (nodeType === "memory") {
+      lines.push(
+        `- **${prefixedId}** [memory] (r=${memoryRecurrence(db, nodeId)}): ${text}`,
+      );
+    } else {
+      const label =
+        summaryLabelSource(db, nodeId) === "fallback" ? " (fallback)" : "";
+      lines.push(`- **${prefixedId}**${label} [summary]: ${text}`);
+      for (const child of listMemoryNodeChildren(db, "summary", nodeId)) {
+        if (child.state !== "active") continue;
+        renderChild(
+          child.nodeType,
+          child.nodeId,
+          child.prefixedId,
+          child.text,
+          depth + 1,
+        );
+      }
+    }
+  };
+
+  let anyTree = false;
+  for (const root of listMemoryTreeRoots(db)) {
+    if (!match(root.text, root.prefixedId)) continue;
+    anyTree = true;
+    if (root.nodeType === "memory") {
+      lines.push(
+        `- **${root.prefixedId}** [memory] (r=${memoryRecurrence(db, root.nodeId)}): ${root.text}`,
+      );
+    } else {
+      const label =
+        summaryLabelSource(db, root.nodeId) === "fallback" ? " (fallback)" : "";
+      lines.push(`- **${root.prefixedId}**${label} [summary]: ${root.text}`);
+      for (const child of listMemoryNodeChildren(db, "summary", root.nodeId)) {
+        if (child.state !== "active") continue;
+        renderChild(
+          child.nodeType,
+          child.nodeId,
+          child.prefixedId,
+          child.text,
+          1,
+        );
+      }
+    }
   }
-  lines.push("", "## Summaries");
-  for (const s of summaries) {
-    const id = `S:${s.id}`;
-    if (!match(s.text, id)) continue;
-    lines.push(`- **${id}** [${s.state}]: ${s.text}`);
+  if (!anyTree && !q) lines.push("(empty)");
+
+  // Non-active nodes stay visible for audit, flat.
+  const otherMemories = listAllMemories(db).filter((m) => m.state !== "active");
+  const otherSummaries = listAllSummaries(db).filter(
+    (s) => s.state !== "active",
+  );
+  if (otherMemories.length > 0 || otherSummaries.length > 0) {
+    lines.push("", "## Other states");
+    for (const m of otherMemories) {
+      const id = `M:${m.id}`;
+      if (!match(m.text, id)) continue;
+      lines.push(
+        `- **${id}** [${m.state}/${m.kind}] (r=${m.recurrence}): ${m.text}`,
+      );
+    }
+    for (const s of otherSummaries) {
+      const id = `S:${s.id}`;
+      if (!match(s.text, id)) continue;
+      lines.push(`- **${id}** [${s.state}]: ${s.text}`);
+    }
   }
   return lines.join("\n");
 }

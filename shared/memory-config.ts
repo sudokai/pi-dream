@@ -7,15 +7,20 @@ import { existsSync, readFileSync } from "node:fs";
 import * as path from "node:path";
 import {
   MEMORY_BRIEFING_TOKEN_BUDGET,
+  MEMORY_CHARS_PER_TOKEN_ESTIMATE,
+  MEMORY_COLD_HEAT_THRESHOLD,
   MEMORY_DEFAULT_MIN_MINUTES,
   MEMORY_DEFAULT_MIN_TURNS,
   MEMORY_EMBEDDING_MODEL_ID,
   MEMORY_HEAT_DECAY,
-  MEMORY_HYBRID_POOL_SIZE,
+  MEMORY_HOT_HEAT_THRESHOLD,
+  MEMORY_MAINTENANCE_MERGE_BOUND,
+  MEMORY_MAX_SUMMARY_CHARS,
   MEMORY_NOVELTY_BOOST,
   MEMORY_NOVELTY_GENERATIONS,
-  MEMORY_RRF_K,
-  MEMORY_SEMANTIC_FLOOR,
+  MEMORY_SYNTHESIZER_ANSWER_BUDGET,
+  MEMORY_SYNTHESIZER_CONTEXT_BUDGET,
+  MEMORY_SYNTHESIZER_MAX_STEPS,
 } from "./memory-types.ts";
 import { memoryWorkspaceConfigPath } from "./memory-workspace-id.ts";
 import {
@@ -49,9 +54,12 @@ export interface MemoryWorkspaceConfig {
   minMinutes: number;
   briefingTokenBudget: number;
   embeddingModel: string;
-  hybridPoolSize: number;
-  rrfK: number;
-  semanticFloor: number;
+  coldHeatThreshold: number;
+  hotHeatThreshold: number;
+  maintenanceMergeBound: number;
+  synthesizerMaxSteps: number;
+  synthesizerContextBudget: number;
+  synthesizerAnswerBudget: number;
   noveltyBoost: number;
   noveltyGenerations: number;
   heatDecay: number;
@@ -80,9 +88,12 @@ export function defaultMemoryWorkspaceConfig(): MemoryWorkspaceConfig {
     minMinutes: MEMORY_DEFAULT_MIN_MINUTES,
     briefingTokenBudget: MEMORY_BRIEFING_TOKEN_BUDGET,
     embeddingModel: MEMORY_EMBEDDING_MODEL_ID,
-    hybridPoolSize: MEMORY_HYBRID_POOL_SIZE,
-    rrfK: MEMORY_RRF_K,
-    semanticFloor: MEMORY_SEMANTIC_FLOOR,
+    coldHeatThreshold: MEMORY_COLD_HEAT_THRESHOLD,
+    hotHeatThreshold: MEMORY_HOT_HEAT_THRESHOLD,
+    maintenanceMergeBound: MEMORY_MAINTENANCE_MERGE_BOUND,
+    synthesizerMaxSteps: MEMORY_SYNTHESIZER_MAX_STEPS,
+    synthesizerContextBudget: MEMORY_SYNTHESIZER_CONTEXT_BUDGET,
+    synthesizerAnswerBudget: MEMORY_SYNTHESIZER_ANSWER_BUDGET,
     noveltyBoost: MEMORY_NOVELTY_BOOST,
     noveltyGenerations: MEMORY_NOVELTY_GENERATIONS,
     heatDecay: MEMORY_HEAT_DECAY,
@@ -144,9 +155,12 @@ export function parseMemoryWorkspaceConfig(
     "minMinutes",
     "briefingTokenBudget",
     "embeddingModel",
-    "hybridPoolSize",
-    "rrfK",
-    "semanticFloor",
+    "coldHeatThreshold",
+    "hotHeatThreshold",
+    "maintenanceMergeBound",
+    "synthesizerMaxSteps",
+    "synthesizerContextBudget",
+    "synthesizerAnswerBudget",
     "noveltyBoost",
     "noveltyGenerations",
     "heatDecay",
@@ -202,9 +216,30 @@ export function parseMemoryWorkspaceConfig(
       typeof obj.embeddingModel === "string" && obj.embeddingModel.trim()
         ? obj.embeddingModel.trim()
         : defaults.embeddingModel,
-    hybridPoolSize: positiveInt(obj.hybridPoolSize, defaults.hybridPoolSize),
-    rrfK: positiveInt(obj.rrfK, defaults.rrfK),
-    semanticFloor: unitInterval(obj.semanticFloor, defaults.semanticFloor),
+    coldHeatThreshold: positiveNumber(
+      obj.coldHeatThreshold,
+      defaults.coldHeatThreshold,
+    ),
+    hotHeatThreshold: positiveNumber(
+      obj.hotHeatThreshold,
+      defaults.hotHeatThreshold,
+    ),
+    maintenanceMergeBound: positiveInt(
+      obj.maintenanceMergeBound,
+      defaults.maintenanceMergeBound,
+    ),
+    synthesizerMaxSteps: positiveInt(
+      obj.synthesizerMaxSteps,
+      defaults.synthesizerMaxSteps,
+    ),
+    synthesizerContextBudget: positiveInt(
+      obj.synthesizerContextBudget,
+      defaults.synthesizerContextBudget,
+    ),
+    synthesizerAnswerBudget: positiveInt(
+      obj.synthesizerAnswerBudget,
+      defaults.synthesizerAnswerBudget,
+    ),
     noveltyBoost: positiveNumber(obj.noveltyBoost, defaults.noveltyBoost),
     noveltyGenerations: positiveInt(
       obj.noveltyGenerations,
@@ -223,6 +258,23 @@ export function parseMemoryWorkspaceConfig(
   }
   if (isThinkingLevel(obj.recallThinking)) {
     config.recallThinking = obj.recallThinking;
+  }
+  // Cross-key validation: the cold/hot hysteresis gap is load-bearing for
+  // anti-flapping, and the top layer must be able to fit a single root.
+  if (config.coldHeatThreshold >= config.hotHeatThreshold) {
+    return {
+      ok: false,
+      error: `Memory config coldHeatThreshold (${config.coldHeatThreshold}) must be less than hotHeatThreshold (${config.hotHeatThreshold}); the hysteresis gap prevents promote/merge flapping.`,
+    };
+  }
+  const singleNodeFloor = Math.ceil(
+    MEMORY_MAX_SUMMARY_CHARS / MEMORY_CHARS_PER_TOKEN_ESTIMATE,
+  );
+  if (config.briefingTokenBudget < singleNodeFloor) {
+    return {
+      ok: false,
+      error: `Memory config briefingTokenBudget (${config.briefingTokenBudget}) is below the single-node floor (${singleNodeFloor} tokens); the top layer could never fit.`,
+    };
   }
   return { ok: true, config, invalidFallback: false };
 }

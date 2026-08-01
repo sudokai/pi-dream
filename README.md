@@ -1,6 +1,6 @@
 # pi-dream
 
-Adaptive **workspace memory** for [pi](https://pi.dev): learns durable user preferences and workspace facts from completed sessions, stores them in an auditable append-oriented SQLite graph, and recalls only relevant nodes into a **visible first-turn briefing**.
+Adaptive **workspace memory** for [pi](https://pi.dev): learns durable user preferences and workspace facts from completed sessions into an auditable SQLite **tree**, and synthesizes the top layer into a **visible first-turn briefing**.
 
 ## Install
 
@@ -18,13 +18,20 @@ Requires **Node 24+** (native `node:sqlite`).
 
 | Surface            | Behavior                                                                                                                                                                        |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| First turn         | Hybrid BM25 + MiniLM search → LLM briefing planner → visible `pi-dream-briefing` custom message with stable IDs and exact stored text                                           |
-| `memory_search`    | Same hybrid + LLM gate; records recall for returned nodes only                                                                                                                  |
+| First turn         | Synthesizer turns the top layer of the memory tree into a grounded answer + a one-line index of the remaining roots (visible `pi-dream-briefing` custom message)                |
+| `memory_search`    | Same synthesizer: returns a synthesized answer with sources; records recall for sources and opened summaries only                                                               |
 | `memory_open`      | Exact target + one deeper level + lateral IDs; never truncates a node                                                                                                           |
 | `/memory`          | `status`, `list [query]`, `open <id>`, `learn`, `pause`, `resume`, `forget <id>`; `list` and `open` also append a visible `pi-dream-audit` entry (learn/forget are notify-only) |
-| Automatic learning | After ≥10 settled turns, ≥120 minutes, and advanced transcripts → detached `--no-session` learner                                                                               |
+| Automatic learning | After ≥10 settled turns, ≥120 minutes, and advanced transcripts (or pending tree maintenance) → detached `--no-session` learner                                                 |
 
 **Never** edits `AGENTS.md`, injects hidden system-prompt memory, or physically deletes history on forget (soft retirement only).
+
+## How recall works: tree + synthesizer
+
+- **Tree maintenance is forced and algorithmic.** Roots (active nodes with no active parent summary) whose heat is at or below the cold threshold are paired by semantic nearest-neighbor (cosine over stored MiniLM embeddings, **no similarity floor**) and merged into summaries; a root whose heat reaches the hot threshold is automatically promoted back out of its parent. Conflicted/retired/superseded nodes are excluded from the top layer and from maintenance.
+- **The top layer always fits.** The estimated token size of all roots is capped by `briefingTokenBudget` (8000). The cap is enforced by maintenance — budget-forced merges, a summary grace window, per-merge strict-compaction validation, and a deterministic fallback text after three consecutive rejections. Reads never truncate: an over-budget layer fails closed with an audit entry until maintenance compacts it.
+- **One synthesizer serves briefing and search.** A single bounded LLM loop (≤ 8 steps, 16000-token envelope) reads the top layer, opens summaries only when it needs more detail, refreshes its context after every model result, and returns `{answer, sources, openedSummaryIds}`. Only the synthesized answer is shown; sources and opened summaries are reheated (selection credits heat; display never does).
+- **Fail-closed everywhere.** Synthesizer failures skip silently with an audit entry (no raw tree dump); maintenance commits reject non-compacting merges with a persisted attempt counter; a legacy store (old schema) is wiped and re-learned from transcripts.
 
 ## Data layout
 
@@ -34,7 +41,8 @@ Per workspace (identity: canonical git origin → git common dir → real cwd):
 ~/.pi/agent/dream/<workspaceId>/
   memory.db
   config.json
-  runs/<runId>/manifest.json   # temporary
+  last-maintenance-inspect.json   # last inspect-time maintenance batch (status reads it)
+  runs/<runId>/manifest.json      # temporary
 ```
 
 Override storage root in tests with `PI_DREAM_STORAGE_ROOT`.
@@ -55,35 +63,45 @@ All fields are optional except `version` and `enabled`; missing optional fields 
   "minMinutes": 120,
   "briefingTokenBudget": 8000,
   "embeddingModel": "Xenova/all-MiniLM-L6-v2",
-  "hybridPoolSize": 50,
-  "rrfK": 20,
-  "semanticFloor": 0.25,
+  "coldHeatThreshold": 0.4,
+  "hotHeatThreshold": 1.5,
+  "maintenanceMergeBound": 3,
+  "synthesizerMaxSteps": 8,
+  "synthesizerContextBudget": 16000,
+  "synthesizerAnswerBudget": 2000,
   "noveltyBoost": 1.0,
   "noveltyGenerations": 3,
   "heatDecay": 0.85
 }
 ```
 
-| Field                 | Default                   | Meaning                                                                                                                                       |
-| --------------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `version`             | 1 (required)              | Config schema version; must be 1.                                                                                                             |
-| `enabled`             | — (required)              | Master switch; `/memory pause` and `resume` toggle it.                                                                                        |
-| `learningModel`       | current session model     | Exact `provider/modelId` for the detached learner; omit to use the session model.                                                             |
-| `learningThinking`    | unset (no override)       | Thinking level for the learner: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Unset omits the override, so pi's default applies. |
-| `recallModel`         | current session model     | Exact `provider/modelId` for briefing/search recall; omit to use the session model.                                                           |
-| `recallThinking`      | unset (no override)       | Thinking level for recall planning (same level set). Unset omits the override, so pi's default applies.                                       |
-| `minTurns`            | 10                        | Minimum settled turns before automatic learning.                                                                                              |
-| `minMinutes`          | 120                       | Minimum idle minutes before automatic learning.                                                                                               |
-| `briefingTokenBudget` | 8000                      | Ceiling for the first-turn briefing, in estimated tokens.                                                                                     |
-| `embeddingModel`      | `Xenova/all-MiniLM-L6-v2` | Local embedding model id (first use may download it).                                                                                         |
-| `hybridPoolSize`      | 50                        | Candidate pool size per hybrid retrieval query.                                                                                               |
-| `rrfK`                | 20                        | Reciprocal rank fusion constant for BM25 + semantic merging.                                                                                  |
-| `semanticFloor`       | 0.25                      | Minimum semantic similarity to enter the candidate pool.                                                                                      |
-| `noveltyBoost`        | 1.0                       | Temporary heat added to a newly activated memory.                                                                                             |
-| `noveltyGenerations`  | 3                         | Activity generations novelty lasts.                                                                                                           |
-| `heatDecay`           | 0.85                      | Per-generation exponential decay factor for recall heat.                                                                                      |
+| Field                      | Default                   | Meaning                                                                                                                                       |
+| -------------------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version`                  | 1 (required)              | Config schema version; must be 1.                                                                                                             |
+| `enabled`                  | — (required)              | Master switch; `/memory pause` and `resume` toggle it.                                                                                        |
+| `learningModel`            | current session model     | Exact `provider/modelId` for the detached learner; omit to use the session model.                                                             |
+| `learningThinking`         | unset (no override)       | Thinking level for the learner: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Unset omits the override, so pi's default applies. |
+| `recallModel`              | current session model     | Exact `provider/modelId` for the synthesizer (briefing + search); omit to use the session model.                                              |
+| `recallThinking`           | unset (no override)       | Thinking level for the synthesizer (same level set). Unset omits the override, so pi's default applies.                                       |
+| `minTurns`                 | 10                        | Minimum settled turns before automatic learning.                                                                                              |
+| `minMinutes`               | 120                       | Minimum idle minutes before automatic learning.                                                                                               |
+| `briefingTokenBudget`      | 8000                      | Estimated-token cap for the top layer (maintenance-enforced; reads fail closed above it). Must be ≥ 200 (the largest single-node estimate).   |
+| `embeddingModel`           | `Xenova/all-MiniLM-L6-v2` | Local embedding model id (first use may download it). Used by tree maintenance and learning only — never by the briefing/search read path.    |
+| `coldHeatThreshold`        | 0.4                       | Roots at or below this heat are merge-eligible. Must be strictly less than `hotHeatThreshold`.                                                |
+| `hotHeatThreshold`         | 1.5                       | Children at or above this heat are promote-eligible (resurfaced). The cold/hot gap is the anti-flapping hysteresis.                           |
+| `maintenanceMergeBound`    | 3                         | Maximum cold-eligible merge pairs per maintenance pass (the budget override is not subject to it).                                            |
+| `synthesizerMaxSteps`      | 8                         | Hard ceiling on synthesizer navigation steps (open + finalize calls) per answer.                                                              |
+| `synthesizerContextBudget` | 16000                     | Serialized-context envelope: framing + request + top layer + navigation reserve + answer reserve.                                             |
+| `synthesizerAnswerBudget`  | 2000                      | Answer token cap inside the envelope.                                                                                                         |
+| `noveltyBoost`             | 1.0                       | Temporary heat added to a newly activated memory.                                                                                             |
+| `noveltyGenerations`       | 3                         | Activity generations novelty lasts.                                                                                                           |
+| `heatDecay`                | 0.85                      | Per-generation exponential decay factor for recall heat.                                                                                      |
 
-**Unknown keys are rejected**: a `config.json` containing a key not listed above fails closed — memory is disabled for the workspace until the file is repaired. Invalid configured models fail that operation closed (no silent fallback); invalid or unreadable `config.json` disables memory until repaired.
+**Removed keys**: `hybridPoolSize`, `rrfK`, and `semanticFloor` no longer exist. A `config.json` containing them (or any other unknown key) fails closed — memory is disabled for the workspace until the file is repaired.
+
+**Unknown keys are rejected**: a `config.json` containing a key not listed above fails closed — memory is disabled for the workspace until the file is repaired. Invalid configured models fail that operation closed (no silent fallback); invalid or unreadable `config.json` disables memory until repaired. `coldHeatThreshold >= hotHeatThreshold` and `briefingTokenBudget < 200` are rejected the same way.
+
+**Slow recall models**: the briefing runs under a 15-second wall (one model call in the common case, but opens may add more). On slow or high-thinking session models, set `recallModel` and `recallThinking` (e.g. `"off"`) per workspace — a slow recall model degrades to "no briefing" per turn (audited) rather than stalling the first turn.
 
 ## Environment variables
 
@@ -100,8 +118,12 @@ All variables are optional; defaults exist without them.
 ## Commands
 
 ```text
-/memory              # status: workspace id, db path, counts, cadence, last run
-/memory list [q]     # deterministic audit list (no recall events)
+/memory              # status: workspace id, db path, counts, cadence, tree section (roots,
+                     #   top-layer token estimate with OVER BUDGET flag, last maintenance
+                     #   candidates, pending attempt counters)
+/memory list [q]     # the tree rendered indented (roots + children under summaries);
+                     #   fallback-labeled summaries render as "S:n (fallback)"; non-active
+                     #   nodes stay visible flat; deterministic audit list (no recall events)
 /memory open M:12 [cursor=<n>]  # exact node + one level; versions; cursor for more children
 /memory learn        # manual detached run (bypasses cadence, still claims)
 /memory pause|resume
@@ -110,30 +132,26 @@ All variables are optional; defaults exist without them.
 
 ## Agent tools
 
-- **`memory_search({ query })`** — hybrid retrieval + LLM filter; complete nodes only
+- **`memory_search({ query })`** — synthesizer answer grounded in the memory tree; sources/opened summaries in details
 - **`memory_open({ id, cursor? })`** — progressive drill-down (`M:` / `S:` / `O:`)
 
 ## Learning
 
-A detached pi child (`PI_DREAM_CHILD=1`, `--no-session`, isolated tools) processes eligible sessions and submits structured ops: `create`, `reinforce`, `revise`, `supersede`, `conflict`, `link`, `summarize`, `no_op`. Code validates graph invariants and commits observations, versions, edges, search indexes, and the source-session checkpoint in one transaction.
+A detached pi child (`PI_DREAM_CHILD=1`, `--no-session`, isolated tools) processes eligible sessions and submits structured ops: `create`, `reinforce`, `revise`, `supersede`, `conflict`, `link`, `summarize`, `promote`, `no_op`. Code validates graph invariants (strict tree, strict summary compaction) and commits observations, versions, edges, projections, and the source-session checkpoint in one transaction. Every learner run ends with a post-ingestion maintenance phase; deterministic maintenance candidates also trigger **maintenance-only runs** (zero-session manifests) from `agent_settled`.
 
 ## SQL audit examples
 
 ```sql
--- Active memories with current text
-SELECT m.id, m.kind, m.state, v.text
-FROM memories m
-JOIN memory_versions v ON v.id = m.current_version_id
-WHERE m.state = 'active';
+-- Active roots of the tree (memories and summaries without an active parent)
+SELECT 'M' AS kind, id FROM memories WHERE state = 'active'
+UNION ALL
+SELECT 'S', id FROM summaries WHERE state = 'active';
 
--- Observations supporting a memory
-SELECT o.*
-FROM memory_observations mo
-JOIN observations o ON o.id = mo.observation_id
-WHERE mo.memory_id = 1;
+-- Containment edges (retired edges are audit history)
+SELECT * FROM graph_edges WHERE relation = 'contains';
 
--- Supersession edges
-SELECT * FROM graph_edges WHERE relation = 'supersedes';
+-- Pending maintenance attempt counters
+SELECT * FROM maintenance_attempts;
 
 -- Recall history
 SELECT * FROM recall_events ORDER BY id DESC LIMIT 20;
@@ -157,6 +175,6 @@ npm run format         # prettier --write (CI enforces format:check)
 
 Domain vocabulary: see [CONTEXT.md](./CONTEXT.md). For agent workflows: see [AGENTS.md](./AGENTS.md).
 
-## Semantic index
+## Embeddings
 
-Local MiniLM via `@xenova/transformers` (`Xenova/all-MiniLM-L6-v2`). First use may download the model. The embedder loads lazily on first semantic search, so `/memory status` reports the in-process state precisely: `not loaded (loads on first use)` before any search warms it up, `loading (first use may download the model)` while warming up, `degraded (<error>)` only on an actual load failure, or `ready`. If embeddings are unavailable, BM25 still runs but the LLM filter remains required.
+Local MiniLM via `@xenova/transformers` (`Xenova/all-MiniLM-L6-v2`). First use may download the model. The embedder is loaded only by the maintenance pass (merge pairing) and by new-node embedding during learning — never by the briefing or `memory_search` read path, so `/memory status` describes it as maintenance-only. If embeddings are unavailable, pairing degrades (missing similarities score 0, still pairable — there is no similarity floor) and maintenance never aborts a learning run.

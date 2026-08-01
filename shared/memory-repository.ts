@@ -6,6 +6,8 @@ import type { DatabaseSync } from "node:sqlite";
 import {
   formatMemoryNodeId,
   formatSummaryNodeId,
+  estimateMemoryTextTokens,
+  MEMORY_MAINTENANCE_MAX_ATTEMPTS,
   MEMORY_MAX_SUMMARY_CHARS,
   MEMORY_MAX_TEXT_CHARS,
   MEMORY_NOVELTY_GENERATIONS,
@@ -22,7 +24,6 @@ import {
 } from "./memory-types.ts";
 import {
   deleteMemorySearchDocument,
-  rebuildMemorySearchFts,
   upsertMemorySearchDocument,
 } from "./memory-database.ts";
 import {
@@ -31,8 +32,24 @@ import {
   getSummaryById,
   listActiveMemories,
   listActiveSummaries,
+  reconcileMemoryTreeExclusion,
+  retireGraphEdge,
   wouldMemoryContainsEdgeCycle,
 } from "./memory-graph.ts";
+import {
+  isMemoryRoot,
+  listMemoryNodeChildren,
+  listMemoryTreeRoots,
+} from "./memory-tree.ts";
+import {
+  buildMemoryFallbackSummaryText,
+  clearMemoryMaintenanceAttempt,
+  getMemoryMaintenanceAttempts,
+  incrementMemoryMaintenanceAttempt,
+  memoryMaintenancePromoteKey,
+  simulateMemoryPromoteLayer,
+} from "./memory-maintenance.ts";
+import type { MemoryWorkspaceConfig } from "./memory-config.ts";
 import { memoryRunOwnsClaim } from "./memory-run-claim.ts";
 import { normalizeMemoryCwd } from "./memory-workspace-id.ts";
 
@@ -373,7 +390,7 @@ function applyOperation(
     tempRefs: Map<string, number>;
     summaryTempRefs: Map<string, number>;
   },
-): void {
+): { summaryId?: number } | undefined {
   switch (op.op) {
     case "no_op":
       return;
@@ -475,6 +492,21 @@ function applyOperation(
         `DELETE FROM embeddings WHERE node_type = 'memory' AND node_id = ?`,
       ).run(old.id);
       insertEdge(db, "supersedes", "memory", newId, "memory", old.id);
+      // Lifecycle reconciliation: the excluded node's containment edges are
+      // retired and ancestors whose condensation would include it resurface.
+      reconcileMemoryTreeExclusion(
+        db,
+        [{ nodeType: "memory", nodeId: old.id }],
+        {
+          rewriteParent:
+            op.newSummaryText !== undefined
+              ? {
+                  expectedVersionId: op.expectedSummaryVersionId ?? 0,
+                  newSummaryText: op.newSummaryText,
+                }
+              : null,
+        },
+      );
       ctx.tempRefs.set(op.newTempRef, newId);
       return;
     }
@@ -530,10 +562,37 @@ function applyOperation(
           linkObservation(db, first.id, obsId);
         }
       }
+      // Lifecycle reconciliation: excluded nodes' containment edges are retired
+      // and ancestors whose condensation would include them resurface.
+      reconcileMemoryTreeExclusion(
+        db,
+        op.memoryIds.map((mid) => {
+          const parsed = parsePrefixedNodeId(mid) as {
+            ok: true;
+            type: "memory";
+            id: number;
+          };
+          return { nodeType: "memory" as const, nodeId: parsed.id };
+        }),
+        {
+          rewriteParent:
+            op.newSummaryText !== undefined
+              ? {
+                  expectedVersionId: op.expectedSummaryVersionId ?? 0,
+                  newSummaryText: op.newSummaryText,
+                }
+              : null,
+        },
+      );
       return;
     }
 
     case "link": {
+      if ((op.relation as string) === "contains") {
+        throw new Error(
+          "link cannot create contains edges; containment is created only by validated summarize/promote/lifecycle operations",
+        );
+      }
       let fromType: MemorySearchableNodeType;
       let fromId: number;
       let toType: MemorySearchableNodeType;
@@ -604,7 +663,10 @@ function applyOperation(
         throw new Error("summarize requires at least one member id");
       }
 
-      let summaryId: number;
+      // Update (extend) targets are validated before member resolution so a
+      // stale plan fails with the CAS error, not a member error.
+      let summaryId: number | null = null;
+      let oldSummaryText: string | null = null;
       if (op.summaryId) {
         const parsed = parsePrefixedNodeId(op.summaryId);
         if (!parsed.ok || parsed.type !== "summary") {
@@ -637,6 +699,73 @@ function applyOperation(
           );
         }
         summaryId = parsed.id;
+        oldSummaryText = existing.text;
+      }
+
+      // Resolve members (prefixed ids or in-commit temp refs) so strict-tree
+      // and compaction validation run before any version write.
+      const members: Array<{
+        nodeType: MemorySearchableNodeType;
+        nodeId: number;
+        text: string;
+      }> = [];
+      for (const member of op.memberIds) {
+        let memberType: MemorySearchableNodeType;
+        let memberId: number;
+        if (ctx.tempRefs.has(member)) {
+          memberType = "memory";
+          memberId = ctx.tempRefs.get(member)!;
+        } else if (ctx.summaryTempRefs.has(member)) {
+          memberType = "summary";
+          memberId = ctx.summaryTempRefs.get(member)!;
+        } else {
+          const p = parseSearchableId(member);
+          memberType = p.type;
+          memberId = p.id;
+        }
+        if (memberType === "memory" && !getMemoryById(db, memberId)) {
+          throw new Error(`summarize member not found: ${member}`);
+        }
+        if (memberType === "summary" && !getSummaryById(db, memberId)) {
+          throw new Error(`summarize member not found: ${member}`);
+        }
+        // Strict-tree: every listed member must currently be a root.
+        if (!isMemoryRoot(db, memberType, memberId)) {
+          throw new Error(
+            `summarize member ${member} is not a root; only active, non-conflicted nodes without an active parent summary can be summarized`,
+          );
+        }
+        const memberText =
+          memberType === "memory"
+            ? getMemoryById(db, memberId)!.text
+            : getSummaryById(db, memberId)!.text;
+        members.push({
+          nodeType: memberType,
+          nodeId: memberId,
+          text: memberText,
+        });
+      }
+
+      // Strict measured compaction: the summary text must be smaller than the
+      // roots removed from the top layer (for extends: old summary text + the
+      // listed members; creates are this formula with the old-text term absent).
+      const newTokens = estimateMemoryTextTokens(op.text);
+      const memberTokens = members.reduce(
+        (sum, m) => sum + estimateMemoryTextTokens(m.text),
+        0,
+      );
+      const baseline =
+        (oldSummaryText !== null
+          ? estimateMemoryTextTokens(oldSummaryText)
+          : 0) + memberTokens;
+      if (newTokens >= baseline) {
+        throw new Error(
+          `summarize text does not compact the top layer (${newTokens} >= ${baseline} estimated tokens); summary text must be strictly smaller than the members it replaces`,
+        );
+      }
+
+      if (op.summaryId) {
+        const existing = getSummaryById(db, summaryId!)!;
         const verResult = db
           .prepare(
             `INSERT INTO summary_versions (summary_id, text, previous_version_id)
@@ -663,7 +792,7 @@ function applyOperation(
              VALUES ('active', NULL, ?)`,
           )
           .run(ctx.generation);
-        summaryId = Number(sumResult.lastInsertRowid);
+        summaryId = Number(sumResult.lastInsertRowid) as number;
         const verResult = db
           .prepare(
             `INSERT INTO summary_versions (summary_id, text, previous_version_id)
@@ -681,33 +810,153 @@ function applyOperation(
 
       upsertMemorySearchDocument(db, {
         nodeType: "summary",
-        nodeId: summaryId,
+        nodeId: summaryId!,
         text: op.text.trim(),
         kind: "summary",
         state: "active",
       });
 
-      for (const member of op.memberIds) {
-        let memberType: MemorySearchableNodeType;
-        let memberId: number;
-        if (ctx.tempRefs.has(member)) {
-          memberType = "memory";
-          memberId = ctx.tempRefs.get(member)!;
-        } else if (ctx.summaryTempRefs.has(member)) {
-          memberType = "summary";
-          memberId = ctx.summaryTempRefs.get(member)!;
-        } else {
-          const p = parseSearchableId(member);
-          memberType = p.type;
-          memberId = p.id;
+      for (const member of members) {
+        insertEdge(
+          db,
+          "contains",
+          "summary",
+          summaryId!,
+          member.nodeType,
+          member.nodeId,
+        );
+      }
+      return { summaryId: summaryId! };
+    }
+
+    case "promote": {
+      const child = parsePrefixedNodeId(op.nodeId);
+      if (!child.ok || child.type === "observation") {
+        throw new Error(`promote requires M:<n> or S:<n>, got ${op.nodeId}`);
+      }
+      const node =
+        child.type === "memory"
+          ? getMemoryById(db, child.id)
+          : getSummaryById(db, child.id);
+      if (!node) {
+        throw new Error(`promote target not found: ${op.nodeId}`);
+      }
+      if (node.state !== "active") {
+        throw new Error(
+          `promote target ${op.nodeId} is ${node.state}; only active nodes can be promoted`,
+        );
+      }
+      const parentParsed = parsePrefixedNodeId(op.summaryId);
+      if (!parentParsed.ok || parentParsed.type !== "summary") {
+        throw new Error(`promote summaryId must be S:<n>, got ${op.summaryId}`);
+      }
+      // Strict tree: the target must be a child of exactly one active summary.
+      const children = listMemoryNodeChildren(db, "summary", parentParsed.id);
+      const isChild = children.some(
+        (c) => c.nodeType === child.type && c.nodeId === child.id,
+      );
+      if (!isChild) {
+        throw new Error(
+          `promote target ${op.nodeId} is not a child of ${op.summaryId}`,
+        );
+      }
+      const parent = getSummaryById(db, parentParsed.id);
+      if (!parent || parent.state !== "active") {
+        throw new Error(`promote parent ${op.summaryId} is not active`);
+      }
+      if (
+        !Number.isSafeInteger(op.expectedSummaryVersionId) ||
+        op.expectedSummaryVersionId <= 0
+      ) {
+        throw new Error(
+          `promote on ${op.nodeId} requires a positive expectedSummaryVersionId`,
+        );
+      }
+      if (parent.currentVersionId !== op.expectedSummaryVersionId) {
+        throw new Error(
+          `promote parent ${op.summaryId} version is stale (expected ${op.expectedSummaryVersionId}, have ${parent.currentVersionId})`,
+        );
+      }
+
+      retireGraphEdge(
+        db,
+        "contains",
+        "summary",
+        parentParsed.id,
+        child.type,
+        child.id,
+      );
+      const remaining = listMemoryNodeChildren(db, "summary", parentParsed.id);
+
+      if (remaining.length >= 2) {
+        // Parent keeps >= 2 members: rewrite it without the promoted child.
+        if (!op.newSummaryText || !op.newSummaryText.trim()) {
+          throw new Error(
+            `promote of ${op.nodeId} from ${op.summaryId} keeps ${remaining.length} members; newSummaryText is required`,
+          );
         }
-        if (memberType === "memory" && !getMemoryById(db, memberId)) {
-          throw new Error(`summarize member not found: ${member}`);
+        const textErr = validateMemoryBodyText(
+          op.newSummaryText,
+          MEMORY_MAX_SUMMARY_CHARS,
+        );
+        if (textErr) throw new Error(textErr);
+        // Promote is deliberate layer growth: non-strict shrink only.
+        if (
+          estimateMemoryTextTokens(op.newSummaryText) >
+          estimateMemoryTextTokens(parent.text)
+        ) {
+          throw new Error(
+            `promote rewrite must not grow the parent summary (${estimateMemoryTextTokens(op.newSummaryText)} > ${estimateMemoryTextTokens(parent.text)} tokens)`,
+          );
         }
-        if (memberType === "summary" && !getSummaryById(db, memberId)) {
-          throw new Error(`summarize member not found: ${member}`);
+        const verResult = db
+          .prepare(
+            `INSERT INTO summary_versions (summary_id, text, previous_version_id)
+             VALUES (?, ?, ?)`,
+          )
+          .run(
+            parentParsed.id,
+            op.newSummaryText.trim(),
+            parent.currentVersionId,
+          );
+        const versionId = Number(verResult.lastInsertRowid);
+        const updated = db
+          .prepare(
+            `UPDATE summaries
+             SET current_version_id = ?, updated_at = datetime('now')
+             WHERE id = ? AND state = 'active' AND current_version_id = ?`,
+          )
+          .run(versionId, parentParsed.id, op.expectedSummaryVersionId);
+        if (Number(updated.changes) !== 1) {
+          throw new Error(
+            `Summary ${op.summaryId} changed while its promote rewrite was committing`,
+          );
         }
-        insertEdge(db, "contains", "summary", summaryId, memberType, memberId);
+        upsertMemorySearchDocument(db, {
+          nodeType: "summary",
+          nodeId: parentParsed.id,
+          text: op.newSummaryText.trim(),
+          kind: "summary",
+          state: "active",
+        });
+      } else {
+        // Parent drops to <= 1 member: retire it; the remaining member's edge
+        // is retired by the reconciliation so it resurfaced as a root.
+        if (op.newSummaryText !== undefined && op.newSummaryText.trim()) {
+          throw new Error(
+            `promote of ${op.nodeId} retires ${op.summaryId} (${remaining.length} member(s) remain); newSummaryText is not allowed`,
+          );
+        }
+        db.prepare(
+          `UPDATE summaries SET state = 'retired', updated_at = datetime('now') WHERE id = ?`,
+        ).run(parentParsed.id);
+        deleteMemorySearchDocument(db, "summary", parentParsed.id);
+        // Retires the parent's remaining contains edges (orphan resurfaced)
+        // and any ancestor summaries whose condensation would now include the
+        // retired parent (strict-tree invariant).
+        reconcileMemoryTreeExclusion(db, [
+          { nodeType: "summary", nodeId: parentParsed.id },
+        ]);
       }
       return;
     }
@@ -816,8 +1065,6 @@ export function commitMemoryLearningSession(
       input.contentHash,
     );
 
-    rebuildMemorySearchFts(db);
-
     db.exec("COMMIT");
     return { applied: true };
   } catch (err) {
@@ -860,4 +1107,597 @@ export function listMemoryGraphSnapshot(db: DatabaseSync): {
     text: s.text,
   }));
   return { memories, summaries };
+}
+
+export interface MemoryMaintenanceCommitInput {
+  runId: string;
+  operations: MemoryLearnerOperation[];
+  config: MemoryWorkspaceConfig;
+}
+
+export interface MemoryMaintenanceCommitResult {
+  applied: boolean;
+  /** Candidate keys covered by applied ops (incl. fallback merges). */
+  coveredKeys: string[];
+  /** Candidate keys rejected for compaction; attempts incremented. */
+  rejectedKeys: Array<{ key: string; attempts: number }>;
+  /** Candidate keys merged via the deterministic fallback text. */
+  fallbackKeys: string[];
+  /** Audit entries for the call site to append (pi.appendEntry). */
+  auditEntries: Array<{ kind: string; text: string }>;
+  layerTokensBefore: number;
+  layerTokensAfter: number;
+  layerOverBudget: boolean;
+}
+
+interface MaintenanceOpAnalysis {
+  index: number;
+  op: MemoryLearnerOperation;
+  kind: "merge-create" | "merge-extend" | "promote";
+  key: string;
+  /** Estimated tokens removed from the top layer (baseline - est(text)). */
+  savings: number;
+  /** Post-promote simulation input (promotes). */
+  sim?: {
+    childType: MemorySearchableNodeType;
+    childId: number;
+    parentId: number;
+    newSummaryText: string | null;
+  };
+  /** Merge member keys (validated against the post-promote root set). */
+  memberKeys?: string[];
+  /** Extend target summary id. */
+  summaryId?: number;
+  /** Fallback text applied instead of rejection (K-th consecutive failure). */
+  fallbackText?: string | null;
+  /** Promote rewrite rejected for non-shrink (kept out of the batch). */
+  rejected?: boolean;
+  childPrefixedId?: string;
+  parentId?: number;
+  reason?: "cold" | "budget";
+}
+
+function maintenanceMergeKeyForOps(
+  summary: { nodeType: MemorySearchableNodeType; nodeId: number } | null,
+  members: Array<{ nodeType: MemorySearchableNodeType; nodeId: number }>,
+): string {
+  const parts = [...(summary ? [summary] : []), ...members].map(
+    (m) => `${m.nodeType}:${m.nodeId}`,
+  );
+  parts.sort();
+  return `merge:${parts.join("+")}`;
+}
+
+/**
+ * Pre-apply analysis of a maintenance batch: validates every op against the
+ * strict-tree and strict-compaction rules, resolves promote attempt counters,
+ * and projects the resulting top layer from the actual written texts.
+ */
+function analyzeMemoryMaintenanceOps(
+  db: DatabaseSync,
+  operations: MemoryLearnerOperation[],
+  generation: number,
+): MaintenanceOpAnalysis[] {
+  const analyses: MaintenanceOpAnalysis[] = [];
+
+  const promoteAnalyses: MaintenanceOpAnalysis[] = [];
+  for (let index = 0; index < operations.length; index++) {
+    const op = operations[index]!;
+    if (op.op !== "promote") continue;
+    const child = parsePrefixedNodeId(op.nodeId);
+    if (!child.ok || child.type === "observation") {
+      throw new Error(`promote requires M:<n> or S:<n>, got ${op.nodeId}`);
+    }
+    const node =
+      child.type === "memory"
+        ? getMemoryById(db, child.id)
+        : getSummaryById(db, child.id);
+    if (!node) throw new Error(`promote target not found: ${op.nodeId}`);
+    if (node.state !== "active") {
+      throw new Error(
+        `promote target ${op.nodeId} is ${node.state}; only active nodes can be promoted`,
+      );
+    }
+    const parentParsed = parsePrefixedNodeId(op.summaryId);
+    if (!parentParsed.ok || parentParsed.type !== "summary") {
+      throw new Error(`promote summaryId must be S:<n>, got ${op.summaryId}`);
+    }
+    const parent = getSummaryById(db, parentParsed.id);
+    if (!parent || parent.state !== "active") {
+      throw new Error(`promote parent ${op.summaryId} is not active`);
+    }
+    if (
+      !Number.isSafeInteger(op.expectedSummaryVersionId) ||
+      op.expectedSummaryVersionId <= 0
+    ) {
+      throw new Error(
+        `promote on ${op.nodeId} requires a positive expectedSummaryVersionId`,
+      );
+    }
+    if (parent.currentVersionId !== op.expectedSummaryVersionId) {
+      throw new Error(
+        `promote parent ${op.summaryId} version is stale (expected ${op.expectedSummaryVersionId}, have ${parent.currentVersionId})`,
+      );
+    }
+    const children = listMemoryNodeChildren(db, "summary", parentParsed.id);
+    if (
+      !children.some((c) => c.nodeType === child.type && c.nodeId === child.id)
+    ) {
+      throw new Error(
+        `promote target ${op.nodeId} is not a child of ${op.summaryId}`,
+      );
+    }
+    const remaining = children.filter(
+      (c) => !(c.nodeType === child.type && c.nodeId === child.id),
+    );
+    const key = memoryMaintenancePromoteKey(
+      child.type,
+      child.id,
+      parentParsed.id,
+    );
+    let newSummaryText: string | null = null;
+    let rejected = false;
+    if (remaining.length >= 2) {
+      if (!op.newSummaryText || !op.newSummaryText.trim()) {
+        throw new Error(
+          `promote of ${op.nodeId} from ${op.summaryId} keeps ${remaining.length} members; newSummaryText is required`,
+        );
+      }
+      const textErr = validateMemoryBodyText(
+        op.newSummaryText,
+        MEMORY_MAX_SUMMARY_CHARS,
+      );
+      if (textErr) throw new Error(textErr);
+      if (
+        estimateMemoryTextTokens(op.newSummaryText) >
+        estimateMemoryTextTokens(parent.text)
+      ) {
+        // Rewrite fails the non-strict shrink: attempt-counter path. The K-th
+        // consecutive failure keeps the old summary text (satisfies <= by equality).
+        const attempts = getMemoryMaintenanceAttempts(db, key);
+        if (attempts + 1 >= MEMORY_MAINTENANCE_MAX_ATTEMPTS) {
+          newSummaryText = parent.text;
+          clearMemoryMaintenanceAttempt(db, key);
+        } else {
+          incrementMemoryMaintenanceAttempt(db, key, generation);
+          rejected = true;
+        }
+      } else {
+        clearMemoryMaintenanceAttempt(db, key);
+        newSummaryText = op.newSummaryText;
+      }
+    } else if (op.newSummaryText !== undefined && op.newSummaryText.trim()) {
+      throw new Error(
+        `promote of ${op.nodeId} retires ${op.summaryId} (${remaining.length} member(s) remain); newSummaryText is not allowed`,
+      );
+    }
+    promoteAnalyses.push({
+      index,
+      op,
+      kind: "promote",
+      key,
+      savings: 0,
+      rejected,
+      childPrefixedId:
+        child.type === "memory" ? `M:${child.id}` : `S:${child.id}`,
+      parentId: parentParsed.id,
+      ...(rejected
+        ? {}
+        : {
+            sim: {
+              childType: child.type,
+              childId: child.id,
+              parentId: parentParsed.id,
+              newSummaryText,
+            },
+          }),
+    });
+  }
+
+  // Post-promote root projection: merge members and extend targets must be
+  // roots of the resulting layer, and extend baselines use the post-promote
+  // summary text (a promote rewrite may shrink the target).
+  const sim = simulateMemoryPromoteLayer(
+    db,
+    promoteAnalyses.filter((a) => !a.rejected && a.sim).map((a) => a.sim!),
+  );
+  const simRoots = new Map(
+    sim.roots.map((r) => [`${r.nodeType}:${r.nodeId}`, r] as const),
+  );
+  const isSimRoot = (
+    nodeType: MemorySearchableNodeType,
+    nodeId: number,
+  ): boolean => simRoots.has(`${nodeType}:${nodeId}`);
+
+  for (let index = 0; index < operations.length; index++) {
+    const op = operations[index]!;
+    if (op.op !== "summarize") continue;
+    const textErr = validateMemoryBodyText(op.text, MEMORY_MAX_SUMMARY_CHARS);
+    if (textErr) throw new Error(textErr);
+    if (!op.memberIds.length) {
+      throw new Error("summarize requires at least one member id");
+    }
+    const members: Array<{
+      nodeType: MemorySearchableNodeType;
+      nodeId: number;
+      text: string;
+    }> = [];
+    for (const raw of op.memberIds) {
+      const parsed = parsePrefixedNodeId(raw);
+      if (!parsed.ok || parsed.type === "observation") {
+        throw new Error(
+          `maintenance summarize member must be M:<n> or S:<n>: ${raw}`,
+        );
+      }
+      const node =
+        parsed.type === "memory"
+          ? getMemoryById(db, parsed.id)
+          : getSummaryById(db, parsed.id);
+      if (!node) throw new Error(`summarize member not found: ${raw}`);
+      if (node.state !== "active") {
+        throw new Error(
+          `summarize member ${raw} is ${node.state}; only active nodes can be summarized`,
+        );
+      }
+      if (!isSimRoot(parsed.type, parsed.id)) {
+        throw new Error(
+          `summarize member ${raw} is not a root of the post-promote top layer; the tree changed since planning`,
+        );
+      }
+      members.push({
+        nodeType: parsed.type,
+        nodeId: parsed.id,
+        text: node.text,
+      });
+    }
+    const textTokens = estimateMemoryTextTokens(op.text);
+
+    if (op.summaryId) {
+      const parsed = parsePrefixedNodeId(op.summaryId);
+      if (!parsed.ok || parsed.type !== "summary") {
+        throw new Error(
+          `summarize summaryId must be S:<n>, got ${op.summaryId}`,
+        );
+      }
+      const existing = getSummaryById(db, parsed.id);
+      if (!existing) throw new Error(`Summary not found: ${op.summaryId}`);
+      if (existing.state !== "active") {
+        throw new Error(
+          `Summary ${op.summaryId} is ${existing.state}; only active summaries can be updated`,
+        );
+      }
+      if (
+        !Number.isSafeInteger(op.expectedVersionId) ||
+        op.expectedVersionId <= 0
+      ) {
+        throw new Error(
+          `Summary ${op.summaryId} update requires a positive expectedVersionId`,
+        );
+      }
+      if (existing.currentVersionId !== op.expectedVersionId) {
+        throw new Error(
+          `Summary ${op.summaryId} version is stale (expected ${op.expectedVersionId}, have ${existing.currentVersionId})`,
+        );
+      }
+      if (!isSimRoot("summary", parsed.id)) {
+        throw new Error(
+          `Summary ${op.summaryId} is not a root of the post-promote top layer; only root summaries can be extended`,
+        );
+      }
+      const simTarget = simRoots.get(`summary:${parsed.id}`);
+      const oldTokens = simTarget
+        ? simTarget.estimatedTokens
+        : estimateMemoryTextTokens(existing.text);
+      const baseline =
+        oldTokens +
+        members.reduce((s, m) => s + estimateMemoryTextTokens(m.text), 0);
+      if (textTokens >= baseline) {
+        throw new Error(
+          `summarize text does not compact the top layer (${textTokens} >= ${baseline} estimated tokens)`,
+        );
+      }
+      analyses.push({
+        index,
+        op,
+        kind: "merge-extend",
+        key: maintenanceMergeKeyForOps(
+          { nodeType: "summary", nodeId: parsed.id },
+          members,
+        ),
+        savings: baseline - textTokens,
+        memberKeys: members.map((m) => `${m.nodeType}:${m.nodeId}`),
+        summaryId: parsed.id,
+        reason: op.reason,
+      });
+    } else {
+      const baseline = members.reduce(
+        (s, m) => s + estimateMemoryTextTokens(m.text),
+        0,
+      );
+      if (textTokens >= baseline) {
+        throw new Error(
+          `summarize text does not compact the top layer (${textTokens} >= ${baseline} estimated tokens)`,
+        );
+      }
+      analyses.push({
+        index,
+        op,
+        kind: "merge-create",
+        key: maintenanceMergeKeyForOps(null, members),
+        savings: baseline - textTokens,
+        memberKeys: members.map((m) => `${m.nodeType}:${m.nodeId}`),
+        reason: op.reason,
+      });
+    }
+  }
+
+  // Merge analyses are validated against the simulated (post-promote) state,
+  // so they must be projected after the promote analyses.
+  const ordered = [
+    ...promoteAnalyses,
+    ...analyses.sort((a, b) => a.index - b.index),
+  ];
+  // Ensure promote-first ordering for the apply phase (matches the learner
+  // prompt mandate; a wrong order fails loudly at apply time).
+  ordered.sort((a, b) => a.index - b.index);
+  return ordered;
+}
+
+/**
+ * Session-less claim-owned maintenance commit: applies only summarize /
+ * promote / no_op ops (no source-session write), validates strict-tree and
+ * strict-compaction rules per op, projects the resulting top layer from the
+ * actual written texts, and rejects non-compacting merges when the batch still
+ * exceeds `briefingTokenBudget` (partial progress: ops that pass stay).
+ * Consecutive rejections increment per-candidate attempt counters; at
+ * MEMORY_MAINTENANCE_MAX_ATTEMPTS the deterministic fallback text applies
+ * instead of rejection, making convergence unconditional.
+ */
+export function commitMemoryLearningOps(
+  db: DatabaseSync,
+  input: MemoryMaintenanceCommitInput,
+): MemoryMaintenanceCommitResult {
+  if (!memoryRunOwnsClaim(db, input.runId)) {
+    throw new Error("Memory learning run no longer owns the workspace claim");
+  }
+
+  const operations = input.operations ?? [];
+  const generation = getMemoryActivityGeneration(db);
+  const budget = input.config.briefingTokenBudget;
+
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (!memoryRunOwnsClaim(db, input.runId)) {
+      throw new Error("Memory learning run no longer owns the workspace claim");
+    }
+    for (const op of operations) {
+      if (op.op !== "summarize" && op.op !== "promote" && op.op !== "no_op") {
+        throw new Error(
+          `Maintenance commit rejected ${op.op} op; only summarize, promote, and no_op are allowed`,
+        );
+      }
+    }
+
+    const layerTokensBefore = listMemoryTreeRoots(db).reduce(
+      (sum, r) => sum + r.estimatedTokens,
+      0,
+    );
+
+    const analyses = analyzeMemoryMaintenanceOps(db, operations, generation);
+    const sim = simulateMemoryPromoteLayer(
+      db,
+      analyses
+        .filter((a) => a.kind === "promote" && !a.rejected && a.sim)
+        .map((a) => a.sim!),
+    );
+    const rootTokens = new Map<string, number>(
+      sim.roots.map((r) => [`${r.nodeType}:${r.nodeId}`, r.estimatedTokens]),
+    );
+    let projected = sim.tokens;
+    const mergeAnalyses = analyses.filter(
+      (a) => a.kind === "merge-create" || a.kind === "merge-extend",
+    );
+    for (const a of mergeAnalyses) {
+      for (const key of a.memberKeys ?? []) {
+        const tokens = rootTokens.get(key);
+        if (tokens === undefined) {
+          throw new Error(
+            `Maintenance merge member ${key} is not in the projected top layer; the tree changed since planning`,
+          );
+        }
+        projected -= tokens;
+      }
+      const op = a.op as Extract<MemoryLearnerOperation, { op: "summarize" }>;
+      if (a.kind === "merge-extend") {
+        const targetTokens = rootTokens.get(`summary:${a.summaryId}`);
+        if (targetTokens === undefined) {
+          throw new Error(
+            `Maintenance extend target S:${a.summaryId} is not a root; only root summaries can be extended`,
+          );
+        }
+        projected += estimateMemoryTextTokens(op.text) - targetTokens;
+      } else {
+        projected += estimateMemoryTextTokens(op.text);
+      }
+    }
+
+    // Post-rewrite residual policy: when the batch leaves the projected layer
+    // over budget, the non-compacting candidates are rejected — a merge is
+    // non-compacting when its text is at least half the size of the roots it
+    // replaces (savings <= floor(baseline / 2), i.e. the text is at least half
+    // the size of the roots it removes). Rejection is a quality gate,
+    // never a fitting mechanism (rejecting restores roots, so the layer stays
+    // over budget and the next run's budget override extends the candidates);
+    // it never vetoes the rest of the batch. Promotes are deliberate layer
+    // growth and are never rejected for budget.
+    const dropped = new Set<number>();
+    if (projected > budget) {
+      for (const a of mergeAnalyses) {
+        const baseline =
+          a.savings +
+          estimateMemoryTextTokens(
+            (a.op as Extract<MemoryLearnerOperation, { op: "summarize" }>).text,
+          );
+        if (a.savings <= Math.floor(baseline / 2)) {
+          dropped.add(a.index);
+        }
+      }
+    }
+
+    // Attempt counters + fallback decisions for dropped merges.
+    const rejectedKeys: Array<{ key: string; attempts: number }> = [];
+    const fallbackKeys: string[] = [];
+    const coveredKeys: string[] = [];
+    const auditEntries: Array<{ kind: string; text: string }> = [];
+    for (const a of mergeAnalyses) {
+      if (!dropped.has(a.index)) {
+        coveredKeys.push(a.key);
+        clearMemoryMaintenanceAttempt(db, a.key);
+        continue;
+      }
+      const attempts = incrementMemoryMaintenanceAttempt(db, a.key, generation);
+      if (attempts >= MEMORY_MAINTENANCE_MAX_ATTEMPTS) {
+        a.fallbackText = buildMemoryFallbackSummaryText(
+          a.kind === "merge-extend"
+            ? (getSummaryById(db, a.summaryId!)?.text ?? null)
+            : null,
+          // Fallback member texts are read from the analysis (pre-apply state).
+          (
+            a.op as Extract<MemoryLearnerOperation, { op: "summarize" }>
+          ).memberIds.map((raw) => {
+            const parsed = parsePrefixedNodeId(raw);
+            if (!parsed.ok || parsed.type === "observation") {
+              throw new Error(
+                `summarize member must be M:<n> or S:<n>: ${raw}`,
+              );
+            }
+            const node =
+              parsed.type === "memory"
+                ? getMemoryById(db, parsed.id)
+                : getSummaryById(db, parsed.id);
+            return {
+              prefixedId:
+                parsed.type === "memory" ? `M:${parsed.id}` : `S:${parsed.id}`,
+              text: node?.text ?? "",
+            };
+          }),
+        );
+        clearMemoryMaintenanceAttempt(db, a.key);
+        fallbackKeys.push(a.key);
+        coveredKeys.push(a.key);
+        projected -= 1;
+      } else {
+        rejectedKeys.push({ key: a.key, attempts });
+      }
+    }
+
+    // Apply kept ops in original order (promotes first per the learner prompt;
+    // applyOperation re-validates every op against the current state).
+    const tempRefs = new Map<string, number>();
+    const summaryTempRefs = new Map<string, number>();
+    const ctx = {
+      sourceSessionId: "maintenance",
+      generation,
+      noveltyUntil: null,
+      tempRefs,
+      summaryTempRefs,
+    };
+    const auditEstBefore = layerTokensBefore;
+    for (const a of analyses) {
+      if (a.kind === "promote") {
+        if (a.rejected) {
+          auditEntries.push({
+            kind: "maintenance",
+            text: `maintenance reject promote ${a.childPrefixedId} from S:${a.parentId} (attempts=${getMemoryMaintenanceAttempts(db, a.key)}), est_before=${auditEstBefore}, budget=${budget}`,
+          });
+          continue;
+        }
+        // The K-th rewrite failure applies the promote with the parent's old
+        // text unchanged (the analysis recorded it as the fallback rewrite).
+        const op =
+          a.sim?.newSummaryText !== undefined &&
+          a.sim.newSummaryText !== null &&
+          (a.op as { newSummaryText?: string }).newSummaryText !==
+            a.sim.newSummaryText
+            ? ({
+                ...a.op,
+                newSummaryText: a.sim.newSummaryText,
+              } as MemoryLearnerOperation)
+            : a.op;
+        const result = applyOperation(db, op, ctx);
+        void result;
+        coveredKeys.push(a.key);
+        auditEntries.push({
+          kind: "maintenance",
+          text: `maintenance promote ${a.childPrefixedId} from S:${a.parentId}, reason=hot, est_before=${auditEstBefore}, budget=${budget}`,
+        });
+        continue;
+      }
+      if (a.kind === "merge-create" || a.kind === "merge-extend") {
+        if (dropped.has(a.index) && !a.fallbackText) {
+          auditEntries.push({
+            kind: "maintenance",
+            text: `maintenance reject merge ${a.key} (attempts=${rejectedKeys.find((r) => r.key === a.key)?.attempts ?? getMemoryMaintenanceAttempts(db, a.key)}), est_before=${auditEstBefore}, budget=${budget}`,
+          });
+          continue;
+        }
+        const op =
+          a.fallbackText !== undefined && a.fallbackText !== null
+            ? ({ ...a.op, text: a.fallbackText } as MemoryLearnerOperation)
+            : a.op;
+        const result = applyOperation(db, op, ctx);
+        const fallbackSummaryId =
+          a.kind === "merge-extend" ? a.summaryId : result?.summaryId;
+        if (a.fallbackText && fallbackSummaryId !== undefined) {
+          // Mark fallback-merged summaries so /memory status can flag them.
+          db.prepare(
+            `UPDATE summaries SET label_source = 'fallback' WHERE id = ?`,
+          ).run(fallbackSummaryId);
+        }
+        const target =
+          a.kind === "merge-extend"
+            ? `S:${a.summaryId}`
+            : result?.summaryId !== undefined
+              ? `S:${result.summaryId}`
+              : "S:?";
+        if (a.fallbackText) {
+          auditEntries.push({
+            kind: "maintenance",
+            text: `maintenance fallback merge ${a.key} → ${target}, reason=${a.reason ?? "cold"}, est_before=${auditEstBefore}, budget=${budget}`,
+          });
+        } else {
+          auditEntries.push({
+            kind: "maintenance",
+            text: `maintenance merge ${a.key} → ${target}, reason=${a.reason ?? "cold"}, est_before=${auditEstBefore}, budget=${budget}`,
+          });
+        }
+        continue;
+      }
+      // no_op: nothing to do.
+    }
+
+    const layerTokensAfter = listMemoryTreeRoots(db).reduce(
+      (sum, r) => sum + r.estimatedTokens,
+      0,
+    );
+
+    db.exec("COMMIT");
+    return {
+      applied: true,
+      coveredKeys,
+      rejectedKeys,
+      fallbackKeys,
+      auditEntries,
+      layerTokensBefore: auditEstBefore,
+      layerTokensAfter,
+      layerOverBudget: layerTokensAfter > budget,
+    };
+  } catch (err) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      // Nested rollback failure is ignored.
+    }
+    throw err;
+  }
 }

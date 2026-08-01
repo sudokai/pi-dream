@@ -21,13 +21,11 @@ import {
   wouldMemoryContainsEdgeCycle,
 } from "./memory-graph.ts";
 import { computeMemoryNodeHeat } from "./memory-heat.ts";
-import { searchMemoryBm25 } from "./memory-search-index.ts";
 import {
-  formatMemoryBriefingMessage,
-  planRelevantMemoryBriefing,
-  validateAndPackMemoryBriefingPlan,
-} from "./memory-recall-planner.ts";
-import type { MemorySearchCandidate } from "./memory-types.ts";
+  isMemoryRoot,
+  listMemoryNodeChildren,
+  listMemoryTreeRoots,
+} from "./memory-tree.ts";
 import {
   MEMORY_NOVELTY_GENERATIONS,
   MEMORY_NOVELTY_MAX_SOURCE_AGE_DAYS,
@@ -242,12 +240,14 @@ test("openMemoryNodeExact exposes summary revision history", async () => {
           {
             op: "summarize",
             tempRef: "s1",
-            text: "Original build summary",
+            text: "Build uses pnpm",
             memberIds: ["m1"],
           },
         ],
       },
     });
+    // The extend path absorbs a NEW root (strict-tree: members must be roots);
+    // compaction is measured against the old summary text + the listed members.
     commitMemoryLearningSession(db, {
       runId,
       sourceSessionId: "s2",
@@ -258,11 +258,18 @@ test("openMemoryNodeExact exposes summary revision history", async () => {
       plan: {
         operations: [
           {
+            op: "create",
+            tempRef: "m2",
+            kind: "fact",
+            observationText: "Deploys to Fly.io",
+            memoryText: "Deploys to Fly.io",
+          },
+          {
             op: "summarize",
             summaryId: "S:1",
             expectedVersionId: 1,
-            text: "Updated build summary",
-            memberIds: ["M:1"],
+            text: "Build + deploy",
+            memberIds: ["M:2"],
           },
         ],
       },
@@ -271,8 +278,10 @@ test("openMemoryNodeExact exposes summary revision history", async () => {
     const opened = openMemoryNodeExact(db, "S:1");
     assert.deepEqual(
       opened.versions?.map((version) => version.text),
-      ["Updated build summary", "Original build summary"],
+      ["Build + deploy", "Build uses pnpm"],
     );
+    assert.equal(isMemoryRoot(db, "memory", 2), false, "m2 is absorbed");
+    assert.equal(isMemoryRoot(db, "memory", 1), false);
   });
 });
 
@@ -385,17 +394,20 @@ test("forget soft-retires and preserves observations", async () => {
       },
     });
     const m = listActiveMemories(db)[0]!;
-    assert.ok(searchMemoryBm25(db, "emoji").length > 0);
+    assert.ok(
+      listMemoryTreeRoots(db).some((r) => r.prefixedId === `M:${m.id}`),
+      "active memory appears in the top layer",
+    );
     retireMemoryNode(db, `M:${m.id}`);
     assert.equal(getMemoryById(db, m.id)!.state, "retired");
     assert.equal(listActiveMemories(db).length, 0);
     assert.ok(listObservationsForMemory(db, m.id).length >= 1);
     assert.equal(getSourceSessionCheckpoint(db, "s1")?.sessionId, "s1");
-    assert.equal(searchMemoryBm25(db, "emoji").length, 0);
-    const fts = db.prepare(`SELECT COUNT(*) AS n FROM search_fts`).get() as {
-      n: number;
-    };
-    assert.equal(Number(fts.n), 0);
+    assert.equal(
+      listMemoryTreeRoots(db).some((r) => r.prefixedId === `M:${m.id}`),
+      false,
+      "retired memory never appears in the top layer",
+    );
   });
 });
 
@@ -419,7 +431,7 @@ test("heat warms with novelty and cools without recall", () => {
   assert.ok(reheated > cold);
 });
 
-test("BM25 finds indexed memory text", async () => {
+test("top layer lists active root memories", async () => {
   await withClaimedDb((db, runId) => {
     commitMemoryLearningSession(db, {
       runId,
@@ -440,102 +452,155 @@ test("BM25 finds indexed memory text", async () => {
         ],
       },
     });
-    const hits = searchMemoryBm25(db, "Fly.io production");
-    assert.ok(hits.length >= 1);
-    assert.equal(hits[0]!.nodeType, "memory");
+    const roots = listMemoryTreeRoots(db);
+    assert.equal(roots.length, 1);
+    assert.equal(roots[0]!.nodeType, "memory");
+    assert.match(roots[0]!.text, /Fly\.io/);
   });
 });
 
-test("planner validation fail-closed on unknown ids", async () => {
-  const candidates: MemorySearchCandidate[] = [
-    {
-      nodeType: "memory",
-      nodeId: 1,
-      prefixedId: "M:1",
-      kind: "preference",
-      text: "Prefer tabs",
-      heat: 1,
-      estimatedTokens: 3,
-      bm25Rank: 1,
-      semanticRank: null,
-      rrfScore: 0.1,
-    },
-  ];
-  await assert.rejects(async () => {
-    validateAndPackMemoryBriefingPlan(candidates, {
-      sections: [{ id: "learned_user_preferences", ids: ["M:999"] }],
+test("summarize with a non-root member is rejected", async () => {
+  await withClaimedDb((db, runId) => {
+    commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "s1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1,
+      contentHash: "h1",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "m1",
+            kind: "fact",
+            observationText: "Uses pnpm",
+            memoryText: "Package manager is pnpm",
+          },
+          {
+            op: "summarize",
+            tempRef: "s1",
+            text: "Tooling",
+            memberIds: ["m1"],
+          },
+        ],
+      },
     });
-  }, /unknown|inactive/i);
-
-  const plan = validateAndPackMemoryBriefingPlan(candidates, {
-    sections: [{ id: "learned_user_preferences", ids: ["M:1"] }],
+    // M:1 is now a child of S:1 — re-listing it in a new summary must fail.
+    assert.throws(
+      () =>
+        commitMemoryLearningSession(db, {
+          runId,
+          sourceSessionId: "s2",
+          sessionPath: "/tmp/s2.jsonl",
+          cwd: "/tmp",
+          processedMtimeMs: 2,
+          contentHash: "h2",
+          plan: {
+            operations: [
+              {
+                op: "summarize",
+                tempRef: "s2",
+                text: "Duplicate",
+                memberIds: ["M:1"],
+              },
+            ],
+          },
+        }),
+      /not a root/,
+    );
   });
-  assert.deepEqual(plan.selectedIds, ["M:1"]);
-  const msg = formatMemoryBriefingMessage(plan);
-  assert.match(msg, /M:1/);
-  assert.match(msg, /Prefer tabs/);
-
-  const result = await planRelevantMemoryBriefing({
-    query: "indentation",
-    candidates,
-    complete: async () => ({
-      text: JSON.stringify({
-        sections: [{ id: "learned_user_preferences", ids: ["M:1"] }],
-      }),
-    }),
-  });
-  assert.equal(result.ok, true);
-  if (result.ok) assert.equal(result.plan.selectedIds.length, 1);
-
-  const bad = await planRelevantMemoryBriefing({
-    query: "x",
-    candidates,
-    complete: async () => ({ text: "not-json" }),
-  });
-  assert.equal(bad.ok, false);
 });
 
-test("atomic budget drops whole nodes", () => {
-  const candidates: MemorySearchCandidate[] = [
-    {
-      nodeType: "memory",
-      nodeId: 1,
-      prefixedId: "M:1",
-      kind: "fact",
-      text: "a".repeat(100),
-      heat: 1,
-      estimatedTokens: 50,
-      bm25Rank: 1,
-      semanticRank: null,
-      rrfScore: 1,
-    },
-    {
-      nodeType: "memory",
-      nodeId: 2,
-      prefixedId: "M:2",
-      kind: "fact",
-      text: "b".repeat(100),
-      heat: 0.5,
-      estimatedTokens: 50,
-      bm25Rank: 2,
-      semanticRank: null,
-      rrfScore: 0.5,
-    },
-  ];
-  const plan = validateAndPackMemoryBriefingPlan(
-    candidates,
-    {
-      sections: [
-        {
-          id: "workspace_knowledge",
-          ids: ["M:1", "M:2"],
-        },
-      ],
-    },
-    { tokenBudget: 60 },
-  );
-  assert.equal(plan.selectedIds.length, 1);
-  assert.equal(plan.selectedIds[0], "M:1");
+test("summarize with non-compacting text is rejected", async () => {
+  await withClaimedDb((db, runId) => {
+    commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "s1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1,
+      contentHash: "h1",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "m1",
+            kind: "fact",
+            observationText: "Uses pnpm",
+            memoryText: "Package manager is pnpm",
+          },
+        ],
+      },
+    });
+    assert.throws(
+      () =>
+        commitMemoryLearningSession(db, {
+          runId,
+          sourceSessionId: "s2",
+          sessionPath: "/tmp/s2.jsonl",
+          cwd: "/tmp",
+          processedMtimeMs: 2,
+          contentHash: "h2",
+          plan: {
+            operations: [
+              {
+                op: "summarize",
+                text: "Package manager is pnpm (longer than the member)",
+                memberIds: ["M:1"],
+              },
+            ],
+          },
+        }),
+      /does not compact the top layer/,
+    );
+  });
+});
+
+test("link with contains is rejected at the repository boundary", async () => {
+  await withClaimedDb((db, runId) => {
+    commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "s1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1,
+      contentHash: "h1",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "m1",
+            kind: "fact",
+            observationText: "Uses pnpm",
+            memoryText: "Package manager is pnpm",
+          },
+        ],
+      },
+    });
+    assert.throws(
+      () =>
+        commitMemoryLearningSession(db, {
+          runId,
+          sourceSessionId: "s2",
+          sessionPath: "/tmp/s2.jsonl",
+          cwd: "/tmp",
+          processedMtimeMs: 2,
+          contentHash: "h2",
+          plan: {
+            operations: [
+              {
+                op: "link",
+                relation: "contains" as never,
+                fromId: "M:1",
+                toId: "M:1",
+              },
+            ],
+          },
+        }),
+      /link cannot create contains edges/,
+    );
+  });
 });
 
 test("single-flight claim rejects second acquirer", () => {
@@ -633,7 +698,7 @@ test("summarize update honors the expectedVersionId CAS guard", async () => {
           {
             op: "summarize",
             tempRef: "s1",
-            text: "Tooling overview",
+            text: "Tooling",
             memberIds: ["m1"],
           },
         ],
@@ -645,7 +710,7 @@ test("summarize update honors the expectedVersionId CAS guard", async () => {
         id: "S:1",
         state: "active",
         currentVersionId: 1,
-        text: "Tooling overview",
+        text: "Tooling",
       },
     ]);
 
@@ -697,7 +762,8 @@ test("summarize update honors the expectedVersionId CAS guard", async () => {
         }),
       /version is stale/,
     );
-    // A matching CAS version succeeds.
+    // A matching CAS version succeeds with a NEW root member (strict-tree:
+    // an extend absorbs roots only; members are not re-listed).
     const applied = commitMemoryLearningSession(db, {
       runId,
       sourceSessionId: "s3",
@@ -708,11 +774,18 @@ test("summarize update honors the expectedVersionId CAS guard", async () => {
       plan: {
         operations: [
           {
+            op: "create",
+            tempRef: "m2",
+            kind: "fact",
+            observationText: "Deploys to Fly.io",
+            memoryText: "Deploys to Fly.io",
+          },
+          {
             op: "summarize",
             summaryId: "S:1",
             expectedVersionId: 1,
-            text: "Tooling overview (revised)",
-            memberIds: ["M:1"],
+            text: "Tooling + deploy",
+            memberIds: ["M:2"],
           },
         ],
       },
@@ -720,7 +793,7 @@ test("summarize update honors the expectedVersionId CAS guard", async () => {
     assert.equal(applied.applied, true);
     const opened = openMemoryNodeExact(db, "S:1");
     assert.equal(opened.target.state, "active");
-    assert.equal(opened.target.text, "Tooling overview (revised)");
+    assert.equal(opened.target.text, "Tooling + deploy");
   });
 });
 
@@ -1000,6 +1073,403 @@ test("backfilled old sessions create cold memories (no novelty boost)", async ()
     assert.equal(
       fresh.noveltyUntilGeneration,
       getMemoryActivityGeneration(db) + MEMORY_NOVELTY_GENERATIONS,
+    );
+  });
+});
+
+// ─── Step 4: promote + lifecycle reconciliation ─────────────────────────────
+
+function seedSummaryWithMembers(
+  db: ReturnType<typeof openMemoryDatabaseAtPath>,
+  runId: string,
+  memberTexts: string[],
+): { memoryIds: string[]; summaryId: string } {
+  const operations = memberTexts.map((text, i) => ({
+    op: "create" as const,
+    tempRef: `m${i}`,
+    kind: "fact" as const,
+    observationText: text,
+    memoryText: text,
+  }));
+  commitMemoryLearningSession(db, {
+    runId,
+    sourceSessionId: `seed-${Math.random().toString(36).slice(2)}`,
+    sessionPath: "/tmp/seed.jsonl",
+    cwd: "/tmp",
+    processedMtimeMs: 1,
+    contentHash: `h-${Math.random().toString(36).slice(2)}`,
+    plan: {
+      operations: [
+        ...operations,
+        {
+          op: "summarize",
+          tempRef: "s1",
+          text: "Tooling",
+          memberIds: memberTexts.map((_, i) => `m${i}`),
+        },
+      ],
+    },
+  });
+  const memoryIds = memberTexts.map((_, i) => `M:${i + 1}`);
+  return { memoryIds, summaryId: "S:1" };
+}
+
+test("promote happy path: edge retired and parent rewritten (>= 2 members)", async () => {
+  await withClaimedDb((db, runId) => {
+    const { memoryIds, summaryId } = seedSummaryWithMembers(db, runId, [
+      "Use tabs for indentation",
+      "No emoji in commits",
+      "CI runs on Ubuntu",
+    ]);
+    const before = listMemoryTreeRoots(db);
+    assert.deepEqual(
+      before.map((r) => r.prefixedId),
+      [summaryId],
+    );
+    assert.deepEqual(
+      listMemoryNodeChildren(db, "summary", 1).map((c) => c.prefixedId),
+      memoryIds,
+    );
+
+    commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "promote-1",
+      sessionPath: "/tmp/p.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 2,
+      contentHash: "h-p1",
+      plan: {
+        operations: [
+          {
+            op: "promote",
+            nodeId: memoryIds[0] as never,
+            summaryId: summaryId as never,
+            expectedSummaryVersionId: 1,
+            newSummaryText: "Tooling",
+          },
+        ],
+      },
+    });
+
+    // The promoted memory is a root again; the parent was rewritten.
+    assert.equal(isMemoryRoot(db, "memory", 1), true);
+    const children = listMemoryNodeChildren(db, "summary", 1);
+    assert.deepEqual(
+      children.map((c) => c.prefixedId),
+      memoryIds.slice(1),
+    );
+    const opened = openMemoryNodeExact(db, summaryId);
+    assert.equal(opened.target.text, "Tooling");
+    assert.equal(opened.target.state, "active");
+    assert.equal(opened.versions?.length ?? 0, 2);
+    const roots = listMemoryTreeRoots(db).map((r) => r.prefixedId);
+    assert.deepEqual(roots, [memoryIds[0], summaryId]);
+  });
+});
+
+test("promote to 1 member retires the parent and resurfaced the orphan", async () => {
+  await withClaimedDb((db, runId) => {
+    const { memoryIds, summaryId } = seedSummaryWithMembers(db, runId, [
+      "Use tabs for indentation",
+      "No emoji in commits",
+    ]);
+    commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "promote-1",
+      sessionPath: "/tmp/p.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 2,
+      contentHash: "h-p1",
+      plan: {
+        operations: [
+          {
+            op: "promote",
+            nodeId: memoryIds[0] as never,
+            summaryId: summaryId as never,
+            expectedSummaryVersionId: 1,
+          },
+        ],
+      },
+    });
+    assert.equal(isMemoryRoot(db, "memory", 1), true);
+    assert.equal(isMemoryRoot(db, "memory", 2), true, "orphan resurfaced");
+    const opened = openMemoryNodeExact(db, summaryId);
+    assert.equal(opened.target.state, "retired");
+  });
+});
+
+test("promote to 0 members retires the parent", async () => {
+  await withClaimedDb((db, runId) => {
+    const { memoryIds, summaryId } = seedSummaryWithMembers(db, runId, [
+      "Use tabs for indentation",
+    ]);
+    commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "promote-1",
+      sessionPath: "/tmp/p.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 2,
+      contentHash: "h-p1",
+      plan: {
+        operations: [
+          {
+            op: "promote",
+            nodeId: memoryIds[0] as never,
+            summaryId: summaryId as never,
+            expectedSummaryVersionId: 1,
+          },
+        ],
+      },
+    });
+    assert.equal(isMemoryRoot(db, "memory", 1), true);
+    const opened = openMemoryNodeExact(db, summaryId);
+    assert.equal(opened.target.state, "retired");
+  });
+});
+
+test("promote CAS mismatch, conflicted target, and non-child are rejected", async () => {
+  await withClaimedDb((db, runId) => {
+    const { memoryIds, summaryId } = seedSummaryWithMembers(db, runId, [
+      "Use tabs for indentation",
+      "No emoji in commits",
+    ]);
+    const commit = (op: Record<string, unknown>) =>
+      commitMemoryLearningSession(db, {
+        runId,
+        sourceSessionId: `x-${Math.random().toString(36).slice(2)}`,
+        sessionPath: "/tmp/x.jsonl",
+        cwd: "/tmp",
+        processedMtimeMs: 2,
+        contentHash: `h-${Math.random().toString(36).slice(2)}`,
+        plan: { operations: [op as never] },
+      });
+    assert.throws(
+      () =>
+        commit({
+          op: "promote",
+          nodeId: memoryIds[0],
+          summaryId,
+          expectedSummaryVersionId: 999,
+          newSummaryText: "Tooling",
+        }),
+      /version is stale/,
+    );
+    // Conflicted target: mark M:2 conflicted, then try to promote it.
+    commit({
+      op: "conflict",
+      memoryIds: [memoryIds[1]],
+    });
+    assert.throws(
+      () =>
+        commit({
+          op: "promote",
+          nodeId: memoryIds[1],
+          summaryId,
+          expectedSummaryVersionId: 1,
+        }),
+      /is conflicted/,
+    );
+    // Non-child: M:1 is an active child of S:1, so a promote naming a
+    // different parent must fail.
+    assert.throws(
+      () =>
+        commit({
+          op: "promote",
+          nodeId: memoryIds[0],
+          summaryId: "S:999",
+          expectedSummaryVersionId: 1,
+          newSummaryText: "Tooling",
+        }),
+      /not a child/,
+    );
+  });
+});
+
+test("promote rewrite must not grow; newSummaryText required for >= 2 members", async () => {
+  await withClaimedDb((db, runId) => {
+    const { memoryIds, summaryId } = seedSummaryWithMembers(db, runId, [
+      "Use tabs for indentation",
+      "No emoji in commits",
+      "CI runs on Ubuntu",
+    ]);
+    const commit = (op: Record<string, unknown>) =>
+      commitMemoryLearningSession(db, {
+        runId,
+        sourceSessionId: `x-${Math.random().toString(36).slice(2)}`,
+        sessionPath: "/tmp/x.jsonl",
+        cwd: "/tmp",
+        processedMtimeMs: 2,
+        contentHash: `h-${Math.random().toString(36).slice(2)}`,
+        plan: { operations: [op as never] },
+      });
+    assert.throws(
+      () =>
+        commit({
+          op: "promote",
+          nodeId: memoryIds[0],
+          summaryId,
+          expectedSummaryVersionId: 1,
+        }),
+      /newSummaryText is required/,
+    );
+    assert.throws(
+      () =>
+        commit({
+          op: "promote",
+          nodeId: memoryIds[0],
+          summaryId,
+          expectedSummaryVersionId: 1,
+          newSummaryText:
+            "A much longer tooling overview text that grows the parent",
+        }),
+      /must not grow/,
+    );
+  });
+});
+
+test("supersede of a child retires its edge and resurfaced the ancestor summary", async () => {
+  await withClaimedDb((db, runId) => {
+    const { memoryIds, summaryId } = seedSummaryWithMembers(db, runId, [
+      "Use spaces for indentation",
+      "No emoji in commits",
+    ]);
+    commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "sup-1",
+      sessionPath: "/tmp/s.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 2,
+      contentHash: "h-sup1",
+      plan: {
+        operations: [
+          {
+            op: "supersede",
+            oldMemoryId: memoryIds[0] as never,
+            newTempRef: "new1",
+            kind: "correction",
+            observationText: "Actually use tabs",
+            memoryText: "Use tabs for indentation",
+          },
+        ],
+      },
+    });
+    // The superseded memory's edge is retired; the parent summary contains an
+    // inactive node and is retired; the remaining child resurfaced as a root.
+    assert.equal(isMemoryRoot(db, "memory", 2), true);
+    const opened = openMemoryNodeExact(db, summaryId);
+    assert.equal(opened.target.state, "retired");
+    const roots = listMemoryTreeRoots(db).map((r) => r.prefixedId);
+    assert.ok(roots.includes("M:2"));
+    assert.ok(roots.includes("M:3"));
+    // The supersedes edge itself is intact (audit).
+    const edges = db
+      .prepare(
+        `SELECT relation, state FROM graph_edges WHERE relation = 'supersedes'`,
+      )
+      .all() as Array<{ relation: string; state: string }>;
+    assert.equal(edges.length, 1);
+  });
+});
+
+test("conflict of a child retires the ancestor summary and resurfaced siblings", async () => {
+  await withClaimedDb((db, runId) => {
+    const { memoryIds, summaryId } = seedSummaryWithMembers(db, runId, [
+      "API is REST",
+      "API is GraphQL",
+      "CI runs on Ubuntu",
+    ]);
+    commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "conf-1",
+      sessionPath: "/tmp/c.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 2,
+      contentHash: "h-conf1",
+      plan: {
+        operations: [
+          {
+            op: "conflict",
+            memoryIds: [memoryIds[0] as never, memoryIds[1] as never],
+          },
+        ],
+      },
+    });
+    const opened = openMemoryNodeExact(db, summaryId);
+    assert.equal(
+      opened.target.state,
+      "retired",
+      "summary with conflicted members retires",
+    );
+    const roots = listMemoryTreeRoots(db).map((r) => r.prefixedId);
+    assert.ok(roots.includes("M:3"), "unaffected sibling resurfaced");
+    assert.ok(!roots.includes("M:1") && !roots.includes("M:2"));
+  });
+});
+
+test("forget of a summary resurfaced its active children", async () => {
+  await withClaimedDb((db, runId) => {
+    const { memoryIds, summaryId } = seedSummaryWithMembers(db, runId, [
+      "Use tabs for indentation",
+      "No emoji in commits",
+    ]);
+    retireMemoryNode(db, summaryId);
+    const roots = listMemoryTreeRoots(db).map((r) => r.prefixedId);
+    assert.deepEqual(roots.sort(), memoryIds.sort());
+    const edges = db
+      .prepare(`SELECT state FROM graph_edges WHERE relation = 'contains'`)
+      .all() as Array<{ state: string }>;
+    assert.ok(edges.every((e) => e.state === "retired"));
+  });
+});
+
+test("extend merge that would grow the layer is rejected", async () => {
+  await withClaimedDb((db, runId) => {
+    const { summaryId } = seedSummaryWithMembers(db, runId, [
+      "Use tabs for indentation",
+    ]);
+    commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "ext-1",
+      sessionPath: "/tmp/e.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 2,
+      contentHash: "h-ext1",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "m2",
+            kind: "fact",
+            observationText: "No emoji in commits",
+            memoryText: "No emoji in commits",
+          },
+        ],
+      },
+    });
+    // Old summary "Tooling" (2 tokens) + new member "No emoji in commits"
+    // (5 tokens) = 7; a longer rewrite that does not stay below it is rejected.
+    assert.throws(
+      () =>
+        commitMemoryLearningSession(db, {
+          runId,
+          sourceSessionId: "ext-2",
+          sessionPath: "/tmp/e2.jsonl",
+          cwd: "/tmp",
+          processedMtimeMs: 3,
+          contentHash: "h-ext2",
+          plan: {
+            operations: [
+              {
+                op: "summarize",
+                summaryId: summaryId as never,
+                expectedVersionId: 1,
+                text: "Tooling plus emoji plus more text that is far too long",
+                memberIds: ["M:2"],
+              },
+            ],
+          },
+        }),
+      /does not compact the top layer/,
     );
   });
 });

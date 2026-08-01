@@ -475,7 +475,6 @@ export function registerMemoryCommand(
   });
 }
 
-/** Build status text for tests without UI. */
 /** Build list text for tests without UI. */
 export function buildMemoryListText(
   db: DatabaseSync,
@@ -484,6 +483,7 @@ export function buildMemoryListText(
   return formatList(db, query);
 }
 
+/** Build status text for tests without UI. */
 export function buildMemoryStatusText(input: {
   workspaceId: string;
   db: DatabaseSync;

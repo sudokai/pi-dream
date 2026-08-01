@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import {
+  buildMemoryStatusText,
   getMemoryCommandArgumentCompletions,
   parseMemoryCommandArgs,
 } from "./memory-command.ts";
@@ -15,6 +16,7 @@ import {
 } from "../shared/memory-database.ts";
 import { defaultMemoryWorkspaceConfig } from "../shared/memory-config.ts";
 import {
+  commitMemoryLearningSession,
   getMemoryWorkspaceState,
   updateMemoryCadenceState,
 } from "../shared/memory-repository.ts";
@@ -264,6 +266,122 @@ test("consume rolls back reported flag when cadence reset throws", () => {
     const state = getMemoryWorkspaceState(db);
     assert.equal(state.turnsSinceLastRun, 9);
     assert.equal(state.lastSuccessfulRunAtMs, 100);
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
+test("buildMemoryStatusText shows the tree section, attempts, and OVER BUDGET flag", () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "auto");
+    assert.ok(claim.runId);
+    commitMemoryLearningSession(db, {
+      runId: claim.runId!,
+      sourceSessionId: "s1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1,
+      contentHash: "h1",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "m",
+            kind: "fact",
+            observationText: "Use tabs for indentation",
+            memoryText: "Use tabs for indentation",
+          },
+          {
+            op: "create",
+            tempRef: "m2",
+            kind: "fact",
+            observationText: "No emoji in commits",
+            memoryText: "No emoji in commits",
+          },
+        ],
+      },
+    });
+    db.prepare(
+      `INSERT INTO maintenance_attempts (key, attempts, last_generation) VALUES ('merge:memory:1+memory:2', 1, 0)`,
+    ).run();
+    const cfg = { ...defaultMemoryWorkspaceConfig(), briefingTokenBudget: 1 };
+    const text = buildMemoryStatusText({
+      workspaceId: "ws-test",
+      db,
+      config: cfg,
+    });
+    assert.match(text, /tree roots:\s+2/);
+    assert.match(text, /OVER BUDGET: \d+\/1 tokens/);
+    assert.match(text, /pending attempts: merge:memory:1\+memory:2 \(1\/3\)/);
+    assert.match(text, /embedder:\s+tree maintenance \+ learning only/);
+    assert.match(text, /last maintenance: none/);
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
+test("cadence fires a maintenance-only run with no transcripts when candidates exist", () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "auto");
+    assert.ok(claim.runId);
+    commitMemoryLearningSession(db, {
+      runId: claim.runId!,
+      sourceSessionId: "s1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1,
+      contentHash: "h1",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "m",
+            kind: "fact",
+            observationText: "Use tabs for indentation",
+            memoryText: "Use tabs for indentation",
+          },
+          {
+            op: "create",
+            tempRef: "m2",
+            kind: "fact",
+            observationText: "No emoji in commits",
+            memoryText: "No emoji in commits",
+          },
+        ],
+      },
+    });
+    updateMemoryCadenceState(db, {
+      turnsSinceLastRun: 0,
+      lastSuccessfulRunAtMs: 1_000_000,
+    });
+    const config = {
+      ...defaultMemoryWorkspaceConfig(),
+      minTurns: 2,
+      minMinutes: 1,
+    };
+    // Without candidates: transcript gate blocks.
+    const noCandidates = evaluateMemoryLearningCadence(db, {
+      cwd: "/nonexistent-dream-path",
+      workspaceId: "ws",
+      config,
+      nowMs: 2_000_000,
+    });
+    assert.equal(noCandidates.shouldLearn, false);
+
+    // Cold roots -> maintenance candidates -> shouldLearn without transcripts.
+    const withCandidates = evaluateMemoryLearningCadence(db, {
+      cwd: "/nonexistent-dream-path",
+      workspaceId: "ws",
+      config,
+      nowMs: 2_000_000 + 120_000,
+    });
+    assert.equal(withCandidates.shouldLearn, true);
+    assert.ok(
+      !withCandidates.reasons.some((r) => r.includes("no uncheckpointed")),
+      "maintenance candidates replace the transcript gate",
+    );
   } finally {
     closeMemoryDatabase(db);
   }

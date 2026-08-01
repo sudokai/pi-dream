@@ -16,6 +16,7 @@ import {
   buildMemoryLearningManifest,
   writeMemoryLearningManifest,
 } from "../shared/memory-session-discovery.ts";
+import { hasMemoryMaintenanceCandidates } from "../shared/memory-maintenance.ts";
 import {
   formatSessionModelId,
   resolveMemoryModel,
@@ -94,7 +95,12 @@ export function launchMemoryLearningRun(
       input.workspaceId,
       { snapshotDir: runDir },
     );
-    if (manifest.length === 0) {
+    // Maintenance-only mode: an empty manifest is valid when deterministic
+    // maintenance candidates exist (pure SQL/heat gate — no embedder here).
+    const maintenanceCandidates =
+      manifest.length === 0 &&
+      hasMemoryMaintenanceCandidates(input.db, { config: input.config });
+    if (manifest.length === 0 && !maintenanceCandidates) {
       releaseMemoryRunClaim(input.db, runId, "No eligible sessions to learn");
       try {
         fs.rmSync(runDir, { recursive: true, force: true });

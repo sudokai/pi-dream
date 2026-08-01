@@ -1,7 +1,9 @@
 /**
  * Detached memory learner child extension entry.
  * Registers internal learning tools and finalizes the run on agent_settled
- * (after retries and compaction have finished).
+ * (after retries and compaction have finished). Finalization is async and
+ * awaited: the DB closes only after the post-ingestion maintenance recompute
+ * settles.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -16,6 +18,11 @@ import {
 } from "../shared/memory-run-claim.ts";
 import { registerMemoryLearningTools } from "./memory-learning-tools.ts";
 import { finalizeMemoryLearningRun } from "./memory-learning-finalize.ts";
+import {
+  defaultMemoryWorkspaceConfig,
+  loadMemoryWorkspaceConfig,
+} from "../shared/memory-config.ts";
+import { memoryWorkspaceConfigPath } from "../shared/memory-workspace-id.ts";
 
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -66,23 +73,46 @@ export default function memoryLearningChildExtension(pi: ExtensionAPI) {
     return;
   }
 
+  // The parent never launches a run with an invalid config (fail-closed), so
+  // defaults here are purely defensive.
+  const loaded = loadMemoryWorkspaceConfig(
+    memoryWorkspaceConfigPath(workspaceId),
+  );
+  const config = loaded.ok ? loaded.config : defaultMemoryWorkspaceConfig();
+
   registerMemoryLearningTools(pi, {
     db,
     runId,
     workspaceId,
     manifestPath,
     cwd,
+    config,
   });
 
   let finalized = false;
   pi.on("agent_settled", () => {
     if (finalized) return;
     finalized = true;
-    finalizeMemoryLearningRun({
-      db,
-      runId,
-      manifestPath,
-    });
-    closeMemoryDatabase(db);
+    void (async () => {
+      try {
+        await finalizeMemoryLearningRun({
+          db,
+          runId,
+          manifestPath,
+          workspaceId,
+          config,
+        });
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        console.error(`Memory learner finalization failed: ${detail}`);
+        try {
+          releaseMemoryRunClaim(db, runId, detail);
+        } catch {
+          // Claim release is best-effort after finalization failure.
+        }
+      } finally {
+        closeMemoryDatabase(db);
+      }
+    })();
   });
 }

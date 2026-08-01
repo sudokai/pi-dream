@@ -10,6 +10,7 @@ import {
   updateMemoryCadenceState,
 } from "../shared/memory-repository.ts";
 import { hasMemoryLearningEligibleSession } from "../shared/memory-session-discovery.ts";
+import { hasMemoryMaintenanceCandidates } from "../shared/memory-maintenance.ts";
 
 export interface MemoryCadenceEvaluation {
   shouldLearn: boolean;
@@ -53,6 +54,11 @@ export function evaluateMemoryLearningCadence(
     input.cwd,
     input.workspaceId,
   );
+  // Maintenance-only mode: deterministic tree candidates replace the transcript
+  // gate (pure SQL/heat — no embedder load on the interactive settle path).
+  const maintenanceCandidates = hasMemoryMaintenanceCandidates(db, {
+    config: input.config,
+  });
 
   const reasons: string[] = [];
   if (!enabled) reasons.push("paused");
@@ -64,13 +70,15 @@ export function evaluateMemoryLearningCadence(
       `minutes ${minutesSince === Number.POSITIVE_INFINITY ? "∞" : minutesSince.toFixed(1)}/${input.config.minMinutes}`,
     );
   }
-  if (!transcriptAdvanced) reasons.push("no uncheckpointed transcripts");
+  if (!transcriptAdvanced && !maintenanceCandidates) {
+    reasons.push("no uncheckpointed transcripts");
+  }
 
   const shouldLearn =
     enabled &&
     turns >= input.config.minTurns &&
     minutesSince >= input.config.minMinutes &&
-    transcriptAdvanced;
+    (transcriptAdvanced || maintenanceCandidates);
 
   return {
     shouldLearn,

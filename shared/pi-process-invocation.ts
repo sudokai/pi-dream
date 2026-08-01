@@ -47,6 +47,7 @@ export const MEMORY_LEARNER_CHILD_TOOLS = [
   "memory_read_session",
   "memory_inspect_graph",
   "memory_commit_session",
+  "memory_commit_maintenance",
 ] as const;
 
 export interface BuildMemoryLearnerSpawnInput {

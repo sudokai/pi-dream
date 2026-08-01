@@ -294,12 +294,15 @@ export async function synthesizeMemoryAnswer(
     MEMORY_SYNTHESIZER_FRAMING_BUDGET -
     (config.synthesizerAnswerBudget ?? MEMORY_SYNTHESIZER_ANSWER_BUDGET) -
     MEMORY_SYNTHESIZER_NAV_RESERVE;
+  // The envelope covers framing + request + top layer + navigation + answer:
+  // the request tokens are counted explicitly (framing is a fixed reserve).
+  const requestTokens = estimateMemoryTextTokens(input.request);
   const contextTokens = (): number =>
     context.reduce((sum, node) => sum + node.tokens, 0);
-  if (contextTokens() > availableForNodes) {
+  if (requestTokens + contextTokens() > availableForNodes) {
     return {
       ok: false,
-      error: "context envelope exceeded by the top layer",
+      error: "context envelope exceeded by the top layer and request",
       layerTokens,
       budget,
     };
@@ -391,31 +394,35 @@ export async function synthesizeMemoryAnswer(
           usage,
         };
       }
-      const children = listMemoryNodeActiveChildren(db, "summary", parsed.id);
-      const childNodes: SynthesizerContextNode[] = children.map((c) => ({
-        nodeType: c.nodeType,
-        nodeId: c.nodeId,
-        prefixedId: c.prefixedId,
-        kind: c.kind,
-        text: c.text,
-        heat: c.heat,
-        tokens: c.estimatedTokens,
-        versionId: c.currentVersionId,
-        path:
-          target.path === "root"
-            ? target.prefixedId
-            : `${target.path}>${target.prefixedId}`,
-      }));
-      const addedTokens = childNodes.reduce((sum, c) => sum + c.tokens, 0);
-      if (contextTokens() + addedTokens > availableForNodes) {
-        return {
-          ok: false,
-          error: `opening ${parsed.prefixed} would exceed the context envelope`,
-          usage,
-        };
-      }
-      context.push(...childNodes);
       if (!openedKeys.has(contextKey("summary", parsed.id))) {
+        // First open: append active children and enforce the cumulative
+        // envelope. Re-opening an already-open summary is a no-op (its
+        // children are already in the context; appending again would
+        // double-count their tokens).
+        const children = listMemoryNodeActiveChildren(db, "summary", parsed.id);
+        const childNodes: SynthesizerContextNode[] = children.map((c) => ({
+          nodeType: c.nodeType,
+          nodeId: c.nodeId,
+          prefixedId: c.prefixedId,
+          kind: c.kind,
+          text: c.text,
+          heat: c.heat,
+          tokens: c.estimatedTokens,
+          versionId: c.currentVersionId,
+          path:
+            target.path === "root"
+              ? target.prefixedId
+              : `${target.path}>${target.prefixedId}`,
+        }));
+        const addedTokens = childNodes.reduce((sum, c) => sum + c.tokens, 0);
+        if (contextTokens() + addedTokens > availableForNodes) {
+          return {
+            ok: false,
+            error: `opening ${parsed.prefixed} would exceed the context envelope`,
+            usage,
+          };
+        }
+        context.push(...childNodes);
         openedKeys.add(contextKey("summary", parsed.id));
         openedSummaryIds.push(parsed.prefixed as SummaryNodeId);
       }

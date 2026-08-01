@@ -228,3 +228,29 @@ test("loadMemoryWorkspaceConfig with legacy hybrid keys disables memory", () => 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("synthesizerContextBudget at/below the envelope floor is rejected", () => {
+  const floor = 8000 + 512 + 2000 + 256; // briefing + framing + answer + nav
+  const at = parseMemoryWorkspaceConfig({
+    version: 1,
+    enabled: true,
+    synthesizerContextBudget: floor,
+  });
+  assert.equal(at.ok, false, "equality leaves no room for a request");
+  if (!at.ok) assert.match(at.error, /synthesizer envelope/);
+
+  const below = parseMemoryWorkspaceConfig({
+    version: 1,
+    enabled: true,
+    synthesizerContextBudget: 5000,
+  });
+  assert.equal(below.ok, false);
+  if (!below.ok) assert.match(below.error, /synthesizerContextBudget/);
+
+  const ok = parseMemoryWorkspaceConfig({
+    version: 1,
+    enabled: true,
+    synthesizerContextBudget: floor + 1,
+  });
+  assert.equal(ok.ok, true);
+});

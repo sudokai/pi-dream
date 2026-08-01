@@ -472,3 +472,60 @@ test("max steps is configurable", async () => {
     assert.match(result.error, /step budget exhausted/);
   });
 });
+
+test("a long request counts against the context envelope and fails closed", async () => {
+  await withClaimedDb(async (db, runId) => {
+    seedTree(db, runId);
+    // Envelope: 4000 - framing 512 - answer 2000 - nav 256 = 1232 tokens for
+    // request + nodes. The layer fits; the long request does not.
+    const result = await synthesizeMemoryAnswer({
+      db,
+      request: "x".repeat(5000),
+      config: {
+        ...defaultMemoryWorkspaceConfig(),
+        synthesizerContextBudget: 4000,
+      },
+      modelRegistry: modelRegistry() as never,
+      sessionModel: sessionModel(),
+      complete: async () => ({ text: "{}" }),
+    });
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /context envelope/);
+  });
+});
+
+test("re-opening an already-open summary does not duplicate its children", async () => {
+  await withClaimedDb(async (db, runId) => {
+    seedTree(db, runId);
+    const result = await synthesizeMemoryAnswer({
+      db,
+      request: "tooling?",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: modelRegistry() as never,
+      sessionModel: sessionModel(),
+      complete: sequenceComplete([
+        JSON.stringify({ action: "open", id: "S:1" }),
+        JSON.stringify({ action: "open", id: "S:1" }),
+        JSON.stringify({
+          action: "finalize",
+          answer: "Tooling: no emoji, pnpm.",
+          sources: ["M:1", "M:2"],
+        }),
+      ]),
+    });
+    assert.equal(
+      result.ok,
+      true,
+      "double-open must not fail or corrupt context",
+    );
+    if (!result.ok) return;
+    assert.deepEqual(
+      result.openedSummaryIds,
+      ["S:1"],
+      "opened summaries are deduplicated",
+    );
+    assert.equal(result.steps, 3);
+    assert.deepEqual(result.sources, ["M:1", "M:2"]);
+  });
+});

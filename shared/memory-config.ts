@@ -20,7 +20,9 @@ import {
   MEMORY_NOVELTY_GENERATIONS,
   MEMORY_SYNTHESIZER_ANSWER_BUDGET,
   MEMORY_SYNTHESIZER_CONTEXT_BUDGET,
+  MEMORY_SYNTHESIZER_FRAMING_BUDGET,
   MEMORY_SYNTHESIZER_MAX_STEPS,
+  MEMORY_SYNTHESIZER_NAV_RESERVE,
 } from "./memory-types.ts";
 import { memoryWorkspaceConfigPath } from "./memory-workspace-id.ts";
 import {
@@ -274,6 +276,21 @@ export function parseMemoryWorkspaceConfig(
     return {
       ok: false,
       error: `Memory config briefingTokenBudget (${config.briefingTokenBudget}) is below the single-node floor (${singleNodeFloor} tokens); the top layer could never fit.`,
+    };
+  }
+  // The synthesizer envelope must be able to hold framing + request + the full
+  // top layer + navigation + the answer; otherwise every briefing/search fails
+  // closed permanently with an envelope error, misclassified as a synthesizer
+  // failure. Strictly greater: equality leaves no room for a non-empty request.
+  const envelopeFloor =
+    config.briefingTokenBudget +
+    MEMORY_SYNTHESIZER_FRAMING_BUDGET +
+    config.synthesizerAnswerBudget +
+    MEMORY_SYNTHESIZER_NAV_RESERVE;
+  if (config.synthesizerContextBudget <= envelopeFloor) {
+    return {
+      ok: false,
+      error: `Memory config synthesizerContextBudget (${config.synthesizerContextBudget}) must exceed briefingTokenBudget + framing + answer + navigation reserves (${envelopeFloor} tokens); the top layer could never fit the synthesizer envelope.`,
     };
   }
   return { ok: true, config, invalidFallback: false };

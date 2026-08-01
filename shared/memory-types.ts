@@ -40,19 +40,6 @@ export type MemoryRecallSource = "startup" | "search" | "open";
 /** Node types that participate in search, heat, and briefing. */
 export type MemorySearchableNodeType = "memory" | "summary";
 
-/** Briefing section identifiers the planner may choose. */
-export type MemoryBriefingSectionId =
-  "learned_user_preferences" | "workspace_knowledge" | "relevant_summaries";
-
-export const MEMORY_BRIEFING_SECTION_LABELS: Record<
-  MemoryBriefingSectionId,
-  string
-> = {
-  learned_user_preferences: "Learned user preferences",
-  workspace_knowledge: "Workspace knowledge",
-  relevant_summaries: "Relevant summaries",
-};
-
 /** Maximum characters for one observation or memory body. */
 export const MEMORY_MAX_TEXT_CHARS = 400;
 
@@ -276,39 +263,6 @@ export interface WorkspaceStateRow {
   lastSuccessfulRunAtMs: number;
   lastObservedTranscriptMtimeMs: number | null;
   updatedAt: string;
-}
-
-/** Transient hybrid search hit before LLM filtering. */
-export interface MemorySearchCandidate {
-  nodeType: MemorySearchableNodeType;
-  nodeId: number;
-  prefixedId: MemoryNodeId | SummaryNodeId;
-  kind: MemoryKnowledgeKind | "summary";
-  text: string;
-  heat: number;
-  estimatedTokens: number;
-  bm25Rank: number | null;
-  semanticRank: number | null;
-  rrfScore: number;
-}
-
-/** One briefing section after planner validation and budget packing. */
-export interface MemoryBriefingSection {
-  sectionId: MemoryBriefingSectionId;
-  label: string;
-  nodes: Array<{
-    prefixedId: MemoryNodeId | SummaryNodeId;
-    nodeType: MemorySearchableNodeType;
-    kind: MemoryKnowledgeKind | "summary";
-    text: string;
-    heat: number;
-  }>;
-}
-
-export interface MemoryBriefingPlan {
-  sections: MemoryBriefingSection[];
-  estimatedTokens: number;
-  selectedIds: Array<MemoryNodeId | SummaryNodeId>;
 }
 
 /** Structured summary create/update operation; updates carry the observed version. */

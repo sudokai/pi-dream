@@ -33,6 +33,7 @@ import {
   estimateMemoryTextTokens,
   MEMORY_MAINTENANCE_MAX_ATTEMPTS,
   MEMORY_MAINTENANCE_SUMMARY_GRACE_GENERATIONS,
+  MEMORY_MAX_SUMMARY_CHARS,
   type MemoryNodeId,
   type MemorySearchableNodeType,
   type SummaryNodeId,
@@ -136,7 +137,7 @@ export function buildMemoryFallbackSummaryText(
     members.reduce((sum, m) => sum + estimateMemoryTextTokens(m.text), 0);
   const capChars = Math.min(
     4 * Math.max(1, baselineTokens - 1),
-    800, // MEMORY_MAX_SUMMARY_CHARS
+    MEMORY_MAX_SUMMARY_CHARS,
   );
   const parts: string[] = [];
   if (oldSummaryText) parts.push(oldSummaryText);
@@ -891,6 +892,12 @@ export interface PersistedMemoryMaintenanceInspect {
     outputCapTokens: number;
     summaryId?: number;
   }>;
+  /**
+   * Candidate keys the commit rejected for compaction during this run
+   * (merged into the persisted batch by memory_commit_maintenance). Finalize
+   * treats "rejected in this run" as covered — partial progress is not a failure.
+   */
+  rejectedKeys?: string[];
   layerTokens: number;
   overBudget: boolean;
   budget: number;
@@ -903,9 +910,14 @@ export function readMemoryLastMaintenanceInspect(
   try {
     const raw = readFileSync(filePath, "utf-8");
     const parsed = JSON.parse(raw) as PersistedMemoryMaintenanceInspect;
-    if (typeof parsed.runId !== "string" || !Array.isArray(parsed.merges)) {
+    if (
+      typeof parsed.runId !== "string" ||
+      !Array.isArray(parsed.merges) ||
+      !Array.isArray(parsed.promotes)
+    ) {
       return null;
     }
+    parsed.rejectedKeys ??= [];
     return parsed;
   } catch {
     return null;

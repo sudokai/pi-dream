@@ -71,9 +71,13 @@ function findMemoryCheckpointCompletionError(
  * Post-ingestion maintenance coverage: recompute the plan against the final DB
  * state and hold the learner to the last inspect-time batch. A candidate is
  * covered when it is no longer jointly eligible (merged, promoted, or dissolved
- * by a supersede/conflict/retire); a still-eligible candidate below the
- * fallback bound fails the run loudly. Recompute-born candidates (resurfaced
- * cold siblings, post-reset cold creates, reshuffled pairs) are not checked.
+ * by a supersede/conflict/retire), or when it was rejected for compaction
+ * during this run (recorded by memory_commit_maintenance — partial progress is
+ * a pass state). A still-eligible candidate with no covering op and no in-run
+ * rejection fails the run loudly while its attempt counter is below the
+ * fallback bound (catching a genuinely broken learner). Recompute-born
+ * candidates (resurfaced cold siblings, post-reset cold creates, reshuffled
+ * pairs) are not checked.
  */
 export async function findMemoryMaintenanceCoverageError(
   db: DatabaseSync,
@@ -96,6 +100,12 @@ export async function findMemoryMaintenanceCoverageError(
     ...plan.promotes.map((p) => p.key),
     ...plan.merges.map((m) => m.key),
   ]);
+  // Candidates rejected for compaction during THIS run (recorded by
+  // memory_commit_maintenance) are an acceptable completion state: the plan's
+  // completion rules pass "rejected for compaction (attempt counter
+  // incremented; partial progress)". Only candidates with no covering op and
+  // no in-run rejection are outstanding — the loud-failure case.
+  const rejectedInRun = new Set(persisted.rejectedKeys ?? []);
   const outstanding: string[] = [];
   const persistedKeys = [
     ...persisted.merges.map((m) => m.key),
@@ -103,12 +113,13 @@ export async function findMemoryMaintenanceCoverageError(
   ];
   for (const key of persistedKeys) {
     if (!plannedKeys.has(key)) continue; // covered or dissolved
+    if (rejectedInRun.has(key)) continue; // compaction-rejected this run
     const attempts = getMemoryMaintenanceAttempts(db, key);
     if (attempts >= MEMORY_MAINTENANCE_MAX_ATTEMPTS) continue; // fallback bound reached
     outstanding.push(key);
   }
   if (outstanding.length === 0) return null;
-  return `Memory maintenance left ${outstanding.length} candidate(s) outstanding (attempt counters below the fallback bound): ${outstanding.join(", ")}`;
+  return `Memory maintenance left ${outstanding.length} candidate(s) outstanding (no covering op in this run, attempt counters below the fallback bound): ${outstanding.join(", ")}`;
 }
 
 /**

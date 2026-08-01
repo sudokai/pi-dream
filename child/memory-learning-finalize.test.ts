@@ -315,3 +315,183 @@ async function planMemoryMaintenanceForTest(
     budget: plan.budget,
   };
 }
+
+test("a run whose only unresolved candidate was rejected for compaction completes", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-finalize-"));
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "auto");
+    assert.ok(claim.runId);
+    const manifestPath = path.join(dir, "manifest.json");
+    writeMemoryLearningManifest(manifestPath, []);
+    // Six cold memories -> three merge pairs in the inspect batch.
+    for (let i = 1; i <= 6; i++) {
+      commitMemoryLearningSession(db, {
+        runId: claim.runId,
+        sourceSessionId: `s${i}`,
+        sessionPath: `/tmp/s${i}.jsonl`,
+        cwd: "/tmp",
+        processedMtimeMs: 1,
+        contentHash: `h${i}`,
+        plan: {
+          operations: [
+            {
+              op: "create",
+              tempRef: "m",
+              kind: "fact",
+              observationText: `Fact ${i}`,
+              memoryText: `Fact ${i} about the build`,
+            },
+          ],
+        },
+      });
+    }
+    // Small budget so the batch of three merges leaves the layer over target
+    // and the residual rejection fires (needed to exercise the in-run
+    // rejection recording; the defaults would fit and reject nothing).
+    const config = {
+      ...defaultMemoryWorkspaceConfig(),
+      briefingTokenBudget: 12,
+    };
+    const plan = await planMemoryMaintenanceForTest(db, claim.runId);
+    persistMemoryMaintenanceInspect(
+      {
+        db,
+        runId: claim.runId,
+        workspaceId: TEST_WORKSPACE,
+        manifestPath,
+        cwd: "/tmp",
+        config,
+      },
+      plan,
+    );
+    // The learner emits ops for ALL three planned pairs; one text is at the
+    // compaction bar and gets rejected alone (attempts=1); the other two apply.
+    const { commitMemoryLearningOps } =
+      await import("../shared/memory-repository.ts");
+    const result = commitMemoryLearningOps(db, {
+      runId: claim.runId,
+      operations: [
+        {
+          op: "summarize",
+          text: "Fact 1 plus fact 4 builds", // passes strict compaction, fails the half-baseline bar -> rejected
+          memberIds: ["M:1", "M:4"],
+        },
+        {
+          op: "summarize",
+          text: "Facts 2+5",
+          memberIds: ["M:2", "M:5"],
+        },
+        {
+          op: "summarize",
+          text: "Facts 3+6",
+          memberIds: ["M:3", "M:6"],
+        },
+      ],
+      config,
+    });
+    assert.equal(result.rejectedKeys.length, 1, "one candidate rejected");
+    assert.equal(result.coveredKeys.length, 2, "partial progress applied");
+    const { mergeMemoryMaintenanceRejections } =
+      await import("./memory-learning-tools.ts");
+    mergeMemoryMaintenanceRejections(
+      {
+        db,
+        runId: claim.runId,
+        workspaceId: TEST_WORKSPACE,
+        manifestPath,
+        cwd: "/tmp",
+        config,
+      },
+      result.rejectedKeys.map((r) => r.key),
+    );
+
+    const error = await findMemoryMaintenanceCoverageError(
+      db,
+      claim.runId,
+      TEST_WORKSPACE,
+      config,
+    );
+    assert.equal(
+      error,
+      null,
+      "compaction-rejected candidates are a pass state (partial progress)",
+    );
+
+    // And the whole run completes.
+    await finalizeMemoryLearningRun({
+      db,
+      runId: claim.runId,
+      workspaceId: TEST_WORKSPACE,
+      config,
+      manifestPath,
+    });
+    const run = listUnreportedMemoryRuns(db)[0]!;
+    assert.equal(run.status, "completed");
+  } finally {
+    closeMemoryDatabase(db);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a candidate rejected in a previous run but omitted now still fails loudly", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-finalize-"));
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "auto");
+    assert.ok(claim.runId);
+    const manifestPath = path.join(dir, "manifest.json");
+    writeMemoryLearningManifest(manifestPath, []);
+    commitMemoryLearningSession(db, {
+      runId: claim.runId,
+      sourceSessionId: "s1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1,
+      contentHash: "h1",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "m",
+            kind: "fact",
+            observationText: "Use tabs",
+            memoryText: "Use tabs for indentation",
+          },
+          {
+            op: "create",
+            tempRef: "m2",
+            kind: "fact",
+            observationText: "No emoji",
+            memoryText: "No emoji in commits",
+          },
+        ],
+      },
+    });
+    const plan = await planMemoryMaintenanceForTest(db, claim.runId);
+    persistMemoryMaintenanceInspect(
+      {
+        db,
+        runId: claim.runId,
+        workspaceId: TEST_WORKSPACE,
+        manifestPath,
+        cwd: "/tmp",
+        config: defaultMemoryWorkspaceConfig(),
+      },
+      plan,
+    );
+    // A previous run rejected the pair (counter 1); this run the learner
+    // omits it entirely — the persisted batch carries no in-run rejection.
+    incrementMemoryMaintenanceAttempt(db, "merge:memory:1+memory:2", 0);
+    const error = await findMemoryMaintenanceCoverageError(
+      db,
+      claim.runId,
+      TEST_WORKSPACE,
+      defaultMemoryWorkspaceConfig(),
+    );
+    assert.match(error ?? "", /outstanding/);
+  } finally {
+    closeMemoryDatabase(db);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

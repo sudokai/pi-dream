@@ -932,6 +932,13 @@ function applyOperation(
             `Summary ${op.summaryId} changed while its promote rewrite was committing`,
           );
         }
+        // Model-authored rewrite supersedes the fallback label; the promote
+        // fallback (old text kept, equality) preserves the existing label.
+        if (op.newSummaryText.trim() !== parent.text) {
+          db.prepare(
+            `UPDATE summaries SET label_source = 'model' WHERE id = ?`,
+          ).run(parentParsed.id);
+        }
         upsertMemorySearchDocument(db, {
           nodeType: "summary",
           nodeId: parentParsed.id,

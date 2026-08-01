@@ -39,7 +39,10 @@ import {
   memoryWorkspaceDbPath,
   memoryWorkspaceLastInspectPath,
 } from "../shared/memory-workspace-id.ts";
-import { MEMORY_AUDIT_CUSTOM_TYPE } from "../shared/memory-types.ts";
+import {
+  MEMORY_AUDIT_CUSTOM_TYPE,
+  MEMORY_MAINTENANCE_MAX_ATTEMPTS,
+} from "../shared/memory-types.ts";
 import { formatSessionModelId } from "../shared/memory-model.ts";
 import { launchMemoryLearningRun } from "./memory-learning-launcher.ts";
 import type { MemoryModelRegistryLike } from "../shared/memory-model.ts";
@@ -187,7 +190,9 @@ function formatStatus(input: {
   if (attempts.length > 0) {
     lines.push(
       `pending attempts: ${attempts
-        .map((a) => `${a.key} (${a.attempts}/${3})`)
+        .map(
+          (a) => `${a.key} (${a.attempts}/${MEMORY_MAINTENANCE_MAX_ATTEMPTS})`,
+        )
         .join(", ")}`,
     );
   }

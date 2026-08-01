@@ -22,6 +22,7 @@ import {
 } from "../shared/memory-repository.ts";
 import {
   planMemoryMaintenance,
+  readMemoryLastMaintenanceInspect,
   type PersistedMemoryMaintenanceInspect,
 } from "../shared/memory-maintenance.ts";
 import type {
@@ -73,6 +74,34 @@ export function persistMemoryMaintenanceInspect(
 
 function inputBudget(ctx: MemoryLearnerChildContext): number {
   return ctx.config.briefingTokenBudget;
+}
+
+/**
+ * Merge this run's compaction-rejected candidate keys into the persisted last
+ * inspect-time batch so finalize can distinguish "rejected for compaction in
+ * this run" (partial progress, a pass state per the completion rules) from
+ * "omitted by the learner" (a loud failure). Best-effort.
+ */
+export function mergeMemoryMaintenanceRejections(
+  ctx: MemoryLearnerChildContext,
+  rejectedKeys: string[],
+): void {
+  if (rejectedKeys.length === 0) return;
+  try {
+    const target = memoryWorkspaceLastInspectPath(ctx.workspaceId);
+    const existing = readMemoryLastMaintenanceInspect(target);
+    if (!existing || existing.runId !== ctx.runId) return;
+    const merged = [
+      ...new Set([...(existing.rejectedKeys ?? []), ...rejectedKeys]),
+    ];
+    fs.writeFileSync(
+      target,
+      `${JSON.stringify({ ...existing, rejectedKeys: merged }, null, 2)}\n`,
+      "utf-8",
+    );
+  } catch {
+    // Best-effort: a failed merge degrades to the attempt-counter heuristic.
+  }
 }
 
 /**
@@ -231,6 +260,7 @@ export function registerMemoryLearningTools(
         runId: ctx.runId,
         plannedAt: new Date().toISOString(),
         generation: plan.generation,
+        rejectedKeys: [],
         promotes: plan.promotes.map((p) => ({
           key: p.key,
           child: p.childPrefixedId,
@@ -290,6 +320,10 @@ export function registerMemoryLearningTools(
         operations,
         config: ctx.config,
       });
+      mergeMemoryMaintenanceRejections(
+        ctx,
+        result.rejectedKeys.map((r) => r.key),
+      );
       for (const entry of result.auditEntries) {
         try {
           pi.appendEntry(MEMORY_AUDIT_CUSTOM_TYPE, entry);

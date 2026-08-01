@@ -415,7 +415,10 @@ export async function synthesizeMemoryAnswer(
               : `${target.path}>${target.prefixedId}`,
         }));
         const addedTokens = childNodes.reduce((sum, c) => sum + c.tokens, 0);
-        if (contextTokens() + addedTokens > availableForNodes) {
+        // The cumulative envelope covers framing + request + top layer +
+        // opened children payloads + navigation + answer: the request tokens
+        // count here too, exactly as in the initial check.
+        if (requestTokens + contextTokens() + addedTokens > availableForNodes) {
           return {
             ok: false,
             error: `opening ${parsed.prefixed} would exceed the context envelope`,

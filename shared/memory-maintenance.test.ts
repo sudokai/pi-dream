@@ -847,3 +847,53 @@ test("promote rewrite failure accumulates attempts and falls back to the old tex
     );
   });
 });
+
+test("a model-authored extend rewrite resets label_source to 'model'", async () => {
+  await withClaimedDb(async (db, runId) => {
+    const m1 = createMemory(db, runId, "s1", "Use tabs for indentation");
+    createMemory(db, runId, "s2", "No emoji in commits");
+    commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "s3",
+      sessionPath: "/tmp/s3.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1,
+      contentHash: "h-s3",
+      plan: {
+        operations: [
+          {
+            op: "summarize",
+            text: "Tooling",
+            memberIds: [m1],
+          },
+        ],
+      },
+    });
+    // Simulate a fallback-merged summary (mechanical label).
+    db.prepare(
+      `UPDATE summaries SET label_source = 'fallback' WHERE id = 1`,
+    ).run();
+    const result = commitMemoryLearningOps(db, {
+      runId,
+      operations: [
+        {
+          op: "summarize",
+          summaryId: "S:1",
+          expectedVersionId: 1,
+          text: "Tooling + emoji",
+          memberIds: ["M:2"],
+        },
+      ],
+      config: config(),
+    });
+    assert.equal(result.coveredKeys.length, 1);
+    const row = db
+      .prepare(`SELECT label_source FROM summaries WHERE id = 1`)
+      .get() as { label_source: string };
+    assert.equal(
+      row.label_source,
+      "model",
+      "a model-authored extend clears the fallback marker",
+    );
+  });
+});

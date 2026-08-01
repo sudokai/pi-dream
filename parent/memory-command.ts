@@ -235,15 +235,14 @@ function formatList(db: DatabaseSync, query: string): string {
   ): void => {
     if (!match(text, prefixedId)) return;
     const pad = "  ".repeat(depth);
-    void pad;
     if (nodeType === "memory") {
       lines.push(
-        `- **${prefixedId}** [memory] (r=${memoryRecurrence(db, nodeId)}): ${text}`,
+        `${pad}- **${prefixedId}** [memory] (r=${memoryRecurrence(db, nodeId)}): ${text}`,
       );
     } else {
       const label =
         summaryLabelSource(db, nodeId) === "fallback" ? " (fallback)" : "";
-      lines.push(`- **${prefixedId}**${label} [summary]: ${text}`);
+      lines.push(`${pad}- **${prefixedId}**${label} [summary]: ${text}`);
       for (const child of listMemoryNodeChildren(db, "summary", nodeId)) {
         if (child.state !== "active") continue;
         renderChild(
@@ -477,6 +476,14 @@ export function registerMemoryCommand(
 }
 
 /** Build status text for tests without UI. */
+/** Build list text for tests without UI. */
+export function buildMemoryListText(
+  db: DatabaseSync,
+  query: string = "",
+): string {
+  return formatList(db, query);
+}
+
 export function buildMemoryStatusText(input: {
   workspaceId: string;
   db: DatabaseSync;

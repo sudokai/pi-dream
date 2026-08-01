@@ -785,6 +785,14 @@ function applyOperation(
             `Summary ${op.summaryId} changed while its update was committing`,
           );
         }
+        // A model-authored rewrite supersedes the mechanical fallback label
+        // (the maintenance commit re-asserts 'fallback' when it applies the
+        // deterministic text itself). An unchanged text keeps the old label.
+        if (op.text.trim() !== existing.text) {
+          db.prepare(
+            `UPDATE summaries SET label_source = 'model' WHERE id = ?`,
+          ).run(summaryId);
+        }
       } else {
         const sumResult = db
           .prepare(

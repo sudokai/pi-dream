@@ -529,3 +529,69 @@ test("re-opening an already-open summary does not duplicate its children", async
     assert.deepEqual(result.sources, ["M:1", "M:2"]);
   });
 });
+
+test("opening a summary counts the request tokens in the open-time envelope check", async () => {
+  await withClaimedDb(async (db, runId) => {
+    // Layer: S:1 wrapping three max-size children (400 chars -> 100 tokens
+    // each; 300 tokens total when opened).
+    commitMemoryLearningSession(db, {
+      runId,
+      sourceSessionId: "s1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1,
+      contentHash: "h1",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "m1",
+            kind: "fact",
+            observationText: "x",
+            memoryText: "x".repeat(400),
+          },
+          {
+            op: "create",
+            tempRef: "m2",
+            kind: "fact",
+            observationText: "y",
+            memoryText: "y".repeat(400),
+          },
+          {
+            op: "create",
+            tempRef: "m3",
+            kind: "fact",
+            observationText: "z",
+            memoryText: "z".repeat(400),
+          },
+          {
+            op: "summarize",
+            tempRef: "s1",
+            text: "Tooling",
+            memberIds: ["m1", "m2", "m3"],
+          },
+        ],
+      },
+    });
+    // Envelope: 9000 - framing 512 - answer 2000 - nav 256 = 6232 tokens for
+    // request + nodes. Request 6000 tokens: the initial check passes
+    // (6000 + 2 <= 6232); opening S:1 adds the 250-token child and must fail
+    // closed with the request included (6000 + 2 + 300 > 6232).
+    const result = await synthesizeMemoryAnswer({
+      db,
+      request: "x".repeat(24000),
+      config: {
+        ...defaultMemoryWorkspaceConfig(),
+        synthesizerContextBudget: 9000,
+      },
+      modelRegistry: modelRegistry() as never,
+      sessionModel: sessionModel(),
+      complete: sequenceComplete([
+        JSON.stringify({ action: "open", id: "S:1" }),
+      ]),
+    });
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /would exceed the context envelope/);
+  });
+});

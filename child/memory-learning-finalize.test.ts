@@ -365,8 +365,19 @@ test("a run whose only unresolved candidate was rejected for compaction complete
       },
       plan,
     );
-    // The learner emits ops for ALL three planned pairs; one text is at the
-    // compaction bar and gets rejected alone (attempts=1); the other two apply.
+    // The learner emits ops for the PLANNED pairs (read from the persisted
+    // inspect batch, so the committed keys are exactly the persisted keys);
+    // one text is at the compaction bar and gets rejected alone (attempts=1),
+    // the other two apply. On pre-fix code this scenario fails finalize with
+    // "outstanding: merge:memory:1+memory:2" — the test only passes with the
+    // per-run rejection tracking in place.
+    assert.equal(plan.merges.length, 3);
+    const planned = plan.merges.map((m) => m.members);
+    assert.deepEqual(planned, [
+      ["M:1", "M:2"],
+      ["M:3", "M:4"],
+      ["M:5", "M:6"],
+    ]);
     const { commitMemoryLearningOps } =
       await import("../shared/memory-repository.ts");
     const result = commitMemoryLearningOps(db, {
@@ -374,23 +385,28 @@ test("a run whose only unresolved candidate was rejected for compaction complete
       operations: [
         {
           op: "summarize",
-          text: "Fact 1 plus fact 4 builds", // passes strict compaction, fails the half-baseline bar -> rejected
-          memberIds: ["M:1", "M:4"],
+          text: "Fact 1 plus fact 2 builds", // passes strict compaction, fails the half-baseline bar -> rejected
+          memberIds: planned[0]!,
         },
         {
           op: "summarize",
-          text: "Facts 2+5",
-          memberIds: ["M:2", "M:5"],
+          text: "Facts 3+4",
+          memberIds: planned[1]!,
         },
         {
           op: "summarize",
-          text: "Facts 3+6",
-          memberIds: ["M:3", "M:6"],
+          text: "Facts 5+6",
+          memberIds: planned[2]!,
         },
       ],
       config,
     });
     assert.equal(result.rejectedKeys.length, 1, "one candidate rejected");
+    assert.equal(
+      result.rejectedKeys[0]!.key,
+      plan.merges[0]!.key,
+      "the rejected key is one of the persisted planned pairs",
+    );
     assert.equal(result.coveredKeys.length, 2, "partial progress applied");
     const { mergeMemoryMaintenanceRejections } =
       await import("./memory-learning-tools.ts");

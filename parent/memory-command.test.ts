@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import {
+  buildMemoryListText,
   buildMemoryStatusText,
   getMemoryCommandArgumentCompletions,
   parseMemoryCommandArgs,
@@ -381,6 +382,60 @@ test("cadence fires a maintenance-only run with no transcripts when candidates e
     assert.ok(
       !withCandidates.reasons.some((r) => r.includes("no uncheckpointed")),
       "maintenance candidates replace the transcript gate",
+    );
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
+test("buildMemoryListText renders the tree indented", () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "auto");
+    assert.ok(claim.runId);
+    commitMemoryLearningSession(db, {
+      runId: claim.runId!,
+      sourceSessionId: "s1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1,
+      contentHash: "h1",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "m1",
+            kind: "fact",
+            observationText: "Use tabs",
+            memoryText: "Use tabs for indentation",
+          },
+          {
+            op: "create",
+            tempRef: "m2",
+            kind: "fact",
+            observationText: "No emoji",
+            memoryText: "No emoji in commits",
+          },
+          {
+            op: "summarize",
+            tempRef: "s1",
+            text: "Tooling",
+            memberIds: ["m1", "m2"],
+          },
+        ],
+      },
+    });
+    const text = buildMemoryListText(db);
+    assert.match(text, /^## Tree/m);
+    assert.match(text, /- \*\*S:1\*\* \[summary\]: Tooling/);
+    assert.match(
+      text,
+      / {2}- \*\*M:1\*\* \[memory\] \(r=1\): Use tabs for indentation/,
+      "children are indented under their summary",
+    );
+    assert.match(
+      text,
+      / {2}- \*\*M:2\*\* \[memory\] \(r=1\): No emoji in commits/,
     );
   } finally {
     closeMemoryDatabase(db);

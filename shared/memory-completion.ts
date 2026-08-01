@@ -49,7 +49,7 @@ export function memoryThinkingLevelToReasoning(
 }
 
 /**
- * Complete one recall call (planner) through the provider's streamSimple.
+ * Complete one recall call (synthesizer) through the provider's streamSimple.
  * Fail-closed: missing provider, unresolved auth, stream errors, and model
  * errorMessage all reject instead of returning empty output.
  */

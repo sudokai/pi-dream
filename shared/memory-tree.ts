@@ -27,6 +27,7 @@ import {
 } from "./memory-graph.ts";
 import { computeMemoryRowHeat, computeSummaryRowHeat } from "./memory-heat.ts";
 
+/** One memory or summary node as rendered in the tree (root, child, or descendant). */
 export interface MemoryTreeNode {
   nodeType: MemorySearchableNodeType;
   nodeId: number;
@@ -94,27 +95,6 @@ function loadTreeNode(
   };
 }
 
-/** Does an active `contains` edge from an active parent summary point at this node? */
-export function hasActiveMemoryParent(
-  db: DatabaseSync,
-  nodeType: MemorySearchableNodeType,
-  nodeId: number,
-): boolean {
-  const row = db
-    .prepare(
-      `SELECT 1 AS ok
-       FROM graph_edges e
-       JOIN summaries s ON s.id = e.from_id AND e.from_type = 'summary'
-       WHERE e.relation = 'contains'
-         AND e.state = 'active'
-         AND s.state = 'active'
-         AND e.to_type = ? AND e.to_id = ?
-       LIMIT 1`,
-    )
-    .get(nodeType, nodeId) as { ok: number } | undefined;
-  return !!row;
-}
-
 /**
  * The single active parent summary of a node (strict tree), or null.
  * Only active `contains` edges from active summaries count.
@@ -138,6 +118,15 @@ export function getMemoryNodeParent(
     )
     .get(nodeType, nodeId) as { from_id: number } | undefined;
   return row ? { nodeType: "summary", nodeId: Number(row.from_id) } : null;
+}
+
+/** Does an active `contains` edge from an active parent summary point at this node? */
+function hasActiveMemoryParent(
+  db: DatabaseSync,
+  nodeType: MemorySearchableNodeType,
+  nodeId: number,
+): boolean {
+  return getMemoryNodeParent(db, nodeType, nodeId) !== null;
 }
 
 /** Whether a node is an active, non-conflicted root of the tree. */

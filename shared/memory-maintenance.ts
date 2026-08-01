@@ -152,6 +152,7 @@ function nodeKey(nodeType: MemorySearchableNodeType, nodeId: number): string {
   return `${nodeType}:${nodeId}`;
 }
 
+/** One hot child scheduled for resurfacing out of its parent summary. */
 export interface MemoryPromoteCandidate {
   key: string;
   childType: MemorySearchableNodeType;
@@ -167,6 +168,7 @@ export interface MemoryPromoteCandidate {
   depth: number;
 }
 
+/** One root participating in a planned merge (create: both pair members; extend: the incoming roots). */
 export interface MemoryMergeMember {
   nodeType: MemorySearchableNodeType;
   nodeId: number;
@@ -175,6 +177,7 @@ export interface MemoryMergeMember {
   estimatedTokens: number;
 }
 
+/** A planned merge: two cold roots into a new summary (create) or into an existing summary (extend). */
 export interface MemoryMergeCandidate {
   key: string;
   kind: "create" | "extend";
@@ -193,6 +196,7 @@ export interface MemoryMergeCandidate {
   outputCapTokens: number;
 }
 
+/** Deterministic maintenance batch for one generation: promote candidates, then merge candidates. */
 export interface MemoryMaintenancePlan {
   promotes: MemoryPromoteCandidate[];
   merges: MemoryMergeCandidate[];
@@ -204,6 +208,7 @@ export interface MemoryMaintenancePlan {
   generation: number;
 }
 
+/** Options for planMemoryMaintenance: config, embedder seam, abort signal. */
 export interface MemoryMaintenancePlannerOptions {
   config: MemoryWorkspaceConfig;
   /** Test seam; defaults to the local MiniLM pipeline. */
@@ -413,6 +418,7 @@ function isMemoryAncestorOf(
   return false;
 }
 
+/** One root of the projected post-promote top layer (batch simulation). */
 export interface SimulatedRoot {
   nodeType: MemorySearchableNodeType;
   nodeId: number;
@@ -421,6 +427,7 @@ export interface SimulatedRoot {
   estimatedTokens: number;
 }
 
+/** One promote described for the top-layer simulation (mirrors the repository's promote + reconciliation). */
 export interface MemoryPromoteSimulationInput {
   childType: MemorySearchableNodeType;
   childId: number;

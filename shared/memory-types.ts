@@ -143,7 +143,7 @@ export const MEMORY_RECALL_OPERATION_TIMEOUT_MS = 15_000;
 /** Provider auth resolution timeout (ms). */
 export const MEMORY_AUTH_TIMEOUT_MS = 10_000;
 
-/** Planner completion timeout (ms). */
+/** Synthesizer completion clamp (ms); only binds when no tighter outer signal exists. */
 export const MEMORY_COMPLETION_TIMEOUT_MS = 30_000;
 
 /** Maximum session JSONL bytes read for discovery/header checks. */

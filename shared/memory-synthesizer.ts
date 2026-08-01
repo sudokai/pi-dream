@@ -38,16 +38,19 @@ import type {
 } from "./memory-model.ts";
 import { loadMemorySynthesizerPrompt } from "./memory-prompts.ts";
 
+/** Inputs to the injected model-call seam: system, user, abort signal. */
 export interface MemorySynthesizerCompleteInput {
   system: string;
   user: string;
   signal?: AbortSignal;
 }
 
+/** Injected completion seam; defaults to completeMemoryModelCall. */
 export type MemorySynthesizerCompleteFn = (
   input: MemorySynthesizerCompleteInput,
 ) => Promise<{ text: string; usage?: unknown }>;
 
+/** Inputs to synthesizeMemoryAnswer: db, request, config, model seams. */
 export interface MemorySynthesizerInput {
   db: DatabaseSync;
   request: string;
@@ -61,6 +64,7 @@ export interface MemorySynthesizerInput {
   systemPrompt?: string;
 }
 
+/** Synthesizer outcome: ok with answer/sources/opened summaries, or fail-closed error. */
 export type MemorySynthesizerResult =
   | {
       ok: true;

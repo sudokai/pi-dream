@@ -1,5 +1,5 @@
 /**
- * Local MiniLM embeddings for hybrid memory search.
+ * Local MiniLM embeddings for tree-maintenance pairing and new-node embedding.
  * Vectors are rebuildable derived rows; cosine similarity is computed in-process.
  */
 
@@ -253,11 +253,11 @@ export async function loadMemoryEmbedder(
 }
 
 /**
- * In-process semantic embedder availability. The embedder loads lazily on the
- * first semantic search, so a fresh pi process reports `not_loaded` until a
- * briefing or search warms it up. Splitting `not_loaded` / `loading` /
- * `failed` prevents the status from mistaking a lazy-load cold start for a
- * broken index.
+ * In-process embedder availability. The embedder loads lazily on first use by
+ * tree maintenance (merge pairing) or learning (new-node embedding), so a
+ * fresh pi process reports `not_loaded` until a maintenance pass or learning
+ * run warms it up. Splitting `not_loaded` / `loading` / `failed` prevents the
+ * status from mistaking a lazy-load cold start for a broken index.
  */
 export type MemoryEmbeddingState =
   "ready" | "loading" | "failed" | "not_loaded";

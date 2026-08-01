@@ -46,6 +46,7 @@ import {
   clearMemoryMaintenanceAttempt,
   getMemoryMaintenanceAttempts,
   incrementMemoryMaintenanceAttempt,
+  memoryMaintenanceMergeKey,
   memoryMaintenancePromoteKey,
   simulateMemoryPromoteLayer,
 } from "./memory-maintenance.ts";
@@ -1176,11 +1177,15 @@ function maintenanceMergeKeyForOps(
   summary: { nodeType: MemorySearchableNodeType; nodeId: number } | null,
   members: Array<{ nodeType: MemorySearchableNodeType; nodeId: number }>,
 ): string {
-  const parts = [...(summary ? [summary] : []), ...members].map(
-    (m) => `${m.nodeType}:${m.nodeId}`,
-  );
-  parts.sort();
-  return `merge:${parts.join("+")}`;
+  const parts = [...(summary ? [summary] : []), ...members];
+  if (parts.length === 2) {
+    // Same stable key as the planner's attempt counters (merge:<a>+<b>,
+    // sorted ids); a second implementation would let the two drift.
+    return memoryMaintenanceMergeKey(parts[0]!, parts[1]!);
+  }
+  const ids = parts.map((m) => `${m.nodeType}:${m.nodeId}`);
+  ids.sort();
+  return `merge:${ids.join("+")}`;
 }
 
 /**

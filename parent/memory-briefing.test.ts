@@ -12,7 +12,10 @@ import {
 import { acquireMemoryRunClaim } from "../shared/memory-run-claim.ts";
 import { commitMemoryDreamSession } from "../shared/memory-repository.ts";
 import { defaultMemoryWorkspaceConfig } from "../shared/memory-config.ts";
-import { getMemoryActivityGeneration } from "../shared/memory-graph.ts";
+import {
+  getMemoryActivityGeneration,
+  recordMemoryRecallEvent,
+} from "../shared/memory-graph.ts";
 import { listMemoryTreeRoots } from "../shared/memory-tree.ts";
 
 test("briefing signal never self-aborts; it fires only with the caller's signal", async () => {
@@ -410,6 +413,91 @@ test("a pre-aborted attempt does not advance the generation", async () => {
       }),
     );
     assert.equal(getMemoryActivityGeneration(db), 0);
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
+test("renderMemoryBriefingMessage groups the index by kind and orders by heat", () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "manual");
+    assert.equal(claim.acquired, true);
+    commitMemoryDreamSession(db, {
+      runId: claim.runId!,
+      sourceSessionId: "s1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1,
+      contentHash: "h1",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "p1",
+            kind: "preference",
+            observationText: "obs",
+            memoryText: "Prefer tabs over spaces",
+          },
+          {
+            op: "create",
+            tempRef: "f1",
+            kind: "fact",
+            observationText: "obs",
+            memoryText: "Build uses pnpm",
+          },
+          {
+            op: "create",
+            tempRef: "f2",
+            kind: "fact",
+            observationText: "obs",
+            memoryText: "CI runs on Ubuntu",
+          },
+          {
+            op: "create",
+            tempRef: "f3",
+            kind: "fact",
+            observationText: "obs",
+            memoryText: "Use git rebase",
+          },
+          {
+            op: "create",
+            tempRef: "f4",
+            kind: "fact",
+            observationText: "obs",
+            memoryText: "Ship on Fridays",
+          },
+          {
+            op: "summarize",
+            tempRef: "s1",
+            text: "Tooling",
+            memberIds: ["M:2", "M:3"],
+          },
+        ],
+      },
+    });
+    // Reheat M:5 once so it outranks M:4 inside the Facts group.
+    recordMemoryRecallEvent(db, {
+      nodeType: "memory",
+      nodeId: 5,
+      source: "search",
+      piSessionId: "s-test",
+    });
+    const content = renderMemoryBriefingMessage(db, "Answer.", []);
+    const sections = content
+      .split("\n")
+      .filter((l) => /^(Preferences|Facts|Summaries):$/.test(l));
+    assert.deepEqual(sections, ["Preferences:", "Facts:", "Summaries:"]);
+    assert.ok(
+      content.indexOf("- M:5 (fact)") < content.indexOf("- M:4 (fact)"),
+      "heat-desc ordering within a group",
+    );
+    assert.match(content, /- M:1 \(preference\): Prefer tabs over spaces/);
+    assert.match(content, /- S:1 \(summary\): Tooling/);
+    assert.ok(
+      content.indexOf("Facts:") < content.indexOf("Summaries:"),
+      "summaries are their own last section",
+    );
   } finally {
     closeMemoryDatabase(db);
   }

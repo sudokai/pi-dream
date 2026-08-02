@@ -158,7 +158,7 @@ export function registerMemoryAgentTools(
       if (!result.ok) {
         if (result.error === "top_layer_over_budget") {
           throw new Error(
-            `top layer over budget (${result.layerTokens}/${result.budget} tokens); consolidation has not yet compacted it`,
+            `top layer over budget (${result.layerTokens}/${result.budget} tokens); urgent consolidation runs at the next agent settle`,
           );
         }
         throw new Error(`memory_search synthesizer failed: ${result.error}`);

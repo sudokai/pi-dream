@@ -418,6 +418,67 @@ test("cadence fires a dream-only run with no transcripts when candidates exist",
   }
 });
 
+test("an over-budget top layer waives the cadence gates for urgent consolidation", () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "auto");
+    assert.ok(claim.runId);
+    const ops = Array.from({ length: 60 }, (_, i) => ({
+      op: "create" as const,
+      tempRef: `m${i}`,
+      kind: "fact" as const,
+      observationText: `Fact ${i}`,
+      memoryText: `Fact ${i}`,
+    }));
+    commitMemoryDreamSession(db, {
+      runId: claim.runId!,
+      sourceSessionId: "s1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1,
+      contentHash: "h1",
+      plan: { operations: ops },
+    });
+    updateMemoryCadenceState(db, {
+      turnsSinceLastRun: 0,
+      lastSuccessfulRunAtMs: 1_000_000,
+    });
+    const config = {
+      ...defaultMemoryWorkspaceConfig(),
+      minTurns: 2,
+      minMinutes: 1,
+    };
+    // First settle: turns=1, minutes≈0 — the gates block while under budget.
+    const gated = evaluateMemoryDreamCadence(db, {
+      cwd: "/nonexistent-dream-path",
+      workspaceId: "ws",
+      config,
+      nowMs: 1_000_001,
+    });
+    assert.equal(gated.shouldDream, false);
+
+    // Reset the turn counter; an over-budget layer waives the same gates.
+    updateMemoryCadenceState(db, { turnsSinceLastRun: 0 });
+    const urgent = evaluateMemoryDreamCadence(db, {
+      cwd: "/nonexistent-dream-path",
+      workspaceId: "ws",
+      config: { ...config, briefingTokenBudget: 1 },
+      nowMs: 1_000_002,
+    });
+    assert.equal(urgent.shouldDream, true);
+    assert.ok(
+      urgent.reasons.some((r) => r.includes("over budget")),
+      "reason names the over-budget urgency",
+    );
+    assert.ok(
+      !urgent.reasons.some((r) => r.startsWith("turns")),
+      "turn gate reason is hidden while over budget",
+    );
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
 test("buildMemoryListText renders the tree indented", () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {

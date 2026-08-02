@@ -227,7 +227,7 @@ test("memory_search surfaces the named tool error for an over-budget top layer",
     );
     await assert.rejects(
       () => tools.get("memory_search")!.execute("1", { query: "anything" }),
-      /top layer over budget \(\d+\/1 tokens\); consolidation has not yet compacted it/,
+      /top layer over budget \(\d+\/1 tokens\); urgent consolidation runs at the next agent settle/,
     );
   } finally {
     closeMemoryDatabase(db);

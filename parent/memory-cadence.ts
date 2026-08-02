@@ -1,6 +1,6 @@
 /**
- * Automatic dreaming cadence: turns + elapsed time + transcript advancement.
- * Evaluated on agent_settled.
+ * Automatic dreaming cadence: turns + elapsed time + transcript advancement,
+ * with an urgent over-budget override. Evaluated on agent_settled.
  */
 
 import type { DatabaseSync } from "node:sqlite";
@@ -9,6 +9,10 @@ import {
   getMemoryWorkspaceState,
   updateMemoryCadenceState,
 } from "../shared/memory-repository.ts";
+import {
+  estimateTopLayerTokens,
+  listMemoryTreeRoots,
+} from "../shared/memory-tree.ts";
 import { hasMemoryDreamEligibleSession } from "../shared/memory-session-discovery.ts";
 import { hasMemoryConsolidationCandidates } from "../shared/memory-consolidation.ts";
 
@@ -21,7 +25,9 @@ export interface MemoryCadenceEvaluation {
 }
 
 /**
- * Update turn counter on settle and evaluate the three automatic gates.
+ * Update turn counter on settle and evaluate the automatic gates: turns and
+ * elapsed time (waived while the top layer is over the briefing budget),
+ * plus transcript advancement or consolidation candidates.
  * Does not launch a dream — caller decides.
  */
 export function evaluateMemoryDreamCadence(
@@ -60,25 +66,37 @@ export function evaluateMemoryDreamCadence(
     config: input.config,
   });
 
+  // Urgent consolidation: an over-budget top layer fails closed on reads, so
+  // the turn/time gates are waived — the next settle launches a dream-only
+  // consolidation run (over-budget is already a consolidation candidate).
+  const layerTokens = estimateTopLayerTokens(db, listMemoryTreeRoots(db));
+  const layerOverBudget = layerTokens > input.config.briefingTokenBudget;
+
   const reasons: string[] = [];
   if (!enabled) reasons.push("paused");
-  if (turns < input.config.minTurns) {
-    reasons.push(`turns ${turns}/${input.config.minTurns}`);
-  }
-  if (minutesSince < input.config.minMinutes) {
+  if (layerOverBudget) {
     reasons.push(
-      `minutes ${minutesSince === Number.POSITIVE_INFINITY ? "∞" : minutesSince.toFixed(1)}/${input.config.minMinutes}`,
+      `top layer ${layerTokens}/${input.config.briefingTokenBudget} tokens over budget (urgent consolidation)`,
     );
+  } else {
+    if (turns < input.config.minTurns) {
+      reasons.push(`turns ${turns}/${input.config.minTurns}`);
+    }
+    if (minutesSince < input.config.minMinutes) {
+      reasons.push(
+        `minutes ${minutesSince === Number.POSITIVE_INFINITY ? "∞" : minutesSince.toFixed(1)}/${input.config.minMinutes}`,
+      );
+    }
   }
   if (!transcriptAdvanced && !consolidationCandidates) {
     reasons.push("no uncheckpointed transcripts");
   }
 
+  const gatesMet =
+    layerOverBudget ||
+    (turns >= input.config.minTurns && minutesSince >= input.config.minMinutes);
   const shouldDream =
-    enabled &&
-    turns >= input.config.minTurns &&
-    minutesSince >= input.config.minMinutes &&
-    (transcriptAdvanced || consolidationCandidates);
+    enabled && gatesMet && (transcriptAdvanced || consolidationCandidates);
 
   return {
     shouldDream,

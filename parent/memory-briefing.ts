@@ -1,6 +1,6 @@
 /**
  * First-turn visible memory briefing: activity generation advance → synthesizer
- * → synthesized answer + one-line index of the remaining top layer.
+ * → synthesized answer + categorized index of the remaining top layer.
  *
  * The activity generation advances on every first-turn recall opportunity
  * (after the abort guard, before model resolution) whether synthesis succeeds
@@ -84,8 +84,8 @@ export type BuildMemoryBriefingResult =
     };
 
 /**
- * Render the visible briefing: the synthesized answer plus a one-line index of
- * top-layer roots not among the answer's sources (render-only; never heats).
+ * Render the visible briefing: the synthesized answer plus a categorized index
+ * of top-layer roots not among the answer's sources (render-only; never heats).
  */
 export function renderMemoryBriefingMessage(
   db: DatabaseSync,
@@ -100,13 +100,29 @@ export function renderMemoryBriefingMessage(
   if (roots.length > 0) {
     lines.push("Other memories:");
     let shown = 0;
-    for (const root of roots) {
-      if (shown >= MEMORY_BRIEFING_INDEX_MAX_LINES) break;
-      // Full text, never truncated: the index is render-only and the top layer
-      // is already bounded by the briefing token budget. Texts are guaranteed
-      // single-line by validateMemoryBodyText on every write path.
-      lines.push(`- ${root.prefixedId} (${root.kind}): ${root.text}`);
-      shown++;
+    // Deterministic grouping (render-only, no model call): preferences and
+    // facts by kind, summaries last, heat-desc within each group. Full text is
+    // never truncated — the top layer is already bounded by the briefing token
+    // budget — and the total stays under MEMORY_BRIEFING_INDEX_MAX_LINES.
+    const groups: Array<[string, typeof roots]> = [
+      ["Preferences", roots.filter((r) => r.kind === "preference")],
+      ["Facts", roots.filter((r) => r.kind === "fact")],
+      ["Summaries", roots.filter((r) => r.kind === "summary")],
+    ];
+    for (const [heading, group] of groups) {
+      if (group.length === 0 || shown >= MEMORY_BRIEFING_INDEX_MAX_LINES) {
+        continue;
+      }
+      lines.push(`${heading}:`);
+      const ordered = [...group].sort((a, b) => b.heat - a.heat);
+      for (const root of ordered) {
+        if (shown >= MEMORY_BRIEFING_INDEX_MAX_LINES) break;
+        // Full text, never truncated: the index is render-only and the top
+        // layer is already bounded by the briefing token budget. Texts are
+        // guaranteed single-line by validateMemoryBodyText on every write path.
+        lines.push(`- ${root.prefixedId} (${root.kind}): ${root.text}`);
+        shown++;
+      }
     }
     if (roots.length > shown) {
       lines.push(
@@ -176,6 +192,7 @@ export async function buildMemorySessionBriefing(
           status: "top_layer_over_budget",
           tokens: result.layerTokens,
           budget: result.budget,
+          note: "urgent consolidation runs at the next agent settle",
         },
       };
     }

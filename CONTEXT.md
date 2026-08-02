@@ -42,7 +42,7 @@ Workspace-scoped **adaptive memory** for pi. Dream extracts durable user prefere
 
 **Dreamer**: The detached `--no-session` pi child process that executes a dream. It holds no session of its own, so it can never mine itself.
 
-**Briefing**: The visible first-turn custom message (`customType: "pi-dream-briefing"`, `display: true`) containing the synthesized answer plus a categorized index of the remaining top-layer roots (preferences, facts, summaries, other; heat-ordered). Never hidden system-prompt content; never a raw dump of stored nodes.
+**Briefing**: The visible first-turn custom message (`customType: "pi-dream-briefing"`, `display: true`) containing the synthesized answer plus an index of the remaining top-layer roots: top 35 preferences and up to 15 facts, heat-ordered (summaries and rare kinds are not indexed). Never hidden system-prompt content; never a raw dump of stored nodes.
 
 **Workspace id**: Stable memory scope: `sha256(canonical_source)[:12]_safeName`, resolved from canonical git origin → git common directory → real cwd. Clones and linked worktrees that share an origin share one memory store.
 

@@ -16,13 +16,13 @@ Requires **Node 24+** (native `node:sqlite`).
 
 ## What it does
 
-| Surface            | Behavior                                                                                                                                                                                                                |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| First turn         | Synthesizer turns the top layer of the memory tree into a grounded answer + a categorized index of the remaining roots (preferences, facts, summaries, other; heat-ordered; visible `pi-dream-briefing` custom message) |
-| `memory_search`    | Same synthesizer: returns a synthesized answer with sources; records recall for sources and opened summaries only                                                                                                       |
-| `memory_open`      | Exact target + one deeper level + lateral IDs; never truncates a node                                                                                                                                                   |
-| `/memory`          | `status`, `list [query]`, `open <id>`, `dream`, `pause`, `resume`, `forget <id>`; `list` and `open` also append a visible `pi-dream-audit` entry (dream/forget are notify-only)                                         |
-| Automatic dreaming | After ≥10 settled turns, ≥120 minutes, and advanced transcripts (or pending tree consolidation) → detached `--no-session` dreamer                                                                                       |
+| Surface            | Behavior                                                                                                                                                                                                   |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| First turn         | Synthesizer turns the top layer of the memory tree into a grounded answer + an index of the remaining roots (top 35 preferences, up to 15 facts; heat-ordered; visible `pi-dream-briefing` custom message) |
+| `memory_search`    | Same synthesizer: returns a synthesized answer with sources; records recall for sources and opened summaries only                                                                                          |
+| `memory_open`      | Exact target + one deeper level + lateral IDs; never truncates a node                                                                                                                                      |
+| `/memory`          | `status`, `list [query]`, `open <id>`, `dream`, `pause`, `resume`, `forget <id>`; `list` and `open` also append a visible `pi-dream-audit` entry (dream/forget are notify-only)                            |
+| Automatic dreaming | After ≥10 settled turns, ≥120 minutes, and advanced transcripts (or pending tree consolidation) → detached `--no-session` dreamer                                                                          |
 
 **Never** edits `AGENTS.md`, injects hidden system-prompt memory, or physically deletes history on forget (soft retirement only).
 

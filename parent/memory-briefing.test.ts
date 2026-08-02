@@ -418,7 +418,7 @@ test("a pre-aborted attempt does not advance the generation", async () => {
   }
 });
 
-test("renderMemoryBriefingMessage groups the index by kind and orders by heat", () => {
+test("renderMemoryBriefingMessage indexes preferences then facts, heat-ordered, without summaries", () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     const claim = acquireMemoryRunClaim(db, "manual");
@@ -494,49 +494,51 @@ test("renderMemoryBriefingMessage groups the index by kind and orders by heat", 
     const sections = content
       .split("\n")
       .filter((l) => /^(Preferences|Facts|Summaries|Other):$/.test(l));
-    assert.deepEqual(sections, [
-      "Preferences:",
-      "Facts:",
-      "Summaries:",
-      "Other:",
-    ]);
+    assert.deepEqual(sections, ["Preferences:", "Facts:"]);
     assert.ok(
       content.indexOf("- M:5 (fact)") < content.indexOf("- M:4 (fact)"),
       "heat-desc ordering within a group",
     );
+    assert.ok(
+      content.indexOf("Preferences:") < content.indexOf("Facts:"),
+      "preferences come before facts",
+    );
     assert.match(content, /- M:1 \(preference\): Prefer tabs over spaces/);
-    assert.match(content, /- S:1 \(summary\): Tooling/);
-    assert.match(
-      content,
-      /- M:6 \(correction\): Actually CI runs on macOS/,
-      "kinds outside preference/fact/summary stay visible under Other",
+    assert.ok(
+      !content.includes("- S:1 (summary): Tooling"),
+      "summaries are not indexed",
     );
     assert.ok(
-      content.indexOf("Facts:") < content.indexOf("Summaries:"),
-      "summaries are their own last section",
+      !content.includes("- M:6 (correction)"),
+      "rare kinds are not indexed",
     );
-    assert.ok(
-      content.indexOf("Summaries:") < content.indexOf("Other:"),
-      "remaining kinds come after summaries",
-    );
-    assert.ok(!content.includes("… and "), "no tail when every root is shown");
+    assert.match(content, /… and 2 more/);
   } finally {
     closeMemoryDatabase(db);
   }
 });
 
-test("renderMemoryBriefingMessage caps the index at 50 lines with a tail", () => {
+test("renderMemoryBriefingMessage caps preferences at 35 and facts at 15 with a tail", () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     const claim = acquireMemoryRunClaim(db, "manual");
     assert.equal(claim.acquired, true);
-    const ops = Array.from({ length: 60 }, (_, i) => ({
-      op: "create" as const,
-      tempRef: `m${i}`,
-      kind: "fact" as const,
-      observationText: `Fact ${i}`,
-      memoryText: `Fact ${i}`,
-    }));
+    const ops = [
+      ...Array.from({ length: 40 }, (_, i) => ({
+        op: "create" as const,
+        tempRef: `p${i}`,
+        kind: "preference" as const,
+        observationText: `Pref ${i}`,
+        memoryText: `Prefer pattern ${i}`,
+      })),
+      ...Array.from({ length: 20 }, (_, i) => ({
+        op: "create" as const,
+        tempRef: `f${i}`,
+        kind: "fact" as const,
+        observationText: `Fact ${i}`,
+        memoryText: `Fact ${i}`,
+      })),
+    ];
     commitMemoryDreamSession(db, {
       runId: claim.runId!,
       sourceSessionId: "s1",
@@ -549,6 +551,14 @@ test("renderMemoryBriefingMessage caps the index at 50 lines with a tail", () =>
     const content = renderMemoryBriefingMessage(db, "Answer.", []);
     const indexLines = content.split("\n").filter((l) => l.startsWith("- M:"));
     assert.equal(indexLines.length, 50);
+    const preferencesCount = content
+      .split("\n")
+      .filter((l) => l.startsWith("- M:") && l.includes("(preference)")).length;
+    assert.equal(preferencesCount, 35);
+    const factsCount = content
+      .split("\n")
+      .filter((l) => l.startsWith("- M:") && l.includes("(fact)")).length;
+    assert.equal(factsCount, 15);
     assert.match(content, /… and 10 more/);
   } finally {
     closeMemoryDatabase(db);

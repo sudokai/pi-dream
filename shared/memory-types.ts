@@ -64,8 +64,11 @@ export const MEMORY_SYNTHESIZER_CONTEXT_BUDGET = 16000;
 /** Answer token cap inside the synthesizer envelope. */
 export const MEMORY_SYNTHESIZER_ANSWER_BUDGET = 2000;
 
-/** Render-only cap for the briefing "Other memories" index lines. */
-export const MEMORY_BRIEFING_INDEX_MAX_LINES = 50;
+/** Render-only cap for preference entries in the briefing index. */
+export const MEMORY_BRIEFING_INDEX_MAX_PREFERENCES = 35;
+
+/** Render-only cap for fact entries in the briefing index. */
+export const MEMORY_BRIEFING_INDEX_MAX_FACTS = 15;
 
 /** Fresh summaries are merge-ineligible for this many activity generations. */
 export const MEMORY_CONSOLIDATION_SUMMARY_GRACE_GENERATIONS = 3;

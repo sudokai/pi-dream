@@ -1,6 +1,6 @@
 /**
  * First-turn visible memory briefing: activity generation advance → synthesizer
- * → synthesized answer + categorized index of the remaining top layer.
+ * → synthesized answer + a preference/fact index of the remaining top layer.
  *
  * The activity generation advances on every first-turn recall opportunity
  * (after the abort guard, before model resolution) whether synthesis succeeds
@@ -25,7 +25,8 @@ import {
 import { describeMemoryOverBudgetRecovery } from "../shared/memory-consolidation.ts";
 import {
   MEMORY_BRIEFING_CUSTOM_TYPE,
-  MEMORY_BRIEFING_INDEX_MAX_LINES,
+  MEMORY_BRIEFING_INDEX_MAX_FACTS,
+  MEMORY_BRIEFING_INDEX_MAX_PREFERENCES,
   parsePrefixedNodeId,
   type MemoryNodeId,
   type SummaryNodeId,
@@ -85,8 +86,11 @@ export type BuildMemoryBriefingResult =
     };
 
 /**
- * Render the visible briefing: the synthesized answer plus a categorized index
- * of top-layer roots not among the answer's sources (render-only; never heats).
+ * Render the visible briefing: the synthesized answer plus a preference/fact
+ * index of top-layer roots not among the answer's sources (render-only; never
+ * heats). Preferences come first, then facts, heat-desc within each kind, each
+ * capped (35 / 15). Summaries and rare kinds are not indexed: the synthesizer
+ * opens summaries when relevant, and /memory list shows everything.
  */
 export function renderMemoryBriefingMessage(
   db: DatabaseSync,
@@ -98,41 +102,31 @@ export function renderMemoryBriefingMessage(
   const roots = listMemoryTreeRoots(db).filter(
     (r) => !sourceKeys.has(r.prefixedId),
   );
-  if (roots.length > 0) {
+  const preferences = roots.filter((r) => r.kind === "preference");
+  const facts = roots.filter((r) => r.kind === "fact");
+  if (preferences.length > 0 || facts.length > 0) {
     lines.push("Other memories:");
     let shown = 0;
-    // Deterministic grouping (render-only, no model call): preferences and
-    // facts by kind, summaries last, any remaining kind (correction/other) in
-    // a final group — every root stays visible. Heat-desc within each group.
-    // Full text is never truncated — the top layer is already bounded by the
-    // briefing token budget — and entries stay under
-    // MEMORY_BRIEFING_INDEX_MAX_LINES.
-    const groups: Array<[string, typeof roots]> = [
-      ["Preferences", roots.filter((r) => r.kind === "preference")],
-      ["Facts", roots.filter((r) => r.kind === "fact")],
-      ["Summaries", roots.filter((r) => r.kind === "summary")],
-      [
-        "Other",
-        roots.filter(
-          (r) =>
-            r.kind !== "preference" &&
-            r.kind !== "fact" &&
-            r.kind !== "summary",
-        ),
-      ],
+    // Deterministic grouping (render-only, no model call): preferences first,
+    // then facts, heat-desc within each kind, each capped (35 preferences,
+    // 15 facts). Full text is never truncated — the top layer is already
+    // bounded by the briefing token budget.
+    const groups: Array<[string, typeof roots, number]> = [
+      ["Preferences", preferences, MEMORY_BRIEFING_INDEX_MAX_PREFERENCES],
+      ["Facts", facts, MEMORY_BRIEFING_INDEX_MAX_FACTS],
     ];
-    for (const [heading, group] of groups) {
-      if (group.length === 0 || shown >= MEMORY_BRIEFING_INDEX_MAX_LINES) {
-        continue;
-      }
+    for (const [heading, group, cap] of groups) {
+      if (group.length === 0) continue;
       lines.push(`${heading}:`);
       const ordered = [...group].sort((a, b) => b.heat - a.heat);
+      let inGroup = 0;
       for (const root of ordered) {
-        if (shown >= MEMORY_BRIEFING_INDEX_MAX_LINES) break;
+        if (inGroup >= cap) break;
         // Full text, never truncated: the index is render-only and the top
         // layer is already bounded by the briefing token budget. Texts are
         // guaranteed single-line by validateMemoryBodyText on every write path.
         lines.push(`- ${root.prefixedId} (${root.kind}): ${root.text}`);
+        inGroup++;
         shown++;
       }
     }

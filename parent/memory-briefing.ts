@@ -25,7 +25,6 @@ import {
 import {
   MEMORY_BRIEFING_CUSTOM_TYPE,
   MEMORY_BRIEFING_INDEX_MAX_LINES,
-  MEMORY_RECALL_OPERATION_TIMEOUT_MS,
   parsePrefixedNodeId,
   type MemoryNodeId,
   type SummaryNodeId,
@@ -35,17 +34,14 @@ import {
   throwIfMemoryAborted,
 } from "../shared/memory-abort.ts";
 
-/** Maximum time the pre-agent opening briefing may wait without a run signal. */
-export const MEMORY_BRIEFING_TIMEOUT_MS = MEMORY_RECALL_OPERATION_TIMEOUT_MS;
-
 /**
- * Compose pi's active run signal with an independent opening timeout.
+ * Compose pi's active run signal for the opening briefing. There is no
+ * separate timeout: Escape on the loader aborts via the call site's
+ * AbortController, and pi's run signal aborts when the lifecycle provides
+ * one. The briefing runs until synthesis completes or the user cancels.
  */
-export function createMemoryBriefingSignal(
-  signal?: AbortSignal,
-  timeoutMs: number = MEMORY_BRIEFING_TIMEOUT_MS,
-): AbortSignal {
-  return composeMemoryAbortSignal(signal, timeoutMs);
+export function createMemoryBriefingSignal(signal?: AbortSignal): AbortSignal {
+  return composeMemoryAbortSignal(signal);
 }
 
 export interface BuildMemoryBriefingInput {

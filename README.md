@@ -101,7 +101,7 @@ All fields are optional except `version` and `enabled`; missing optional fields 
 
 **Unknown keys are rejected**: a `config.json` containing a key not listed above fails closed — memory is disabled for the workspace until the file is repaired. Invalid configured models fail that operation closed (no silent fallback); invalid or unreadable `config.json` disables memory until repaired. Cross-key validation rejects `coldHeatThreshold >= hotHeatThreshold`, `briefingTokenBudget < 200`, and `synthesizerContextBudget` at or below the envelope floor (see the table row) the same way.
 
-**Slow recall models**: the briefing runs under a 15-second wall (one model call in the common case, but opens may add more). On slow or high-thinking session models, set `recallModel` and `recallThinking` (e.g. `"off"`) per workspace — a slow recall model degrades to "no briefing" per turn (audited) rather than stalling the first turn.
+**Slow recall models**: the briefing has no time cap — the loader stays up until synthesis completes or you press Escape. On slow or high-thinking session models, set `recallModel` and `recallThinking` (e.g. `"off"`) per workspace so the first turn isn't delayed by a heavyweight recall model.
 
 ## Environment variables
 

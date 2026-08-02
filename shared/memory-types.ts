@@ -137,9 +137,6 @@ export const MEMORY_STORAGE_ROOT_ENV = "PI_DREAM_STORAGE_ROOT";
 /** Pi session-dir override (same env as pi-coding-agent). */
 export const MEMORY_PI_SESSION_DIR_ENV = "PI_CODING_AGENT_SESSION_DIR";
 
-/** Opening briefing / memory_search operation timeout (ms). */
-export const MEMORY_RECALL_OPERATION_TIMEOUT_MS = 15_000;
-
 /** Provider auth resolution timeout (ms). */
 export const MEMORY_AUTH_TIMEOUT_MS = 10_000;
 

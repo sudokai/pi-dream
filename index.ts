@@ -258,7 +258,8 @@ export default function piDreamExtension(pi: ExtensionAPI) {
         ...briefingInput,
         // Pi 0.83 runs before_agent_start before creating the active run, so
         // ctx.signal is normally undefined here. Use its signal when a newer
-        // lifecycle provides one and otherwise keep opening work bounded.
+        // lifecycle provides one; Escape on the loader is the only other
+        // cancel — there is no time cap on the briefing.
         signal: createMemoryBriefingSignal(
           AbortSignal.any(
             ctx.signal ? [abort.signal, ctx.signal] : [abort.signal],

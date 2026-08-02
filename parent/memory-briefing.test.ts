@@ -15,11 +15,15 @@ import { defaultMemoryWorkspaceConfig } from "../shared/memory-config.ts";
 import { getMemoryActivityGeneration } from "../shared/memory-graph.ts";
 import { listMemoryTreeRoots } from "../shared/memory-tree.ts";
 
-test("briefing signal uses a bounded timeout before pi exposes a run signal", async () => {
-  const signal = createMemoryBriefingSignal(undefined, 10);
+test("briefing signal never self-aborts; it fires only with the caller's signal", async () => {
+  const signal = createMemoryBriefingSignal();
   assert.equal(signal.aborted, false);
   await new Promise((resolve) => setTimeout(resolve, 30));
-  assert.equal(signal.aborted, true);
+  assert.equal(signal.aborted, false, "briefing must not self-abort");
+  const controller = new AbortController();
+  const composed = createMemoryBriefingSignal(controller.signal);
+  controller.abort();
+  assert.equal(composed.aborted, true);
 });
 
 function seed(

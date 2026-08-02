@@ -23,10 +23,7 @@ import {
   isMemoryQueryBlank,
   throwIfMemoryAborted,
 } from "../shared/memory-abort.ts";
-import {
-  MEMORY_RECALL_OPERATION_TIMEOUT_MS,
-  parsePrefixedNodeId,
-} from "../shared/memory-types.ts";
+import { parsePrefixedNodeId } from "../shared/memory-types.ts";
 
 export interface MemoryToolsContext {
   getDb: () => DatabaseSync;
@@ -102,10 +99,8 @@ export function registerMemoryAgentTools(
       query: Type.String({ description: "Natural-language search query" }),
     }),
     async execute(_toolCallId, params, signal) {
-      const effectiveSignal = composeMemoryAbortSignal(
-        signal ?? undefined,
-        MEMORY_RECALL_OPERATION_TIMEOUT_MS,
-      );
+      // No separate timeout: pi's tool signal is the only cancellation.
+      const effectiveSignal = composeMemoryAbortSignal(signal ?? undefined);
       throwIfMemoryAborted(effectiveSignal);
       if (isMemoryQueryBlank(params.query)) {
         return {

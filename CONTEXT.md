@@ -26,7 +26,7 @@ Workspace-scoped **adaptive memory** for pi. Dream extracts durable user prefere
 
 **Ingestion**: The phase of a dream that reads source sessions and extracts observations and memories (the dreamer "mines" sessions). Consolidation runs post-ingestion; a dream-only run skips ingestion entirely.
 
-**Promote (resurfacing)**: Moving a hot child — heat at or above the **hot threshold** (1.5) — back out of its parent summary: the `contains` edge is retired, the parent is rewritten without it (new summary version) or retired when it drops to ≤ 1 member, resurfacing remaining active children as roots. Merging is budget-gated, so the promote threshold no longer needs an anti-flapping cold threshold.
+**Promote (resurfacing)**: Moving a hot child — heat at or above the **hot threshold** (1.5) — back out of its parent summary: the `contains` edge is retired, the parent is rewritten without it (new summary version) or retired when it drops to ≤ 1 member, resurfacing remaining active children as roots. Merge eligibility is budget-gated and independent of heat.
 
 **Synthesizer**: A single shared LLM loop serving both the first-turn briefing and `memory_search`. It reads the top layer, opens summaries only when it needs more detail (bounded to 8 steps within a 16000-token serialized-context envelope), refreshes its context after every model result (the dreamer can mutate the DB mid-loop), and returns `{answer, sources, openedSummaryIds}`. Only the synthesized answer is shown; any failure skips silently with an audit entry (fail-closed, no raw tree fallback).
 

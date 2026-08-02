@@ -12,6 +12,7 @@ import {
 import {
   buildMemoryFallbackSummaryText,
   clearMemoryConsolidationAttempt,
+  describeMemoryOverBudgetRecovery,
   getMemoryConsolidationAttempts,
   hasMemoryConsolidationCandidates,
   incrementMemoryConsolidationAttempt,
@@ -725,6 +726,44 @@ test("hasMemoryConsolidationCandidates is pure SQL/heat and covers the over-budg
       ),
     );
     assert.ok(plan.merges.some((m) => m.key.includes(`memory:${m2.slice(2)}`)));
+  });
+});
+
+test("describeMemoryOverBudgetRecovery promises urgent consolidation only when it will run", async () => {
+  await withClaimedDb(async (db, runId) => {
+    createMemory(db, runId, "s1", "Use tabs for indentation");
+    createMemory(db, runId, "s2", "No emoji in commits");
+    const key = memoryConsolidationMergeKey(
+      { nodeType: "memory", nodeId: 1 },
+      { nodeType: "memory", nodeId: 2 },
+    );
+    // Block the only pairable pair at the attempt bound: over budget, but no
+    // candidate can be planned, so no next-settle run is promised.
+    for (let i = 0; i < 3; i++) {
+      incrementMemoryConsolidationAttempt(db, key, 0);
+    }
+    assert.equal(
+      describeMemoryOverBudgetRecovery(db, {
+        config: config({ briefingTokenBudget: 5 }),
+      }),
+      "consolidation has not yet compacted it",
+      "over budget without candidates: never claims a next-settle run",
+    );
+    clearMemoryConsolidationAttempt(db, key);
+    assert.equal(
+      describeMemoryOverBudgetRecovery(db, {
+        config: config({ briefingTokenBudget: 5 }),
+      }),
+      "urgent consolidation runs at the next agent settle",
+      "over budget with candidates: names the urgent run",
+    );
+    assert.equal(
+      describeMemoryOverBudgetRecovery(db, {
+        config: { ...config({ briefingTokenBudget: 5 }), enabled: false },
+      }),
+      "consolidation has not yet compacted it",
+      "paused memory: the cadence will not launch a run",
+    );
   });
 });
 

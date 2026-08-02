@@ -67,8 +67,11 @@ export function evaluateMemoryDreamCadence(
   });
 
   // Urgent consolidation: an over-budget top layer fails closed on reads, so
-  // the turn/time gates are waived — the next settle launches a dream-only
-  // consolidation run (over-budget is already a consolidation candidate).
+  // when merge-eligible candidates exist the turn/time gates are waived and
+  // the next settle launches a dream-only consolidation run. With no
+  // candidates (summary grace window, attempt bounds) the gates stay in force;
+  // reads remain closed until candidates appear (grace expires as
+  // generations advance).
   const layerTokens = estimateTopLayerTokens(db, listMemoryTreeRoots(db));
   const layerOverBudget = layerTokens > input.config.briefingTokenBudget;
 
@@ -76,7 +79,9 @@ export function evaluateMemoryDreamCadence(
   if (!enabled) reasons.push("paused");
   if (layerOverBudget) {
     reasons.push(
-      `top layer ${layerTokens}/${input.config.briefingTokenBudget} tokens over budget (urgent consolidation)`,
+      consolidationCandidates
+        ? `top layer ${layerTokens}/${input.config.briefingTokenBudget} tokens over budget (urgent consolidation)`
+        : `top layer ${layerTokens}/${input.config.briefingTokenBudget} tokens over budget (no consolidation candidates yet)`,
     );
   } else {
     if (turns < input.config.minTurns) {

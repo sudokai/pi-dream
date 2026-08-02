@@ -479,6 +479,77 @@ test("an over-budget top layer waives the cadence gates for urgent consolidation
   }
 });
 
+test("an over-budget layer with no candidates does not claim urgent consolidation", () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "auto");
+    assert.ok(claim.runId);
+    commitMemoryDreamSession(db, {
+      runId: claim.runId!,
+      sourceSessionId: "s1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1,
+      contentHash: "h1",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "f1",
+            kind: "fact",
+            observationText: "obs",
+            memoryText: "The build runs on Linux",
+          },
+          {
+            op: "create",
+            tempRef: "f2",
+            kind: "fact",
+            observationText: "obs",
+            memoryText: "Deploys use rolling releases",
+          },
+          // A fresh summary: within the merge grace window, so it is not a
+          // merge-eligible root — the over-budget layer has no candidates.
+          {
+            op: "summarize",
+            tempRef: "s1",
+            text: "Tooling",
+            memberIds: ["M:1", "M:2"],
+          },
+        ],
+      },
+    });
+    updateMemoryCadenceState(db, {
+      turnsSinceLastRun: 0,
+      lastSuccessfulRunAtMs: 1_000_000,
+    });
+    const config = {
+      ...defaultMemoryWorkspaceConfig(),
+      briefingTokenBudget: 1,
+      minTurns: 2,
+      minMinutes: 1,
+    };
+    const evaluation = evaluateMemoryDreamCadence(db, {
+      cwd: "/nonexistent-dream-path",
+      workspaceId: "ws",
+      config,
+      nowMs: 1_000_001,
+    });
+    assert.equal(evaluation.shouldDream, false);
+    assert.ok(
+      !evaluation.reasons.some((r) => r.includes("urgent consolidation")),
+      "no urgent-consolidation claim while no candidates exist",
+    );
+    assert.ok(
+      evaluation.reasons.some((r) =>
+        r.includes("no consolidation candidates yet"),
+      ),
+      "reason names the missing candidates",
+    );
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
 test("buildMemoryListText renders the tree indented", () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {

@@ -23,6 +23,7 @@ import {
   isMemoryQueryBlank,
   throwIfMemoryAborted,
 } from "../shared/memory-abort.ts";
+import { describeMemoryOverBudgetRecovery } from "../shared/memory-consolidation.ts";
 import { parsePrefixedNodeId } from "../shared/memory-types.ts";
 
 export interface MemoryToolsContext {
@@ -158,7 +159,7 @@ export function registerMemoryAgentTools(
       if (!result.ok) {
         if (result.error === "top_layer_over_budget") {
           throw new Error(
-            `top layer over budget (${result.layerTokens}/${result.budget} tokens); urgent consolidation runs at the next agent settle`,
+            `top layer over budget (${result.layerTokens}/${result.budget} tokens); ${describeMemoryOverBudgetRecovery(db, { config })}`,
           );
         }
         throw new Error(`memory_search synthesizer failed: ${result.error}`);

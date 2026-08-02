@@ -880,6 +880,24 @@ export function hasMemoryConsolidationCandidates(
   return false;
 }
 
+/**
+ * Recovery statement shown when reads fail closed on an over-budget top layer.
+ * Names the next-settle urgent consolidation run only when the cadence would
+ * actually launch one (memory enabled and merge-eligible candidates exist);
+ * otherwise states that compaction has not happened yet. Used by the
+ * `memory_search` error and the briefing audit entry.
+ */
+export function describeMemoryOverBudgetRecovery(
+  db: DatabaseSync,
+  opts: { config: MemoryWorkspaceConfig },
+): string {
+  const { config } = opts;
+  if (config.enabled && hasMemoryConsolidationCandidates(db, opts)) {
+    return "urgent consolidation runs at the next agent settle";
+  }
+  return "consolidation has not yet compacted it";
+}
+
 /** Persisted last inspect-time consolidation batch (child writes, status reads). */
 export interface PersistedMemoryConsolidationInspect {
   runId: string;

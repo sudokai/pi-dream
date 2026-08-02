@@ -18,7 +18,7 @@ Workspace-scoped **adaptive memory** for pi. Dream extracts durable user prefere
 
 **Tree root**: A node with no active `contains` edge pointing at it from an active parent summary (edges from retired parents do not block rootness). Conflicted, superseded, and retired nodes are never roots.
 
-**Top layer**: The set of all roots, capped by an estimated-token budget (`briefingTokenBudget`, 8000). The cap is enforced by consolidation — never by read-time truncation; an over-budget layer fails reads closed with an audit entry and the over-budget state waives the cadence turn/time gates so the next agent settle runs an **urgent consolidation**.
+**Top layer**: The set of all roots, capped by an estimated-token budget (`briefingTokenBudget`, 8000). The cap is enforced by consolidation — never by read-time truncation; an over-budget layer fails reads closed with an audit entry, and while merge-eligible candidates exist the over-budget state waives the cadence turn/time gates so the next agent settle runs an **urgent consolidation**.
 
 **Consolidation pass**: A deterministic, cadence-scheduled consolidation phase (post-ingestion in every dream, plus dream-only runs gated by `agent_settled`): roots whose heat is at or below the **cold threshold** (0.4) are paired by semantic nearest-neighbor (cosine over stored MiniLM embeddings, no similarity floor) and merged into summaries; if the top layer exceeds its budget, additional coldest roots are merged regardless of warmth (budget override). Fresh summaries are merge-ineligible inside a grace window of 3 activity generations. Model-written summary texts are repository-validated for strict measured compaction; consecutive rejections are counted per candidate and a deterministic fallback text applies at the third rejection.
 
@@ -42,7 +42,7 @@ Workspace-scoped **adaptive memory** for pi. Dream extracts durable user prefere
 
 **Dreamer**: The detached `--no-session` pi child process that executes a dream. It holds no session of its own, so it can never mine itself.
 
-**Briefing**: The visible first-turn custom message (`customType: "pi-dream-briefing"`, `display: true`) containing the synthesized answer plus a categorized index of the remaining top-layer roots (preferences, facts, summaries; heat-ordered). Never hidden system-prompt content; never a raw dump of stored nodes.
+**Briefing**: The visible first-turn custom message (`customType: "pi-dream-briefing"`, `display: true`) containing the synthesized answer plus a categorized index of the remaining top-layer roots (preferences, facts, summaries, other; heat-ordered). Never hidden system-prompt content; never a raw dump of stored nodes.
 
 **Workspace id**: Stable memory scope: `sha256(canonical_source)[:12]_safeName`, resolved from canonical git origin → git common directory → real cwd. Clones and linked worktrees that share an origin share one memory store.
 

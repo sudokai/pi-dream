@@ -468,6 +468,13 @@ test("renderMemoryBriefingMessage groups the index by kind and orders by heat", 
             memoryText: "Ship on Fridays",
           },
           {
+            op: "create",
+            tempRef: "c1",
+            kind: "correction",
+            observationText: "obs",
+            memoryText: "Actually CI runs on macOS",
+          },
+          {
             op: "summarize",
             tempRef: "s1",
             text: "Tooling",
@@ -486,18 +493,33 @@ test("renderMemoryBriefingMessage groups the index by kind and orders by heat", 
     const content = renderMemoryBriefingMessage(db, "Answer.", []);
     const sections = content
       .split("\n")
-      .filter((l) => /^(Preferences|Facts|Summaries):$/.test(l));
-    assert.deepEqual(sections, ["Preferences:", "Facts:", "Summaries:"]);
+      .filter((l) => /^(Preferences|Facts|Summaries|Other):$/.test(l));
+    assert.deepEqual(sections, [
+      "Preferences:",
+      "Facts:",
+      "Summaries:",
+      "Other:",
+    ]);
     assert.ok(
       content.indexOf("- M:5 (fact)") < content.indexOf("- M:4 (fact)"),
       "heat-desc ordering within a group",
     );
     assert.match(content, /- M:1 \(preference\): Prefer tabs over spaces/);
     assert.match(content, /- S:1 \(summary\): Tooling/);
+    assert.match(
+      content,
+      /- M:6 \(correction\): Actually CI runs on macOS/,
+      "kinds outside preference/fact/summary stay visible under Other",
+    );
     assert.ok(
       content.indexOf("Facts:") < content.indexOf("Summaries:"),
       "summaries are their own last section",
     );
+    assert.ok(
+      content.indexOf("Summaries:") < content.indexOf("Other:"),
+      "remaining kinds come after summaries",
+    );
+    assert.ok(!content.includes("… and "), "no tail when every root is shown");
   } finally {
     closeMemoryDatabase(db);
   }

@@ -22,6 +22,7 @@ import {
   resolveMemoryModel,
   type MemoryModelRegistryLike,
 } from "../shared/memory-model.ts";
+import { describeMemoryOverBudgetRecovery } from "../shared/memory-consolidation.ts";
 import {
   MEMORY_BRIEFING_CUSTOM_TYPE,
   MEMORY_BRIEFING_INDEX_MAX_LINES,
@@ -101,13 +102,24 @@ export function renderMemoryBriefingMessage(
     lines.push("Other memories:");
     let shown = 0;
     // Deterministic grouping (render-only, no model call): preferences and
-    // facts by kind, summaries last, heat-desc within each group. Full text is
-    // never truncated — the top layer is already bounded by the briefing token
-    // budget — and the total stays under MEMORY_BRIEFING_INDEX_MAX_LINES.
+    // facts by kind, summaries last, any remaining kind (correction/other) in
+    // a final group — every root stays visible. Heat-desc within each group.
+    // Full text is never truncated — the top layer is already bounded by the
+    // briefing token budget — and entries stay under
+    // MEMORY_BRIEFING_INDEX_MAX_LINES.
     const groups: Array<[string, typeof roots]> = [
       ["Preferences", roots.filter((r) => r.kind === "preference")],
       ["Facts", roots.filter((r) => r.kind === "fact")],
       ["Summaries", roots.filter((r) => r.kind === "summary")],
+      [
+        "Other",
+        roots.filter(
+          (r) =>
+            r.kind !== "preference" &&
+            r.kind !== "fact" &&
+            r.kind !== "summary",
+        ),
+      ],
     ];
     for (const [heading, group] of groups) {
       if (group.length === 0 || shown >= MEMORY_BRIEFING_INDEX_MAX_LINES) {
@@ -192,7 +204,9 @@ export async function buildMemorySessionBriefing(
           status: "top_layer_over_budget",
           tokens: result.layerTokens,
           budget: result.budget,
-          note: "urgent consolidation runs at the next agent settle",
+          note: describeMemoryOverBudgetRecovery(input.db, {
+            config: input.config,
+          }),
         },
       };
     }

@@ -118,10 +118,10 @@ All variables are optional; defaults exist without them.
 ## Commands
 
 ```text
-/memory              # status: enabled, config path, models, cadence, counts, top-layer
-                     #   token estimate (with OVER BUDGET flag), last dream, active dream;
-                     #   status --verbose adds workspace id, db path, activity gen,
-                     #   unreported dreams, and pending attempt counters
+/memory              # status: enabled, counts, top-layer token estimate (with OVER
+                     #   BUDGET flag), last dream, active dream; status --verbose adds
+                     #   config path, models, cadence, workspace id, db path, activity
+                     #   gen, unreported dreams, and pending attempt counters
 /memory list [q]     # the tree rendered indented (roots + children under summaries);
                      #   fallback-labeled summaries render as "S:n (fallback)"; non-active
                      #   nodes stay visible flat; deterministic audit list (no recall events)

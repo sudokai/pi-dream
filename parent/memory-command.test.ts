@@ -319,11 +319,18 @@ test("buildMemoryStatusText shows essentials; verbose adds internals", () => {
       db,
       config: cfg,
     });
-    assert.match(text, /OVER BUDGET: \d+\/1 tokens, 2 roots/);
+    assert.match(text, /OVER BUDGET: \d+\/1 tokens — 2 roots/);
     assert.match(text, /last dream:\s+none/);
+    assert.match(
+      text,
+      /memories:\s+2 active \(0 conflicted, 0 superseded, 0 retired\)/,
+    );
     assert.doesNotMatch(text, /pending attempts/);
     assert.doesNotMatch(text, /workspace id/);
     assert.doesNotMatch(text, /unreported dreams/);
+    assert.doesNotMatch(text, /config:/);
+    assert.doesNotMatch(text, /cadence turns/);
+    assert.doesNotMatch(text, /dream model:/);
     const verbose = buildMemoryStatusText({
       workspaceId: "ws-test",
       db,
@@ -334,6 +341,8 @@ test("buildMemoryStatusText shows essentials; verbose adds internals", () => {
     assert.match(verbose, /database:\s+\S+memory\.db/);
     assert.match(verbose, /activity gen:\s+0/);
     assert.match(verbose, /unreported dreams: 0/);
+    assert.match(verbose, /config:\s+\S+ws-test/);
+    assert.match(verbose, /cadence turns:\s+0 \(min 10\)/);
     assert.match(
       verbose,
       /pending attempts: merge:memory:1\+memory:2 \(1\/3\)/,

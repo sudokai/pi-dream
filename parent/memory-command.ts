@@ -170,29 +170,29 @@ function formatStatus(input: {
     memoryWorkspaceLastInspectPath(input.workspaceId),
   );
   const inspectSummary = inspect
-    ? `${inspect.merges.length} merge(s) (${inspect.merges.filter((m) => m.reason === "budget").length} budget-forced), ${inspect.promotes.length} promote(s) (run ${inspect.runId})`
+    ? `${inspect.merges.length} merge${inspect.merges.length === 1 ? "" : "s"}, ${inspect.promotes.length} promote${inspect.promotes.length === 1 ? "" : "s"}`
     : "none";
   const lines = [
     "Memory status",
     "─────────────",
-    `enabled:        ${input.config.enabled ? "yes" : "no (paused)"}`,
-    `config:         ${memoryWorkspaceConfigPath(input.workspaceId)}`,
-    `dream model:    ${input.config.dreamModel ?? `(session: ${input.sessionModelId ?? "unset"})`}`,
-    `recall model:   ${input.config.recallModel ?? `(session: ${input.sessionModelId ?? "unset"})`}`,
-    `cadence turns:  ${state.turnsSinceLastRun} (min ${input.config.minTurns})`,
-    `last success:   ${state.lastSuccessfulRunAtMs || "never"}`,
-    `memories:       active=${counts.memories.active} conflicted=${counts.memories.conflicted} superseded=${counts.memories.superseded} retired=${counts.memories.retired}`,
-    `summaries:      active=${counts.summaries.active} retired=${counts.summaries.retired}`,
+    `enabled:          ${input.config.enabled ? "yes" : "no (paused)"}`,
+    `memories:         ${counts.memories.active} active (${counts.memories.conflicted} conflicted, ${counts.memories.superseded} superseded, ${counts.memories.retired} retired)`,
+    `summaries:        ${counts.summaries.active} active`,
     overBudget
-      ? `top layer:      OVER BUDGET: ${layerTokens}/${input.config.briefingTokenBudget} tokens, ${roots.length} roots`
-      : `top layer:      ${layerTokens} tokens (budget ${input.config.briefingTokenBudget}), ${roots.length} roots`,
-    `last dream:     ${inspectSummary}`,
-    `active dream:   ${activeRun ?? "none"}`,
+      ? `top layer:        OVER BUDGET: ${layerTokens}/${input.config.briefingTokenBudget} tokens — ${roots.length} roots`
+      : `top layer:        ${layerTokens} tokens (budget ${input.config.briefingTokenBudget}) — ${roots.length} roots`,
+    `last dream:       ${inspectSummary}`,
+    `active dream:     ${activeRun ?? "none"}`,
   ];
   if (input.verbose) {
     const lastRuns = listUnreportedMemoryRuns(input.db);
     const attempts = listMemoryConsolidationAttempts(input.db);
     lines.push(
+      `config:           ${memoryWorkspaceConfigPath(input.workspaceId)}`,
+      `dream model:      ${input.config.dreamModel ?? `(session: ${input.sessionModelId ?? "unset"})`}`,
+      `recall model:     ${input.config.recallModel ?? `(session: ${input.sessionModelId ?? "unset"})`}`,
+      `cadence turns:    ${state.turnsSinceLastRun} (min ${input.config.minTurns})`,
+      `last success:     ${state.lastSuccessfulRunAtMs || "never"}`,
       `workspace id:     ${input.workspaceId}`,
       `database:         ${input.dbPath}`,
       `activity gen:     ${getMemoryActivityGeneration(input.db)}`,

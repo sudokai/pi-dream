@@ -219,7 +219,7 @@ export function registerMemoryDreamTools(
         "",
         "# Consolidation candidates",
         plan.overBudget
-          ? `Top layer is OVER BUDGET: ${plan.layerTokensAfterProjected}/${plan.budget} estimated tokens. Budget-forced merges below are mandatory.`
+          ? `Top layer is OVER BUDGET: ${plan.layerTokensAfterProjected}/${plan.budget} estimated tokens. All merges below are mandatory.`
           : `Top layer: ${plan.layerTokensAfterProjected}/${plan.budget} estimated tokens (projected).`,
         "",
         "## Merges (emit a summarize op per pair, after all promote ops)",
@@ -234,7 +234,7 @@ export function registerMemoryDreamTools(
             ? `extend S:${m.summaryId} (expectedVersionId=${m.expectedVersionId}) with ${members}`
             : `merge ${members}`;
         lines.push(
-          `- ${form} [similarity=${m.similarity.toFixed(3)}, reason=${m.reason}, cap=${m.outputCapTokens} tokens]:`,
+          `- ${form} [similarity=${m.similarity.toFixed(3)}, cap=${m.outputCapTokens} tokens]:`,
         );
         for (const member of m.members) {
           lines.push(`    ${member.prefixedId}: ${member.text}`);
@@ -271,7 +271,6 @@ export function registerMemoryDreamTools(
         merges: plan.merges.map((m) => ({
           key: m.key,
           kind: m.kind,
-          reason: m.reason,
           similarity: m.similarity,
           members: m.members.map((x) => x.prefixedId),
           baselineTokens: m.baselineTokens,

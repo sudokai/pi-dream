@@ -183,7 +183,7 @@ function config(
   return { ...defaultMemoryWorkspaceConfig(), ...overrides };
 }
 
-test("cold roots pair by nearest neighbor, deterministically, with no floor", async () => {
+test("over-budget cold roots pair by nearest neighbor, deterministically, with no floor", async () => {
   await withClaimedDb(async (db, runId) => {
     createMemory(db, runId, "s1", "Use tabs for indentation");
     createMemory(db, runId, "s2", "No emoji in commits");
@@ -191,7 +191,7 @@ test("cold roots pair by nearest neighbor, deterministically, with no floor", as
     createMemory(db, runId, "s4", "Prefer tabs everywhere");
 
     const plan = await planMemoryConsolidation(db, {
-      config: config(),
+      config: config({ briefingTokenBudget: 8 }),
       embed: fakeEmbed,
     });
     assert.deepEqual(
@@ -205,7 +205,7 @@ test("cold roots pair by nearest neighbor, deterministically, with no floor", as
     assert.equal(first.outputCapTokens, first.baselineTokens - 1);
 
     const again = await planMemoryConsolidation(db, {
-      config: config(),
+      config: config({ briefingTokenBudget: 8 }),
       embed: fakeEmbed,
     });
     assert.deepEqual(
@@ -216,7 +216,7 @@ test("cold roots pair by nearest neighbor, deterministically, with no floor", as
   });
 });
 
-test("hot roots never merge unless the budget override forces it", async () => {
+test("under budget no roots merge; over budget the coldest roots pair regardless of warmth", async () => {
   await withClaimedDb(async (db, runId) => {
     createMemory(db, runId, "s1", "Use tabs for indentation");
     createMemory(db, runId, "s2", "No emoji in commits");
@@ -230,45 +230,45 @@ test("hot roots never merge unless the budget override forces it", async () => {
       embed: fakeEmbed,
     });
     assert.deepEqual(
-      plan.merges.map((m) => m.key),
-      [mergeKey(1, 2)],
-      "warm roots must not merge while the layer fits",
+      plan.merges,
+      [],
+      "under budget, even cold roots never produce merge candidates",
     );
 
-    // Tiny budget: the override merges warm roots too and ignores the bound.
+    // Tiny budget: the over-budget pool pairs coldest first and merges warm
+    // roots too; every root lands in exactly one pair.
     const forced = await planMemoryConsolidation(db, {
-      config: config({ briefingTokenBudget: 10, consolidationMergeBound: 1 }),
+      config: config({ briefingTokenBudget: 10 }),
       embed: fakeEmbed,
     });
     const keys = forced.merges.map((m) => m.key);
-    assert.ok(keys.includes(mergeKey(1, 2)));
-    assert.ok(
-      forced.merges.some((m) => m.key.includes(`memory:${m3.slice(2)}`)),
-      "budget override merges warm roots",
+    assert.equal(
+      forced.merges.length,
+      2,
+      "all four roots pair while over budget",
     );
     assert.ok(
-      forced.merges.some(
-        (m) => m.key.includes(`memory:${m3.slice(2)}`) && m.reason === "budget",
-      ),
+      keys.some((k) => k.includes(`memory:${m3.slice(2)}`)),
+      "over budget merges warm roots",
     );
     assert.ok(
-      forced.merges.length > 1,
-      "budget override is not subject to consolidationMergeBound (1)",
+      keys.some((k) => k.includes(`memory:${m4.slice(2)}`)),
+      "over budget merges warm roots",
     );
   });
 });
 
-test("merge bound caps cold-eligible selection only", async () => {
+test("over-budget pairing is not capped by a merge bound", async () => {
   await withClaimedDb(async (db, runId) => {
     for (let i = 1; i <= 6; i++) {
       createMemory(db, runId, `s${i}`, `Fact number ${i} about pnpm builds`);
     }
     const plan = await planMemoryConsolidation(db, {
-      config: config({ consolidationMergeBound: 2 }),
+      config: config({ briefingTokenBudget: 10 }),
       embed: fakeEmbed,
     });
-    assert.equal(plan.merges.length, 2, "cold selection capped at the bound");
-    assert.ok(plan.merges.every((m) => m.reason === "cold"));
+    assert.equal(plan.merges.length, 3, "all pairable pairs are planned");
+    assert.ok(plan.overBudget, "pairs exhausted before the projection fits");
   });
 });
 
@@ -306,7 +306,7 @@ test("fresh summaries are merge-ineligible during the grace window", async () =>
     void summaryText;
 
     const g0 = await planMemoryConsolidation(db, {
-      config: config(),
+      config: config({ briefingTokenBudget: 5 }),
       embed: fakeEmbed,
     });
     assert.ok(
@@ -323,7 +323,7 @@ test("fresh summaries are merge-ineligible during the grace window", async () =>
     incrementMemoryActivityGeneration(db);
     incrementMemoryActivityGeneration(db);
     const g3 = await planMemoryConsolidation(db, {
-      config: config(),
+      config: config({ briefingTokenBudget: 5 }),
       embed: fakeEmbed,
     });
     assert.ok(
@@ -466,10 +466,15 @@ test("conflicted and retired nodes never appear in consolidation", async () => {
       plan: { operations: [{ op: "conflict", memoryIds: [m1 as never] }] },
     });
     const plan = await planMemoryConsolidation(db, {
-      config: config(),
+      config: config({ briefingTokenBudget: 8 }),
       embed: fakeEmbed,
     });
     assert.ok(plan.merges.every((m) => !m.key.includes("M:1")));
+    assert.equal(
+      plan.merges.length,
+      1,
+      "the conflicted root is excluded; the remaining roots pair",
+    );
     // Retire the rest: no candidates at all.
     for (const id of [m2, m3]) {
       db.prepare(`UPDATE memories SET state = 'retired' WHERE id = ?`).run(
@@ -477,7 +482,7 @@ test("conflicted and retired nodes never appear in consolidation", async () => {
       );
     }
     const empty = await planMemoryConsolidation(db, {
-      config: config(),
+      config: config({ briefingTokenBudget: 8 }),
       embed: fakeEmbed,
     });
     assert.equal(empty.merges.length, 0);
@@ -694,7 +699,7 @@ test("a rewritten summary is re-embedded before the next pairing pass", async ()
   });
 });
 
-test("hasMemoryConsolidationCandidates is pure SQL/heat and covers the over-budget state", async () => {
+test("hasMemoryConsolidationCandidates is pure SQL and covers the over-budget state", async () => {
   await withClaimedDb(async (db, runId) => {
     const m1 = createMemory(db, runId, "s1", "Use tabs for indentation");
     const m2 = createMemory(db, runId, "s2", "No emoji in commits");
@@ -721,9 +726,8 @@ test("hasMemoryConsolidationCandidates is pure SQL/heat and covers the over-budg
     });
     assert.ok(plan.overBudget);
     assert.ok(
-      plan.merges.some(
-        (m) => m.reason === "budget" && m.key.includes(`memory:${m1.slice(2)}`),
-      ),
+      plan.merges.some((m) => m.key.includes(`memory:${m1.slice(2)}`)),
+      "the planner pairs the over-budget warm roots too",
     );
     assert.ok(plan.merges.some((m) => m.key.includes(`memory:${m2.slice(2)}`)));
   });
@@ -825,14 +829,14 @@ test("promote tips the layer over budget and the pass compensates with budget me
     incrementMemoryActivityGeneration(db);
     incrementMemoryActivityGeneration(db);
     makeHot(db, "memory", 1);
-    const cfg = config({ briefingTokenBudget: 6, consolidationMergeBound: 1 });
+    const cfg = config({ briefingTokenBudget: 6 });
     const plan = await planMemoryConsolidation(db, {
       config: cfg,
       embed: fakeEmbed,
     });
     assert.equal(plan.promotes.length, 1, "hot child is promoted");
     assert.ok(
-      plan.merges.some((m) => m.reason === "budget"),
+      plan.merges.length > 0,
       "the promote's layer growth is compensated by budget-forced merges",
     );
   });

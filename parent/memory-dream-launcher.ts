@@ -96,7 +96,7 @@ export function launchMemoryDreamRun(
       { snapshotDir: runDir },
     );
     // Dream-only mode: an empty manifest is valid when deterministic
-    // consolidation candidates exist (pure SQL/heat gate — no embedder here).
+    // consolidation candidates exist (pure SQL gate — no embedder here).
     const consolidationCandidates =
       manifest.length === 0 &&
       hasMemoryConsolidationCandidates(input.db, { config: input.config });

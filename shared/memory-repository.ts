@@ -1170,7 +1170,6 @@ interface ConsolidationOpAnalysis {
   rejected?: boolean;
   childPrefixedId?: string;
   parentId?: number;
-  reason?: "cold" | "budget";
 }
 
 function consolidationMergeKeyForOps(
@@ -1427,7 +1426,6 @@ function analyzeMemoryConsolidationOps(
         savings: baseline - textTokens,
         memberKeys: members.map((m) => `${m.nodeType}:${m.nodeId}`),
         summaryId: parsed.id,
-        reason: op.reason,
       });
     } else {
       const baseline = members.reduce(
@@ -1446,7 +1444,6 @@ function analyzeMemoryConsolidationOps(
         key: consolidationMergeKeyForOps(null, members),
         savings: baseline - textTokens,
         memberKeys: members.map((m) => `${m.nodeType}:${m.nodeId}`),
-        reason: op.reason,
       });
     }
   }
@@ -1687,12 +1684,12 @@ export function commitMemoryDreamOps(
         if (a.fallbackText) {
           auditEntries.push({
             kind: "consolidation",
-            text: `consolidation fallback merge ${a.key} → ${target}, reason=${a.reason ?? "cold"}, est_before=${auditEstBefore}, budget=${budget}`,
+            text: `consolidation fallback merge ${a.key} → ${target}, est_before=${auditEstBefore}, budget=${budget}`,
           });
         } else {
           auditEntries.push({
             kind: "consolidation",
-            text: `consolidation merge ${a.key} → ${target}, reason=${a.reason ?? "cold"}, est_before=${auditEstBefore}, budget=${budget}`,
+            text: `consolidation merge ${a.key} → ${target}, est_before=${auditEstBefore}, budget=${budget}`,
           });
         }
         continue;

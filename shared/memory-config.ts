@@ -8,13 +8,11 @@ import * as path from "node:path";
 import {
   MEMORY_BRIEFING_TOKEN_BUDGET,
   MEMORY_CHARS_PER_TOKEN_ESTIMATE,
-  MEMORY_COLD_HEAT_THRESHOLD,
   MEMORY_DEFAULT_MIN_MINUTES,
   MEMORY_DEFAULT_MIN_TURNS,
   MEMORY_EMBEDDING_MODEL_ID,
   MEMORY_HEAT_DECAY,
   MEMORY_HOT_HEAT_THRESHOLD,
-  MEMORY_CONSOLIDATION_MERGE_BOUND,
   MEMORY_MAX_SUMMARY_CHARS,
   MEMORY_NOVELTY_BOOST,
   MEMORY_NOVELTY_GENERATIONS,
@@ -56,9 +54,7 @@ export interface MemoryWorkspaceConfig {
   minMinutes: number;
   briefingTokenBudget: number;
   embeddingModel: string;
-  coldHeatThreshold: number;
   hotHeatThreshold: number;
-  consolidationMergeBound: number;
   synthesizerMaxSteps: number;
   synthesizerContextBudget: number;
   synthesizerAnswerBudget: number;
@@ -90,9 +86,7 @@ export function defaultMemoryWorkspaceConfig(): MemoryWorkspaceConfig {
     minMinutes: MEMORY_DEFAULT_MIN_MINUTES,
     briefingTokenBudget: MEMORY_BRIEFING_TOKEN_BUDGET,
     embeddingModel: MEMORY_EMBEDDING_MODEL_ID,
-    coldHeatThreshold: MEMORY_COLD_HEAT_THRESHOLD,
     hotHeatThreshold: MEMORY_HOT_HEAT_THRESHOLD,
-    consolidationMergeBound: MEMORY_CONSOLIDATION_MERGE_BOUND,
     synthesizerMaxSteps: MEMORY_SYNTHESIZER_MAX_STEPS,
     synthesizerContextBudget: MEMORY_SYNTHESIZER_CONTEXT_BUDGET,
     synthesizerAnswerBudget: MEMORY_SYNTHESIZER_ANSWER_BUDGET,
@@ -157,9 +151,7 @@ export function parseMemoryWorkspaceConfig(
     "minMinutes",
     "briefingTokenBudget",
     "embeddingModel",
-    "coldHeatThreshold",
     "hotHeatThreshold",
-    "consolidationMergeBound",
     "synthesizerMaxSteps",
     "synthesizerContextBudget",
     "synthesizerAnswerBudget",
@@ -214,17 +206,9 @@ export function parseMemoryWorkspaceConfig(
       typeof obj.embeddingModel === "string" && obj.embeddingModel.trim()
         ? obj.embeddingModel.trim()
         : defaults.embeddingModel,
-    coldHeatThreshold: positiveNumber(
-      obj.coldHeatThreshold,
-      defaults.coldHeatThreshold,
-    ),
     hotHeatThreshold: positiveNumber(
       obj.hotHeatThreshold,
       defaults.hotHeatThreshold,
-    ),
-    consolidationMergeBound: positiveInt(
-      obj.consolidationMergeBound,
-      defaults.consolidationMergeBound,
     ),
     synthesizerMaxSteps: positiveInt(
       obj.synthesizerMaxSteps,
@@ -257,14 +241,9 @@ export function parseMemoryWorkspaceConfig(
   if (isThinkingLevel(obj.recallThinking)) {
     config.recallThinking = obj.recallThinking;
   }
-  // Cross-key validation: the cold/hot hysteresis gap is load-bearing for
-  // anti-flapping, and the top layer must be able to fit a single root.
-  if (config.coldHeatThreshold >= config.hotHeatThreshold) {
-    return {
-      ok: false,
-      error: `Memory config coldHeatThreshold (${config.coldHeatThreshold}) must be less than hotHeatThreshold (${config.hotHeatThreshold}); the hysteresis gap prevents promote/merge flapping.`,
-    };
-  }
+  // Cross-key validation: the top layer must be able to fit a single root,
+  // and the synthesizer envelope must hold framing + request + the full top
+  // layer + navigation + the answer.
   const singleNodeFloor = Math.ceil(
     MEMORY_MAX_SUMMARY_CHARS / MEMORY_CHARS_PER_TOKEN_ESTIMATE,
   );

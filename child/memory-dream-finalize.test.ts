@@ -14,6 +14,7 @@ import {
 } from "../shared/memory-run-claim.ts";
 import { writeMemoryDreamManifest } from "../shared/memory-session-discovery.ts";
 import { defaultMemoryWorkspaceConfig } from "../shared/memory-config.ts";
+import type { MemoryWorkspaceConfig } from "../shared/memory-config.ts";
 import {
   finalizeMemoryDreamRun,
   findMemoryConsolidationCoverageError,
@@ -22,6 +23,13 @@ import { persistMemoryConsolidationInspect } from "./memory-dream-tools.ts";
 import { incrementMemoryConsolidationAttempt } from "../shared/memory-consolidation.ts";
 
 const TEST_WORKSPACE = "finalize-test-workspace";
+
+// Small budget so the planner still emits merge candidates under budget
+// gating (the default 8000-token budget never plans merges for tiny trees).
+const OVER_BUDGET_CONFIG: MemoryWorkspaceConfig = {
+  ...defaultMemoryWorkspaceConfig(),
+  briefingTokenBudget: 8,
+};
 
 function writeDreamManifest(dir: string): string {
   const snapshotPath = path.join(dir, "session.jsonl");
@@ -157,7 +165,11 @@ test("finalize fails loudly when the last inspect batch has outstanding candidat
       },
     });
     // The dreamer inspected (persisting the batch) but committed nothing.
-    const plan = await planMemoryConsolidationForTest(db, claim.runId);
+    const plan = await planMemoryConsolidationForTest(
+      db,
+      claim.runId,
+      OVER_BUDGET_CONFIG,
+    );
     persistMemoryConsolidationInspect(
       {
         db,
@@ -165,7 +177,7 @@ test("finalize fails loudly when the last inspect batch has outstanding candidat
         workspaceId: TEST_WORKSPACE,
         manifestPath,
         cwd: "/tmp",
-        config: defaultMemoryWorkspaceConfig(),
+        config: OVER_BUDGET_CONFIG,
       },
       plan,
     );
@@ -173,7 +185,7 @@ test("finalize fails loudly when the last inspect batch has outstanding candidat
       db,
       claim.runId,
       TEST_WORKSPACE,
-      defaultMemoryWorkspaceConfig(),
+      OVER_BUDGET_CONFIG,
     );
     assert.match(error ?? "", /outstanding/);
     assert.match(error ?? "", /merge:memory:1\+memory:2/);
@@ -186,7 +198,7 @@ test("finalize fails loudly when the last inspect batch has outstanding candidat
       db,
       claim.runId,
       TEST_WORKSPACE,
-      defaultMemoryWorkspaceConfig(),
+      OVER_BUDGET_CONFIG,
     );
     assert.equal(bound, null);
   } finally {
@@ -229,7 +241,11 @@ test("a supersede that dissolves a merge candidate completes (dissolution)", asy
         ],
       },
     });
-    const plan = await planMemoryConsolidationForTest(db, claim.runId);
+    const plan = await planMemoryConsolidationForTest(
+      db,
+      claim.runId,
+      OVER_BUDGET_CONFIG,
+    );
     persistMemoryConsolidationInspect(
       {
         db,
@@ -237,7 +253,7 @@ test("a supersede that dissolves a merge candidate completes (dissolution)", asy
         workspaceId: TEST_WORKSPACE,
         manifestPath,
         cwd: "/tmp",
-        config: defaultMemoryWorkspaceConfig(),
+        config: OVER_BUDGET_CONFIG,
       },
       plan,
     );
@@ -266,7 +282,7 @@ test("a supersede that dissolves a merge candidate completes (dissolution)", asy
       db,
       claim.runId,
       TEST_WORKSPACE,
-      defaultMemoryWorkspaceConfig(),
+      OVER_BUDGET_CONFIG,
     );
     assert.equal(error, null, "dissolved candidates are not a failure");
   } finally {
@@ -279,12 +295,13 @@ test("a supersede that dissolves a merge candidate completes (dissolution)", asy
 async function planMemoryConsolidationForTest(
   db: ReturnType<typeof openMemoryDatabaseAtPath>,
   runId: string,
+  config: MemoryWorkspaceConfig = defaultMemoryWorkspaceConfig(),
 ): Promise<
   import("../shared/memory-consolidation.ts").PersistedMemoryConsolidationInspect
 > {
   const plan = await import("../shared/memory-consolidation.ts").then((m) =>
     m.planMemoryConsolidation(db, {
-      config: defaultMemoryWorkspaceConfig(),
+      config,
       embed: async (texts: string[]) =>
         Promise.resolve(texts.map(() => new Float32Array(4))),
     }),
@@ -303,7 +320,6 @@ async function planMemoryConsolidationForTest(
     merges: plan.merges.map((m) => ({
       key: m.key,
       kind: m.kind,
-      reason: m.reason,
       similarity: m.similarity,
       members: m.members.map((x) => x.prefixedId),
       baselineTokens: m.baselineTokens,
@@ -353,7 +369,7 @@ test("a run whose only unresolved candidate was rejected for compaction complete
       ...defaultMemoryWorkspaceConfig(),
       briefingTokenBudget: 12,
     };
-    const plan = await planMemoryConsolidationForTest(db, claim.runId);
+    const plan = await planMemoryConsolidationForTest(db, claim.runId, config);
     persistMemoryConsolidationInspect(
       {
         db,
@@ -484,7 +500,11 @@ test("a candidate rejected in a previous run but omitted now still fails loudly"
         ],
       },
     });
-    const plan = await planMemoryConsolidationForTest(db, claim.runId);
+    const plan = await planMemoryConsolidationForTest(
+      db,
+      claim.runId,
+      OVER_BUDGET_CONFIG,
+    );
     persistMemoryConsolidationInspect(
       {
         db,
@@ -492,7 +512,7 @@ test("a candidate rejected in a previous run but omitted now still fails loudly"
         workspaceId: TEST_WORKSPACE,
         manifestPath,
         cwd: "/tmp",
-        config: defaultMemoryWorkspaceConfig(),
+        config: OVER_BUDGET_CONFIG,
       },
       plan,
     );
@@ -503,7 +523,7 @@ test("a candidate rejected in a previous run but omitted now still fails loudly"
       db,
       claim.runId,
       TEST_WORKSPACE,
-      defaultMemoryWorkspaceConfig(),
+      OVER_BUDGET_CONFIG,
     );
     assert.match(error ?? "", /outstanding/);
   } finally {

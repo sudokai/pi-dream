@@ -61,7 +61,7 @@ export function evaluateMemoryDreamCadence(
     input.workspaceId,
   );
   // Dream-only mode: deterministic tree candidates replace the transcript
-  // gate (pure SQL/heat — no embedder load on the interactive settle path).
+  // gate (pure SQL — no embedder load on the interactive settle path).
   const consolidationCandidates = hasMemoryConsolidationCandidates(db, {
     config: input.config,
   });

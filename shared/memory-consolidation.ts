@@ -1,15 +1,15 @@
 /**
- * Deterministic tree consolidation: promote planning + nearest-neighbor merge
- * pairing with an envelope-budgeted override, plus attempt counters and the
+ * Deterministic tree consolidation: promote planning + budget-gated
+ * nearest-neighbor merge pairing, plus attempt counters and the
  * deterministic fallback text used by the commit layer.
  *
- * Merging is triggered by heat, not time: roots with heat <= cold threshold are
- * paired by semantic nearest-neighbor (cosine over stored embeddings) with no
- * similarity floor, so the tree provably coarsens. Fresh summaries are
- * merge-ineligible during a grace window. If the top layer still exceeds the
- * briefing token budget, the pass extends the candidate set with the coldest
- * remaining roots regardless of warmth (the budget override), which is not
- * subject to consolidationMergeBound.
+ * Merging is triggered by budget pressure, not heat: when the projected top
+ * layer exceeds the briefing token budget, roots are paired by semantic
+ * nearest-neighbor (cosine over stored embeddings, coldest first) with no
+ * similarity floor, until the projection fits or no pairable roots remain.
+ * Under budget there are never merge candidates, so cold roots stay visible
+ * until the layer genuinely needs compaction. Fresh summaries are
+ * merge-ineligible during a grace window.
  *
  * The embedder is loaded only here (and by new-node embedding during dreaming)
  * — never by the parent-side briefing/search path.
@@ -177,11 +177,10 @@ export interface MemoryMergeMember {
   estimatedTokens: number;
 }
 
-/** A planned merge: two cold roots into a new summary (create) or into an existing summary (extend). */
+/** A planned merge: two roots into a new summary (create) or into an existing summary (extend). */
 export interface MemoryMergeCandidate {
   key: string;
   kind: "create" | "extend";
-  reason: "cold" | "budget";
   similarity: number;
   /** create: both pair members; extend: the incoming roots only. */
   members: MemoryMergeMember[];
@@ -634,10 +633,11 @@ function greedyPairMemoryRoots(
   return pairs;
 }
 
-function buildMemoryMergeCandidate(
-  pair: { a: PairPoolMember; b: PairPoolMember; similarity: number },
-  reason: "cold" | "budget",
-): MemoryMergeCandidate {
+function buildMemoryMergeCandidate(pair: {
+  a: PairPoolMember;
+  b: PairPoolMember;
+  similarity: number;
+}): MemoryMergeCandidate {
   const { a, b } = pair;
   const aIsSummary = a.isSummary;
   const bIsSummary = b.isSummary;
@@ -649,7 +649,6 @@ function buildMemoryMergeCandidate(
     return {
       key: memoryConsolidationMergeKey(a, b),
       kind: "extend",
-      reason,
       similarity: pair.similarity,
       members: [incoming],
       summaryId: extendTarget.nodeId,
@@ -663,7 +662,6 @@ function buildMemoryMergeCandidate(
   return {
     key: memoryConsolidationMergeKey(a, b),
     kind: "create",
-    reason,
     similarity: pair.similarity,
     members: [a, b],
     baselineTokens,
@@ -742,46 +740,26 @@ export async function planMemoryConsolidation(
     generation >=
       m.creationGeneration + MEMORY_CONSOLIDATION_SUMMARY_GRACE_GENERATIONS;
 
-  const coldPool = sim.roots
-    .filter((r) => !promotedParentIds.has(r.nodeId) || r.nodeType !== "summary")
-    .map(toPool)
-    .filter((m) => pastGrace(m) && m.heat <= config.coldHeatThreshold);
-
-  const coldPairs = greedyPairMemoryRoots(db, coldPool, vectors).slice(
-    0,
-    config.consolidationMergeBound,
-  );
-
   const merges: MemoryMergeCandidate[] = [];
   let projected = sim.tokens;
-  for (const pair of coldPairs) {
-    const candidate = buildMemoryMergeCandidate(pair, "cold");
-    merges.push(candidate);
-    // Worst-case projection: the model writes at the output cap.
-    projected -= 1;
-  }
 
-  // Budget override: not subject to consolidationMergeBound; respects grace and
-  // the attempt bound; targets the cap with monotonic measured compaction.
+  // Merges fire only under budget pressure: when the projected top layer
+  // exceeds briefingTokenBudget, pair the coldest eligible roots first
+  // (greedy nearest-neighbor, no similarity floor, summary grace and attempt
+  // bounds respected) and keep pairing until the projection fits or no
+  // pairable roots remain. Under budget there are never merge candidates.
   if (projected > config.briefingTokenBudget) {
-    const used = new Set<string>();
-    for (const pair of coldPairs) {
-      used.add(nodeKey(pair.a.nodeType, pair.a.nodeId));
-      used.add(nodeKey(pair.b.nodeType, pair.b.nodeId));
-    }
-    const remaining = sim.roots
+    const pool = sim.roots
       .filter(
-        (r) =>
-          !used.has(nodeKey(r.nodeType, r.nodeId)) &&
-          !(promotedParentIds.has(r.nodeId) && r.nodeType === "summary"),
+        (r) => !(promotedParentIds.has(r.nodeId) && r.nodeType === "summary"),
       )
       .map(toPool)
       .filter((m) => pastGrace(m));
-    const budgetPairs = greedyPairMemoryRoots(db, remaining, vectors);
-    for (const pair of budgetPairs) {
+    for (const pair of greedyPairMemoryRoots(db, pool, vectors)) {
       if (projected <= config.briefingTokenBudget) break;
-      const candidate = buildMemoryMergeCandidate(pair, "budget");
+      const candidate = buildMemoryMergeCandidate(pair);
       merges.push(candidate);
+      // Worst-case projection: the model writes at the output cap.
       projected -= 1;
     }
   }
@@ -799,11 +777,11 @@ export async function planMemoryConsolidation(
 }
 
 /**
- * Pure SQL/heat predicate (no embedder): any promote-eligible child, or >= 2
- * merge-eligible roots past grace, or the top-layer token estimate exceeding
- * briefingTokenBudget with >= 2 non-conflicted roots past grace (irrespective
- * of heat). All clauses exclude pairs at/past the attempt bound, so a budget
- * below a single node's estimate never spawns doomed runs.
+ * Pure SQL predicate (no embedder): any promote-eligible child, or the
+ * top-layer token estimate exceeding briefingTokenBudget with >= 2
+ * non-conflicted roots past grace (irrespective of heat). All clauses exclude
+ * pairs at/past the attempt bound, so a budget below a single node's estimate
+ * never spawns doomed runs.
  */
 export function hasMemoryConsolidationCandidates(
   db: DatabaseSync,
@@ -867,11 +845,6 @@ export function hasMemoryConsolidationCandidates(
     return false;
   };
 
-  const coldEligible = roots.filter(
-    (r) => pastGrace(r) && r.heat <= config.coldHeatThreshold,
-  );
-  if (coldEligible.length >= 2 && pairPossible(coldEligible)) return true;
-
   const layerTokens = roots.reduce((sum, r) => sum + r.estimatedTokens, 0);
   if (layerTokens > config.briefingTokenBudget) {
     const graced = roots.filter((r) => pastGrace(r));
@@ -913,7 +886,6 @@ export interface PersistedMemoryConsolidationInspect {
   merges: Array<{
     key: string;
     kind: "create" | "extend";
-    reason: "cold" | "budget";
     similarity: number;
     members: string[];
     baselineTokens: number;

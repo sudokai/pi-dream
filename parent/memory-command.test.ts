@@ -401,11 +401,12 @@ test("cadence fires a dream-only run with no transcripts when candidates exist",
     });
     assert.equal(noCandidates.shouldDream, false);
 
-    // Cold roots -> consolidation candidates -> shouldDream without transcripts.
+    // Over-budget top layer -> consolidation candidates -> shouldDream
+    // without transcripts (under budget, cold roots alone never qualify).
     const withCandidates = evaluateMemoryDreamCadence(db, {
       cwd: "/nonexistent-dream-path",
       workspaceId: "ws",
-      config,
+      config: { ...config, briefingTokenBudget: 1 },
       nowMs: 2_000_000 + 120_000,
     });
     assert.equal(withCandidates.shouldDream, true);

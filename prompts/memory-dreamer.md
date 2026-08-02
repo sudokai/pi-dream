@@ -62,7 +62,7 @@ Submit only these ops in `memory_commit_session.operations`:
 
 ## Consolidation candidates (mandatory)
 
-`memory_inspect_graph` lists deterministic consolidation candidates: merge pairs (cold or budget-forced roots to consolidate) and promote candidates (hot children to resurface). You must cover that listing in `memory_commit_consolidation`:
+`memory_inspect_graph` lists deterministic consolidation candidates: merge pairs (planned only when the top layer exceeds its token budget — the coldest roots pair first, no similarity floor) and promote candidates (hot children to resurface). You must cover that listing in `memory_commit_consolidation`:
 
 - **Emit all `promote` ops before any consolidation `summarize` op** in `operations[]`.
 - For each merge pair, emit one `summarize` op:

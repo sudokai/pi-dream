@@ -13,5 +13,5 @@ pi-dream's vocabulary originally described the detached background run as a "lea
 **Consequences**:
 
 - Do not rename "consolidation" back to "maintenance", or collapse Dream/Dreamer — the split is load-bearing: a dream is the unit of work (tracked as a run in `dream_runs`), the dreamer is the process that executes it.
-- Config keys renamed (`dreamModel`, `dreamThinking`, `consolidationMergeBound`); config parsing is fail-closed, so pre-rename `config.json` files disable memory until their keys are repaired.
+- Config keys renamed (`dreamModel`, `dreamThinking`, `consolidationMergeBound`); config parsing is fail-closed, so pre-rename `config.json` files disable memory until their keys are repaired. `consolidationMergeBound` and `coldHeatThreshold` were later removed when merging became budget-gated — they now fail closed as unknown keys like any other.
 - The only remaining "learning" in the package is the `continual-learning` keyword, kept for package discoverability.

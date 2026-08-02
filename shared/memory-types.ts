@@ -52,14 +52,8 @@ export const MEMORY_BRIEFING_TOKEN_BUDGET = 8000;
 /** Rough chars-per-token estimate used for budget packing. */
 export const MEMORY_CHARS_PER_TOKEN_ESTIMATE = 4;
 
-/** Heat at or below which a root is merge-eligible (cold). */
-export const MEMORY_COLD_HEAT_THRESHOLD = 0.4;
-
 /** Heat at or above which a child is promote-eligible (hot). */
 export const MEMORY_HOT_HEAT_THRESHOLD = 1.5;
-
-/** Maximum cold-eligible merge pairs per consolidation pass. */
-export const MEMORY_CONSOLIDATION_MERGE_BOUND = 3;
 
 /** Hard ceiling on synthesizer navigation steps per answer. */
 export const MEMORY_SYNTHESIZER_MAX_STEPS = 8;
@@ -273,8 +267,6 @@ export type MemoryDreamerSummaryOperation =
       text: string;
       /** Prefixed M:/S: ids or in-commit temp refs from create/summarize. */
       memberIds: string[];
-      /** Why the consolidation pass planned this merge (audit only). */
-      reason?: "cold" | "budget";
     }
   | {
       op: "summarize";
@@ -285,8 +277,6 @@ export type MemoryDreamerSummaryOperation =
       text: string;
       /** Prefixed M:/S: ids or in-commit temp refs from create/summarize. */
       memberIds: string[];
-      /** Why the consolidation pass planned this merge (audit only). */
-      reason?: "cold" | "budget";
     };
 
 export type MemoryDreamerOperation =

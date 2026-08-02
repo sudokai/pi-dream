@@ -133,8 +133,8 @@ All variables are optional; defaults exist without them.
 
 ## Agent tools
 
-- **`memory_search({ query })`** — synthesizer answer grounded in the memory tree; sources/opened summaries in details
-- **`memory_open({ id, cursor? })`** — progressive drill-down (`M:` / `S:` / `O:`)
+- **`memory_search({ query })`** — self-contained synthesizer answer (it opens summaries internally); sources in details
+- **`memory_open({ id, cursor? })`** — progressive drill-down (`M:` / `S:` / `O:`); open returned children to descend, cursor pages children
 
 ## Dreams
 

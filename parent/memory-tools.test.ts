@@ -132,7 +132,11 @@ test("memory_search returns the synthesized answer and records search/open event
     const result = await search!.execute("1", { query: "commit style?" });
     assert.equal(result.content[0]!.text, "No emoji, pnpm.");
     assert.deepEqual(result.details?.sources, ["M:1"]);
-    assert.deepEqual(result.details?.openedSummaryIds, ["S:1"]);
+    assert.equal(
+      result.details?.openedSummaryIds,
+      undefined,
+      "navigation internals stay out of the tool result",
+    );
     // M:1 selected (search event); S:1 opened only (open event); dedup: M:1
     // got one event, S:1 got one event.
     const events = db

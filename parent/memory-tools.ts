@@ -93,7 +93,8 @@ export function registerMemoryAgentTools(
     promptSnippet: "Search durable workspace memory with memory_search",
     promptGuidelines: [
       "Use memory_search when you need preferences or workspace facts beyond the opening briefing.",
-      "Use memory_open to drill into a specific M:/S:/O: id from the briefing or a search answer.",
+      "The answer is self-contained: the synthesizer reads the top layer and opens summaries internally as needed, so one call already carries the detail beneath it.",
+      "Use memory_open only when you need the raw text of a specific id — to quote exact wording or inspect the observations behind a claim.",
     ],
     parameters: Type.Object({
       query: Type.String({ description: "Natural-language search query" }),
@@ -109,9 +110,6 @@ export function registerMemoryAgentTools(
           ],
           details: {
             sources: [] as string[],
-            openedSummaryIds: [] as string[],
-            steps: 0,
-            usage: undefined as unknown,
           },
         };
       }
@@ -125,9 +123,6 @@ export function registerMemoryAgentTools(
           ],
           details: {
             sources: [] as string[],
-            openedSummaryIds: [] as string[],
-            steps: 0,
-            usage: undefined as unknown,
           },
         };
       }
@@ -198,11 +193,11 @@ export function registerMemoryAgentTools(
 
       return {
         content: [{ type: "text" as const, text: result.answer }],
+        // Agent-facing provenance only: sources name the nodes the answer
+        // relies on. Navigation internals (opened summaries, steps, usage)
+        // are harness bookkeeping and stay out of the tool result.
         details: {
           sources: result.sources as string[],
-          openedSummaryIds: result.openedSummaryIds as string[],
-          steps: result.steps,
-          usage: result.usage as unknown,
         },
       };
     },
@@ -215,7 +210,10 @@ export function registerMemoryAgentTools(
       "Open a memory/summary/observation by id (M:/S:/O:). Returns the complete target plus one deeper level and lateral link ids.",
     promptSnippet: "Open a memory node with memory_open",
     promptGuidelines: [
-      "Use memory_open with an id from the briefing or memory_search to see supporting observations or summary members.",
+      "Use memory_open with an id from the briefing or a search answer to see supporting observations or summary members.",
+      "Descend for more detail: the result lists children under `## Children` — open a summary or memory from there to reveal the level below, and repeat until the task has enough detail.",
+      "A summary condenses its children: opening one shows the raw memories its text compresses. Observations are leaves — they hold no children.",
+      "When a result holds more children than it displays, it prints a cursor — call again with cursor=<cursor> to continue.",
     ],
     parameters: Type.Object({
       id: Type.String({
@@ -243,9 +241,10 @@ export function registerMemoryAgentTools(
       }
       return {
         content: [{ type: "text" as const, text: formatOpenResult(result) }],
+        // The content carries the node, its children, and the paging hint;
+        // the structured cursor is the only detail the agent needs to
+        // continue a drill-down.
         details: {
-          id: result.target.prefixedId,
-          childCount: result.children.length,
           continuationCursor: result.continuationCursor,
         },
       };

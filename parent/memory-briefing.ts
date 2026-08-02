@@ -225,11 +225,11 @@ export async function buildMemorySessionBriefing(
       content,
       display: true,
       details: {
+        // Agent-facing provenance only: sources name the nodes the briefing
+        // answer relies on (drill-down targets). Navigation internals stay
+        // out of the visible message.
         status: "ok",
         sources: result.sources,
-        openedSummaryIds: result.openedSummaryIds,
-        steps: result.steps,
-        usage: result.usage,
       },
     },
     audit: null,

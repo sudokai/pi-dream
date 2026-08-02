@@ -1,7 +1,9 @@
 /**
  * Heat scoring for memory/summary nodes.
  * Temporary novelty boost plus exponentially decayed recall-event weights
- * measured in workspace activity generations.
+ * measured in workspace activity generations. A node's recalls within one
+ * generation count once: repeated events for the same node in the same
+ * generation do not stack.
  */
 
 import type { DatabaseSync } from "node:sqlite";
@@ -23,7 +25,7 @@ export interface MemoryHeatOptions {
 export interface MemoryHeatInput {
   currentGeneration: number;
   noveltyUntilGeneration: number | null;
-  /** Activity generations at which this node was recalled/opened. */
+  /** Activity generations at which this node was recalled/opened (deduplicated). */
   recallGenerations: number[];
 }
 
@@ -64,6 +66,8 @@ export function computeMemoryNodeHeat(
 
 /**
  * Load recall generations for a node from SQLite.
+ * One generation counts once: repeated recalls of the same node within a
+ * single activity generation reheat once, not once per event.
  */
 export function listMemoryRecallGenerations(
   db: DatabaseSync,
@@ -74,7 +78,8 @@ export function listMemoryRecallGenerations(
     .prepare(
       `SELECT activity_generation FROM recall_events
        WHERE node_type = ? AND node_id = ?
-       ORDER BY id ASC`,
+       GROUP BY activity_generation
+       ORDER BY MIN(id) ASC`,
     )
     .all(nodeType, nodeId) as Array<{ activity_generation: number }>;
   return rows.map((r) => Number(r.activity_generation));

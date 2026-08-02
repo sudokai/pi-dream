@@ -32,9 +32,9 @@ Workspace-scoped **adaptive memory** for pi. Dream extracts durable user prefere
 
 **Recurrence**: The count of distinct source-session observations linked to a memory (`COUNT(DISTINCT source_session_id)` through `memory_observations`). Never a separately mutated counter.
 
-**Recall event**: A record that a node was selected as a source in a synthesized answer or explicitly opened via `memory_open`. Heat is derived from these events plus temporary novelty; deterministic display of the top layer, the briefing index, and `memory_search` hit-listing never heat anything.
+**Recall event**: A record that a node was selected as a source in a synthesized answer or explicitly opened via `memory_open`. Heat is derived from these events plus temporary novelty; deterministic display of the top layer, the briefing index, and `memory_search` hit-listing never heat anything. Repeated events for the same node within the same activity generation count once toward heat.
 
-**Heat**: Reversible presentation score. Temporary novelty boost for newly activated memories plus exponentially decayed recall-event weights measured in workspace activity generations. Memories and summaries each carry their own heat (summaries: their own recall events only — no novelty, no derivation from children). Hot and cold are not permanent lifecycle states.
+**Heat**: Reversible presentation score. Temporary novelty boost for newly activated memories plus exponentially decayed recall-event weights measured in workspace activity generations. Recalls of the same node within one generation count once — heat tracks distinct use, not call volume. Memories and summaries each carry their own heat (summaries: their own recall events only — no novelty, no derivation from children). Hot and cold are not permanent lifecycle states.
 
 **Novelty**: Temporary heat given to a newly activated memory so it has a chance to surface. Passive presence does not renew novelty. Memories mined from sessions older than the source-age cutoff enter cold.
 

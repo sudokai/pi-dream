@@ -95,7 +95,7 @@ All fields are optional except `version` and `enabled`; missing optional fields 
 | `synthesizerAnswerBudget`  | 2000                      | Answer token cap inside the envelope.                                                                                                         |
 | `noveltyBoost`             | 1.0                       | Temporary heat added to a newly activated memory.                                                                                             |
 | `noveltyGenerations`       | 3                         | Activity generations novelty lasts.                                                                                                           |
-| `heatDecay`                | 0.85                      | Per-generation exponential decay factor for recall heat.                                                                                      |
+| `heatDecay`                | 0.85                      | Per-generation exponential decay factor for recall heat; repeated recalls of a node within one generation count once.                         |
 
 **Removed keys**: `hybridPoolSize`, `rrfK`, and `semanticFloor` no longer exist. A `config.json` containing them (or any other unknown key) fails closed — memory is disabled for the workspace until the file is repaired.
 

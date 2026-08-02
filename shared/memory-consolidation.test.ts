@@ -23,7 +23,8 @@ import {
   incrementMemoryActivityGeneration,
   recordMemoryRecallEvent,
 } from "./memory-graph.ts";
-import { estimateMemoryTextTokens } from "./memory-types.ts";
+import { computeMemoryRowHeat } from "./memory-heat.ts";
+import { estimateMemoryTextTokens, MEMORY_HEAT_DECAY } from "./memory-types.ts";
 import { defaultMemoryWorkspaceConfig } from "./memory-config.ts";
 
 const VOCAB = [
@@ -117,11 +118,63 @@ function makeHot(
   nodeType: "memory" | "summary",
   nodeId: number,
 ): void {
+  // One recall per generation at the two most recent generations:
+  // 1.0 + 0.85 = 1.85, above the 1.5 hot threshold. Same-generation repeats
+  // would count once — heat tracks distinct use, not call volume.
   const gen = getMemoryActivityGeneration(db);
-  recordMemoryRecallEvent(db, { nodeType, nodeId, source: "open" });
-  recordMemoryRecallEvent(db, { nodeType, nodeId, source: "open" });
-  void gen;
+  recordMemoryRecallEvent(db, {
+    nodeType,
+    nodeId,
+    source: "open",
+    activityGeneration: gen - 1,
+  });
+  recordMemoryRecallEvent(db, {
+    nodeType,
+    nodeId,
+    source: "open",
+    activityGeneration: gen,
+  });
 }
+
+test("repeated recalls within one activity generation heat once", async () => {
+  await withClaimedDb(async (db, runId) => {
+    const m1 = createMemory(db, runId, "s1", "Use tabs for indentation");
+    const id = Number(m1.slice(2));
+    // Three recalls in the same generation: one event's worth of heat.
+    recordMemoryRecallEvent(db, {
+      nodeType: "memory",
+      nodeId: id,
+      source: "open",
+    });
+    recordMemoryRecallEvent(db, {
+      nodeType: "memory",
+      nodeId: id,
+      source: "open",
+    });
+    recordMemoryRecallEvent(db, {
+      nodeType: "memory",
+      nodeId: id,
+      source: "open",
+    });
+    assert.equal(
+      computeMemoryRowHeat(db, id, getMemoryActivityGeneration(db), null),
+      1,
+      "same-generation repeats count once",
+    );
+    // A recall in the next generation adds a decayed event: 1 + 0.85.
+    incrementMemoryActivityGeneration(db);
+    recordMemoryRecallEvent(db, {
+      nodeType: "memory",
+      nodeId: id,
+      source: "open",
+    });
+    assert.equal(
+      computeMemoryRowHeat(db, id, getMemoryActivityGeneration(db), null),
+      1 + MEMORY_HEAT_DECAY,
+      "recalls across generations each count",
+    );
+  });
+});
 
 function config(
   overrides: Partial<ReturnType<typeof defaultMemoryWorkspaceConfig>> = {},
@@ -359,20 +412,26 @@ test("promote candidates require hot children; at most one per parent; no ancest
         ],
       },
     });
+    // Three opens at the three most recent generations keep S:2 hot:
+    // 0.85^2 + 0.85 + 1 = 2.57, comfortably above its descendant M:4 (1.85).
+    const gen = getMemoryActivityGeneration(db);
     recordMemoryRecallEvent(db, {
       nodeType: "summary",
       nodeId: 2,
       source: "open",
+      activityGeneration: gen - 2,
     });
     recordMemoryRecallEvent(db, {
       nodeType: "summary",
       nodeId: 2,
       source: "open",
+      activityGeneration: gen - 1,
     });
     recordMemoryRecallEvent(db, {
       nodeType: "summary",
       nodeId: 2,
       source: "open",
+      activityGeneration: gen,
     });
     makeHot(db, "memory", 4);
     plan = await planMemoryConsolidation(db, {

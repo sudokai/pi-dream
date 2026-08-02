@@ -72,10 +72,6 @@ export function persistMemoryConsolidationInspect(
   }
 }
 
-function inputBudget(ctx: MemoryDreamerChildContext): number {
-  return ctx.config.briefingTokenBudget;
-}
-
 /**
  * Merge this run's compaction-rejected candidate keys into the persisted last
  * inspect-time batch so finalize can distinguish "rejected for compaction in
@@ -219,8 +215,8 @@ export function registerMemoryDreamTools(
         "",
         "# Consolidation candidates",
         plan.overBudget
-          ? `Top layer is OVER BUDGET: ${plan.layerTokensAfterProjected}/${plan.budget} estimated tokens. All merges below are mandatory.`
-          : `Top layer: ${plan.layerTokensAfterProjected}/${plan.budget} estimated tokens (projected).`,
+          ? `Top layer is OVER BUDGET: ${plan.layerTokensBefore}/${plan.budget} estimated tokens. All merges below are mandatory.`
+          : `Top layer: ${plan.layerTokensBefore}/${plan.budget} estimated tokens.`,
         "",
         "## Merges (emit a summarize op per pair, after all promote ops)",
       ];
@@ -258,8 +254,6 @@ export function registerMemoryDreamTools(
 
       persistMemoryConsolidationInspect(ctx, {
         runId: ctx.runId,
-        plannedAt: new Date().toISOString(),
-        generation: plan.generation,
         rejectedKeys: [],
         promotes: plan.promotes.map((p) => ({
           key: p.key,
@@ -277,9 +271,6 @@ export function registerMemoryDreamTools(
           outputCapTokens: m.outputCapTokens,
           summaryId: m.summaryId,
         })),
-        layerTokens: plan.layerTokensAfterProjected,
-        overBudget: plan.overBudget,
-        budget: plan.budget,
       });
 
       return {
@@ -290,7 +281,7 @@ export function registerMemoryDreamTools(
             promotes: plan.promotes.map((p) => p.key),
             merges: plan.merges.map((m) => m.key),
             overBudget: plan.overBudget,
-            layerTokens: plan.layerTokensAfterProjected,
+            layerTokens: plan.layerTokensBefore,
             budget: plan.budget,
           },
         },
@@ -342,7 +333,7 @@ export function registerMemoryDreamTools(
           .join(", ")}.`;
       }
       if (result.layerOverBudget) {
-        text += ` Top layer still over budget (${result.layerTokensAfter}/${inputBudget(ctx)} tokens); more merges are needed.`;
+        text += ` Top layer still over budget (${result.layerTokensAfter}/${ctx.config.briefingTokenBudget} tokens); more merges are needed.`;
       }
       return {
         content: [{ type: "text" as const, text }],

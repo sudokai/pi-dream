@@ -1544,7 +1544,7 @@ export function commitMemoryDreamOps(
     // replaces (savings <= floor(baseline / 2), i.e. the text is at least half
     // the size of the roots it removes). Rejection is a quality gate,
     // never a fitting mechanism (rejecting restores roots, so the layer stays
-    // over budget and the next run's budget override extends the candidates);
+    // over budget and the next run's budget-gated pass re-plans the candidates);
     // it never vetoes the rest of the batch. Promotes are deliberate layer
     // growth and are never rejected for budget.
     const dropped = new Set<number>();

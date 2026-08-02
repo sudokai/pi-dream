@@ -308,8 +308,6 @@ async function planMemoryConsolidationForTest(
   );
   return {
     runId,
-    plannedAt: new Date().toISOString(),
-    generation: plan.generation,
     promotes: plan.promotes.map((p) => ({
       key: p.key,
       child: p.childPrefixedId,
@@ -326,9 +324,6 @@ async function planMemoryConsolidationForTest(
       outputCapTokens: m.outputCapTokens,
       summaryId: m.summaryId,
     })),
-    layerTokens: plan.layerTokensAfterProjected,
-    overBudget: plan.overBudget,
-    budget: plan.budget,
   };
 }
 

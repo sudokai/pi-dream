@@ -200,8 +200,6 @@ export interface MemoryConsolidationPlan {
   promotes: MemoryPromoteCandidate[];
   merges: MemoryMergeCandidate[];
   layerTokensBefore: number;
-  /** Projected layer tokens after the batch using worst-case (cap) texts. */
-  layerTokensAfterProjected: number;
   overBudget: boolean;
   budget: number;
   generation: number;
@@ -671,9 +669,9 @@ function buildMemoryMergeCandidate(pair: {
 
 /**
  * Deterministic consolidation planning against the current DB state.
- * Promotes first (they change the root set), then merges with an
- * envelope-budgeted override. Loads the embedder for pairing — call only in
- * the child (never on the interactive parent path).
+ * Promotes first (they change the root set), then budget-gated merges.
+ * Loads the embedder for pairing — call only in the child (never on the
+ * interactive parent path).
  */
 export async function planMemoryConsolidation(
   db: DatabaseSync,
@@ -769,7 +767,6 @@ export async function planMemoryConsolidation(
     promotes,
     merges,
     layerTokensBefore: sim.tokens,
-    layerTokensAfterProjected: projected,
     overBudget,
     budget: config.briefingTokenBudget,
     generation,
@@ -871,11 +868,15 @@ export function describeMemoryOverBudgetRecovery(
   return "consolidation has not yet compacted it";
 }
 
-/** Persisted last inspect-time consolidation batch (child writes, status reads). */
+/**
+ * Persisted last inspect-time consolidation batch (child writes, status reads).
+ * Carries only what readers consume: the candidate lists finalize holds the
+ * dreamer to, and the in-run compaction rejections that make partial progress
+ * a pass state. Layer size and budget are re-measured by readers, never read
+ * from this file.
+ */
 export interface PersistedMemoryConsolidationInspect {
   runId: string;
-  plannedAt: string;
-  generation: number;
   promotes: Array<{
     key: string;
     child: string;
@@ -898,9 +899,6 @@ export interface PersistedMemoryConsolidationInspect {
    * treats "rejected in this run" as covered — partial progress is not a failure.
    */
   rejectedKeys?: string[];
-  layerTokens: number;
-  overBudget: boolean;
-  budget: number;
 }
 
 /** Read the persisted last inspect-time batch; null when absent/unreadable. */

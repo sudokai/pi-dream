@@ -258,7 +258,7 @@ test("under budget no roots merge; over budget the coldest roots pair regardless
   });
 });
 
-test("over-budget pairing is not capped by a merge bound", async () => {
+test("an over-budget layer plans every pairable pair", async () => {
   await withClaimedDb(async (db, runId) => {
     for (let i = 1; i <= 6; i++) {
       createMemory(db, runId, `s${i}`, `Fact number ${i} about pnpm builds`);
@@ -823,8 +823,8 @@ test("promote tips the layer over budget and the pass compensates with budget me
         ],
       },
     });
-    // Advance past the summary grace window so S:1 can participate in the
-    // budget override; then re-heat the child at the current generation.
+    // Advance past the summary grace window so S:1 can participate in
+    // budget-gated merging; then re-heat the child at the current generation.
     incrementMemoryActivityGeneration(db);
     incrementMemoryActivityGeneration(db);
     incrementMemoryActivityGeneration(db);

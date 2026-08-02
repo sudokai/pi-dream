@@ -30,6 +30,15 @@ import { consumeMemoryRunNotification } from "./memory-session-lifecycle.ts";
 
 test("parseMemoryCommandArgs", () => {
   assert.deepEqual(parseMemoryCommandArgs(""), { action: "status" });
+  assert.deepEqual(parseMemoryCommandArgs("status --verbose"), {
+    action: "status",
+    verbose: true,
+  });
+  assert.deepEqual(parseMemoryCommandArgs("show --verbose"), {
+    action: "status",
+    verbose: true,
+  });
+  assert.equal(parseMemoryCommandArgs("status --bogus").action, "error");
   assert.deepEqual(parseMemoryCommandArgs("list foo"), {
     action: "list",
     query: "foo",
@@ -270,7 +279,7 @@ test("consume rolls back reported flag when cadence reset throws", () => {
   }
 });
 
-test("buildMemoryStatusText shows the tree section, attempts, and OVER BUDGET flag", () => {
+test("buildMemoryStatusText shows essentials; verbose adds internals", () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     const claim = acquireMemoryRunClaim(db, "auto");
@@ -310,11 +319,25 @@ test("buildMemoryStatusText shows the tree section, attempts, and OVER BUDGET fl
       db,
       config: cfg,
     });
-    assert.match(text, /tree roots:\s+2/);
-    assert.match(text, /OVER BUDGET: \d+\/1 tokens/);
-    assert.match(text, /pending attempts: merge:memory:1\+memory:2 \(1\/3\)/);
-    assert.match(text, /embedder:\s+consolidation \+ dreaming only/);
+    assert.match(text, /OVER BUDGET: \d+\/1 tokens, 2 roots/);
     assert.match(text, /last dream:\s+none/);
+    assert.doesNotMatch(text, /pending attempts/);
+    assert.doesNotMatch(text, /workspace id/);
+    assert.doesNotMatch(text, /unreported dreams/);
+    const verbose = buildMemoryStatusText({
+      workspaceId: "ws-test",
+      db,
+      config: cfg,
+      verbose: true,
+    });
+    assert.match(verbose, /workspace id:\s+ws-test/);
+    assert.match(verbose, /database:\s+\S+memory\.db/);
+    assert.match(verbose, /activity gen:\s+0/);
+    assert.match(verbose, /unreported dreams: 0/);
+    assert.match(
+      verbose,
+      /pending attempts: merge:memory:1\+memory:2 \(1\/3\)/,
+    );
   } finally {
     closeMemoryDatabase(db);
   }

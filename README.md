@@ -118,9 +118,10 @@ All variables are optional; defaults exist without them.
 ## Commands
 
 ```text
-/memory              # status: workspace id, db path, counts, cadence, tree section (roots,
-                     #   top-layer token estimate with OVER BUDGET flag, last dream
-                     #   (merges/promotes), pending attempt counters)
+/memory              # status: enabled, config path, models, cadence, counts, top-layer
+                     #   token estimate (with OVER BUDGET flag), last dream, active dream;
+                     #   status --verbose adds workspace id, db path, activity gen,
+                     #   unreported dreams, and pending attempt counters
 /memory list [q]     # the tree rendered indented (roots + children under summaries);
                      #   fallback-labeled summaries render as "S:n (fallback)"; non-active
                      #   nodes stay visible flat; deterministic audit list (no recall events)
@@ -177,4 +178,4 @@ Domain vocabulary: see [CONTEXT.md](./CONTEXT.md). For agent workflows: see [AGE
 
 ## Embeddings
 
-Local MiniLM via `@xenova/transformers` (`Xenova/all-MiniLM-L6-v2`). First use may download the model. The embedder is loaded only by the consolidation pass (merge pairing) and by new-node embedding during dreaming — never by the briefing or `memory_search` read path, so `/memory status` describes it as consolidation-only. If embeddings are unavailable, pairing degrades (missing similarities score 0, still pairable — there is no similarity floor) and consolidation never aborts a dream.
+Local MiniLM via `@xenova/transformers` (`Xenova/all-MiniLM-L6-v2`). First use may download the model. The embedder is loaded only by the consolidation pass (merge pairing) and by new-node embedding during dreaming — never by the briefing or `memory_search` read path. If embeddings are unavailable, pairing degrades (missing similarities score 0, still pairable — there is no similarity floor) and consolidation never aborts a dream.

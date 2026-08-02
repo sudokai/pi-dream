@@ -48,7 +48,7 @@ import { launchMemoryDreamRun } from "./memory-dream-launcher.ts";
 import type { MemoryModelRegistryLike } from "../shared/memory-model.ts";
 
 export const MEMORY_COMMAND_USAGE =
-  "Usage: /memory [status|list [query]|open <id> [cursor=<n>]|dream|pause|resume|forget <id>]";
+  "Usage: /memory [status [--verbose]|list [query]|open <id> [cursor=<n>]|dream|pause|resume|forget <id>]";
 
 export const MEMORY_COMMAND_ARG_CHOICES = [
   "status",
@@ -61,7 +61,7 @@ export const MEMORY_COMMAND_ARG_CHOICES = [
 ] as const;
 
 export type MemoryCommandAction =
-  | { action: "status" }
+  | { action: "status"; verbose?: boolean }
   | { action: "list"; query: string }
   | { action: "open"; id: string; cursor?: string }
   | { action: "dream" }
@@ -76,7 +76,17 @@ export function parseMemoryCommandArgs(args: string): MemoryCommandAction {
   if (!trimmed) return { action: "status" };
   const parts = trimmed.split(/\s+/);
   const head = parts[0]!.toLowerCase();
-  if (head === "status" || head === "show") return { action: "status" };
+  if (head === "status" || head === "show") {
+    const rest = parts.slice(1);
+    if (rest.length === 0) return { action: "status" };
+    if (rest.length === 1 && rest[0] === "--verbose") {
+      return { action: "status", verbose: true };
+    }
+    return {
+      action: "error",
+      message: `Unknown status argument: ${rest.join(" ")}. ${MEMORY_COMMAND_USAGE}`,
+    };
+  }
   if (head === "list") {
     return { action: "list", query: parts.slice(1).join(" ") };
   }
@@ -148,15 +158,14 @@ function formatStatus(input: {
   config: MemoryWorkspaceConfig;
   sessionModelId?: string;
   db: DatabaseSync;
+  verbose?: boolean;
 }): string {
   const counts = countMemoryNodesByState(input.db);
   const state = getMemoryWorkspaceState(input.db);
   const activeRun = activeMemoryRunId(input.db);
-  const lastRuns = listUnreportedMemoryRuns(input.db);
   const roots = listMemoryTreeRoots(input.db);
   const layerTokens = estimateTopLayerTokens(input.db, roots);
   const overBudget = layerTokens > input.config.briefingTokenBudget;
-  const attempts = listMemoryConsolidationAttempts(input.db);
   const inspect = readMemoryLastConsolidationInspect(
     memoryWorkspaceLastInspectPath(input.workspaceId),
   );
@@ -166,36 +175,39 @@ function formatStatus(input: {
   const lines = [
     "Memory status",
     "─────────────",
-    `workspace id:     ${input.workspaceId}`,
-    `database:         ${input.dbPath}`,
-    `config:           ${memoryWorkspaceConfigPath(input.workspaceId)}`,
-    `enabled:          ${input.config.enabled ? "yes" : "no (paused)"}`,
-    `dream model:      ${input.config.dreamModel ?? `(session: ${input.sessionModelId ?? "unset"})`}`,
-    `recall model:     ${input.config.recallModel ?? `(session: ${input.sessionModelId ?? "unset"})`}`,
-    `activity gen:     ${getMemoryActivityGeneration(input.db)}`,
-    `cadence turns:    ${state.turnsSinceLastRun} (min ${input.config.minTurns})`,
-    `last success ms:  ${state.lastSuccessfulRunAtMs || "never"}`,
-    `memories:         active=${counts.memories.active} conflicted=${counts.memories.conflicted} superseded=${counts.memories.superseded} retired=${counts.memories.retired}`,
-    `summaries:        active=${counts.summaries.active} retired=${counts.summaries.retired}`,
-    `observations:     ${counts.observations}`,
-    `embedder:         consolidation + dreaming only (never loaded for recall)`,
-    `active dream:    ${activeRun ?? "none"}`,
-    `unreported dreams: ${lastRuns.length}`,
-    `tree roots:       ${roots.length} (${roots.filter((r) => r.nodeType === "memory").length} memories / ${roots.filter((r) => r.nodeType === "summary").length} summaries)`,
+    `enabled:        ${input.config.enabled ? "yes" : "no (paused)"}`,
+    `config:         ${memoryWorkspaceConfigPath(input.workspaceId)}`,
+    `dream model:    ${input.config.dreamModel ?? `(session: ${input.sessionModelId ?? "unset"})`}`,
+    `recall model:   ${input.config.recallModel ?? `(session: ${input.sessionModelId ?? "unset"})`}`,
+    `cadence turns:  ${state.turnsSinceLastRun} (min ${input.config.minTurns})`,
+    `last success:   ${state.lastSuccessfulRunAtMs || "never"}`,
+    `memories:       active=${counts.memories.active} conflicted=${counts.memories.conflicted} superseded=${counts.memories.superseded} retired=${counts.memories.retired}`,
+    `summaries:      active=${counts.summaries.active} retired=${counts.summaries.retired}`,
     overBudget
-      ? `top layer:        OVER BUDGET: ${layerTokens}/${input.config.briefingTokenBudget} tokens`
-      : `top layer:        ${layerTokens} tokens (budget ${input.config.briefingTokenBudget})`,
-    `last dream:       ${inspectSummary}`,
+      ? `top layer:      OVER BUDGET: ${layerTokens}/${input.config.briefingTokenBudget} tokens, ${roots.length} roots`
+      : `top layer:      ${layerTokens} tokens (budget ${input.config.briefingTokenBudget}), ${roots.length} roots`,
+    `last dream:     ${inspectSummary}`,
+    `active dream:   ${activeRun ?? "none"}`,
   ];
-  if (attempts.length > 0) {
+  if (input.verbose) {
+    const lastRuns = listUnreportedMemoryRuns(input.db);
+    const attempts = listMemoryConsolidationAttempts(input.db);
     lines.push(
-      `pending attempts: ${attempts
-        .map(
-          (a) =>
-            `${a.key} (${a.attempts}/${MEMORY_CONSOLIDATION_MAX_ATTEMPTS})`,
-        )
-        .join(", ")}`,
+      `workspace id:     ${input.workspaceId}`,
+      `database:         ${input.dbPath}`,
+      `activity gen:     ${getMemoryActivityGeneration(input.db)}`,
+      `unreported dreams: ${lastRuns.length}`,
     );
+    if (attempts.length > 0) {
+      lines.push(
+        `pending attempts: ${attempts
+          .map(
+            (a) =>
+              `${a.key} (${a.attempts}/${MEMORY_CONSOLIDATION_MAX_ATTEMPTS})`,
+          )
+          .join(", ")}`,
+      );
+    }
   }
   return lines.join("\n");
 }
@@ -354,6 +366,7 @@ export function registerMemoryCommand(
             dbPath: memoryWorkspaceDbPath(workspaceId),
             config,
             sessionModelId: formatSessionModelId(ctx.getSessionModel()),
+            verbose: parsed.verbose,
             db,
           });
           cmdCtx.ui.notify(text, "info");
@@ -490,12 +503,14 @@ export function buildMemoryStatusText(input: {
   db: DatabaseSync;
   config?: MemoryWorkspaceConfig;
   sessionModelId?: string;
+  verbose?: boolean;
 }): string {
   return formatStatus({
     workspaceId: input.workspaceId,
     dbPath: memoryWorkspaceDbPath(input.workspaceId),
     config: input.config ?? defaultMemoryWorkspaceConfig(),
     sessionModelId: input.sessionModelId,
+    verbose: input.verbose,
     db: input.db,
   });
 }

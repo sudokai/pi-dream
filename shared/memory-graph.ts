@@ -232,7 +232,6 @@ export function listAllSummaries(db: DatabaseSync): SummaryRow[] {
 export function countMemoryNodesByState(db: DatabaseSync): {
   memories: Record<MemoryLifecycleState, number>;
   summaries: Record<MemoryLifecycleState, number>;
-  observations: number;
 } {
   const empty = (): Record<MemoryLifecycleState, number> => ({
     active: 0,
@@ -252,10 +251,7 @@ export function countMemoryNodesByState(db: DatabaseSync): {
     .all() as Array<{ state: MemoryLifecycleState; n: number }>) {
     summaries[row.state] = Number(row.n);
   }
-  const obs = db.prepare(`SELECT COUNT(*) AS n FROM observations`).get() as {
-    n: number;
-  };
-  return { memories, summaries, observations: Number(obs.n) };
+  return { memories, summaries };
 }
 
 export function listGraphEdgesFrom(

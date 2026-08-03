@@ -18,7 +18,7 @@ The containment forest (summaries under summaries, heat, multi-call navigational
 - **Payload**: whole-unit accumulation to `MEMORY_SYNTHESIS_INPUT_CHARS` (40,000) with a unit cap (150); an over-budget candidate set truncates by fused rank and logs the Phase 2 trigger with the observed char count.
 - **Synthesis**: exactly one call, strict JSON with one parse retry then fail-closed, cited-only revalidation (uncited mutations are harmless), purpose-specific prompts with memories-first / delimited-task-second / instructions-last ordering. The task is untrusted relevance data; the briefing must not execute it. Output capped at 20,000 chars with no target length.
 - **Briefing**: task-relevant context first, then a deterministic standing-preferences section rendered ahead of the call and preserved on cancel; citations recorded only for validated sources.
-- **Heat retired**: citation events remain as observability; no score, decay, novelty, or threshold is computed; `activity_generation` is audit/rotation only.
+- **Heat retired**: citation events remain as observability; no score, decay, novelty, or threshold is computed; `activity_generation` is audit only.
 - **Agent surface**: exactly one tool (`memory_search`); `memory_open` deleted; `/memory open` remains for human provenance.
 
 ## Phase 2 (deferred — do not build until the trigger is observed)

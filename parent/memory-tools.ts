@@ -1,8 +1,7 @@
 /**
- * Agent tools: exactly one — memory_search.
- * memory_open was deleted: memories are capped at 400 chars and rendered in
- * full everywhere the agent sees them, so opening one reveals no new claim;
- * provenance remains an audit question served by /memory open.
+ * Agent tools: exactly one — memory_search. Memories are capped at 400 chars
+ * and rendered in full everywhere the agent sees them, so opening one reveals
+ * no new claim; provenance remains an audit question served by /memory open.
  */
 
 import type { DatabaseSync } from "node:sqlite";

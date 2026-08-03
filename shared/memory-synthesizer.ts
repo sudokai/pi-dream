@@ -1,8 +1,7 @@
 /**
  * Memory synthesizer: exactly one model call serving both the first-turn
  * briefing and memory_search. The LLM performs relevance judgment, selection,
- * categorization, and prose over a pre-built bounded payload; there is no
- * navigation loop, no forced finalize, and no partial-answer marker.
+ * categorization, and prose over a pre-built bounded payload.
  *
  * Contract: the model returns strict JSON {"content": "...", "sources": ["M:1"]}.
  * A malformed response draws exactly one retry with the parse error appended,

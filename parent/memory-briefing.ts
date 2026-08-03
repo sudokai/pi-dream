@@ -157,10 +157,10 @@ export async function buildMemorySessionBriefing(
 
   // Every first-turn recall opportunity advances the generation — on success
   // and failure alike. The advance deliberately runs BEFORE model resolution:
-  // activityGeneration is audit/rotation only and never a ranking input, so a
-  // workspace with an unresolvable recall model burning one generation per
-  // turn corrupts nothing. A future consumer of activityGeneration must not
-  // read it as a turn counter inflated by config failures.
+  // activityGeneration is audit only (displayed in /memory status, stamped as
+  // creation_generation on new observations and memories) and never a ranking
+  // input, so a workspace with an unresolvable recall model burning one
+  // generation per turn corrupts nothing.
   incrementMemoryActivityGeneration(input.db);
 
   const sessionModelId = formatSessionModelId(input.currentSessionModel);

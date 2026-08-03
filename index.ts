@@ -1,8 +1,8 @@
 /**
  * Briefing loader: Escape cancels the synthesis outright (BorderedLoader's
- * onAbort). There is no answer-now key: with a single synthesis call the
- * gathered context IS the complete payload, so a partial answer would just
- * re-issue an identical request. `cancellable: true` is explicit because
+ * onAbort). With a single synthesis call the gathered context is the complete
+ * payload, so a partial answer would just re-issue an identical request and
+ * there is no partial-answer path. `cancellable: true` is explicit because
  * Escape-cancel is load-bearing: the deterministic standing-preferences
  * section is preserved on cancel.
  */

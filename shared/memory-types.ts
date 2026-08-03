@@ -39,7 +39,7 @@ export type MemorySearchableNodeType = "memory";
 /** Maximum characters for one observation or memory body. */
 export const MEMORY_MAX_TEXT_CHARS = 400;
 
-/** Hard cap on the synthesized briefing content (chars; no target length). */
+/** Hard cap on briefing content (chars; no target length); shared by the synthesized section and the standing-preferences section. */
 export const MEMORY_BRIEFING_MAX_CHARS = 20_000;
 
 /** Synthesizer input budget: whole memory units only, never split mid-text. */

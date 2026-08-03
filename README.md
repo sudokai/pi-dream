@@ -95,7 +95,7 @@ All fields are optional except `version` and `enabled`; missing optional fields 
 
 **Unknown keys are rejected**: a `config.json` containing a key not listed above fails closed — memory is disabled for the workspace until the file is repaired. Invalid configured models fail that operation closed (no silent fallback); invalid or unreadable `config.json` disables memory until repaired. Cross-key validation rejects `briefingTokenBudget < 200` and `synthesizerContextBudget` at or below the envelope floor (see the table row) the same way.
 
-**Slow recall models**: the briefing has no time cap — the loader stays up until synthesis completes or you press Escape. On slow or high-thinking session models, set `recallModel` and `recallThinking` (e.g. `"off"`) per workspace so the first turn isn't delayed by a heavyweight recall model.
+**Slow recall models**: the briefing has no time cap — the loader stays up until synthesis completes, you press Escape (nothing is shown; the attempt is audited), or you press `a` for an answer now from the context gathered so far (marked "Answered on request from partial context"). Any failed synthesis also draws one finalize-only call against the gathered context before failing closed, so an interruption still yields the best answer the model can give from what it had — except a staleness failure (the dreamer mutated the tree mid-loop), which fails closed immediately since the gathered context is provably invalid. On slow or high-thinking session models, set `recallModel` and `recallThinking` (e.g. `"off"`) per workspace so the first turn isn't delayed by a heavyweight recall model.
 
 ## Environment variables
 

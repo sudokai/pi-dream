@@ -11,7 +11,10 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import type { MemoryWorkspaceConfig } from "../shared/memory-config.ts";
-import { synthesizeMemoryAnswer } from "../shared/memory-synthesizer.ts";
+import {
+  renderPartialSynthesizerMarker,
+  synthesizeMemoryAnswer,
+} from "../shared/memory-synthesizer.ts";
 import {
   incrementMemoryActivityGeneration,
   recordMemoryRecallEvent,
@@ -54,6 +57,8 @@ export interface BuildMemoryBriefingInput {
   currentSessionModel?: { provider?: string; id?: string } | null;
   piSessionId?: string | null;
   signal?: AbortSignal;
+  /** Answer-now key: when fired, force a finalize from the context gathered so far. */
+  finalizeNowSignal?: AbortSignal;
   /** Injected complete for tests; defaults to the pi-ai provider adapter. */
   complete?: (input: {
     system: string;
@@ -186,6 +191,7 @@ export async function buildMemorySessionBriefing(
     modelRegistry: input.modelRegistry,
     sessionModel: resolved.resolved,
     signal,
+    finalizeNowSignal: input.finalizeNowSignal,
     complete: input.complete,
   });
 
@@ -208,6 +214,34 @@ export async function buildMemorySessionBriefing(
       ok: true,
       message: null,
       audit: { status: "synthesizer_failed", error: result.error },
+    };
+  }
+
+  if (result.partial) {
+    // Interrupted synthesis that still finalized: show the partial answer
+    // with an explicit marker; no recall events (partial runs never heat)
+    // and the interruption is audited instead.
+    const marker = renderPartialSynthesizerMarker(result.partial.reason);
+    return {
+      ok: true,
+      message: {
+        customType: MEMORY_BRIEFING_CUSTOM_TYPE,
+        content: renderMemoryBriefingMessage(
+          input.db,
+          `${marker}\n\n${result.answer}`,
+          result.sources,
+        ),
+        display: true,
+        details: {
+          status: "partial",
+          sources: result.sources,
+          reason: result.partial.reason,
+        },
+      },
+      audit: {
+        status: "synthesizer_partial",
+        error: result.partial.reason,
+      },
     };
   }
 

@@ -406,6 +406,270 @@ test("abort propagation fails closed", async () => {
   });
 });
 
+test("a loop failure draws one forced finalize: partial result with the failure reason", async () => {
+  await withClaimedDb(async (db, runId) => {
+    seedTree(db, runId);
+    const result = await synthesizeMemoryAnswer({
+      db,
+      request: "tooling?",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: modelRegistry() as never,
+      sessionModel: sessionModel(),
+      complete: sequenceComplete([
+        "not-json",
+        JSON.stringify({
+          action: "finalize",
+          answer: "Tooling: no emoji, pnpm.",
+          sources: ["S:1"],
+        }),
+      ]),
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.match(result.partial?.reason ?? "", /malformed synthesizer output/);
+    assert.equal(result.answer, "Tooling: no emoji, pnpm.");
+    assert.deepEqual(result.sources, ["S:1"]);
+    assert.deepEqual(result.openedSummaryIds, []);
+    assert.equal(result.steps, 2, "loop call plus the forced finalize call");
+  });
+});
+
+test("a forced finalize that fails returns the original failure", async () => {
+  await withClaimedDb(async (db, runId) => {
+    seedTree(db, runId);
+    const result = await synthesizeMemoryAnswer({
+      db,
+      request: "x",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: modelRegistry() as never,
+      sessionModel: sessionModel(),
+      complete: sequenceComplete(["not-json"]),
+    });
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /malformed synthesizer output/);
+    assert.match(
+      result.error,
+      /forced finalize also failed/,
+      "the forced call's own failure is surfaced alongside the original reason",
+    );
+  });
+});
+
+test("finalizeNowSignal stops navigation and forces a finalize from the gathered context", async () => {
+  await withClaimedDb(async (db, runId) => {
+    seedTree(db, runId);
+    const answerNow = new AbortController();
+    const responses = [
+      JSON.stringify({ action: "open", id: "S:1" }),
+      JSON.stringify({
+        action: "finalize",
+        answer: "Tooling: no emoji, pnpm.",
+        sources: ["M:1", "M:2"],
+      }),
+    ];
+    let calls = 0;
+    const result = await synthesizeMemoryAnswer({
+      db,
+      request: "tooling?",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: modelRegistry() as never,
+      sessionModel: sessionModel(),
+      finalizeNowSignal: answerNow.signal,
+      complete: async ({ signal }) => {
+        calls++;
+        if (calls === 1) answerNow.abort(); // `a` pressed during the first call
+        // The forced finalize must not receive the already-aborted answer-now
+        // signal: real completion paths reject such a signal up front.
+        if (calls >= 2 && signal?.aborted) {
+          throw new DOMException("Aborted", "AbortError");
+        }
+        return { text: responses[Math.min(calls - 1, responses.length - 1)]! };
+      },
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.partial?.reason, "answer requested");
+    assert.deepEqual(
+      result.openedSummaryIds,
+      ["S:1"],
+      "the open before `a` is kept",
+    );
+    assert.deepEqual(result.sources, ["M:1", "M:2"]);
+    assert.equal(result.steps, 2);
+  });
+});
+
+test("answer now before the first call forces a finalize from the top layer", async () => {
+  await withClaimedDb(async (db, runId) => {
+    seedTree(db, runId);
+    const answerNow = new AbortController();
+    answerNow.abort();
+    const result = await synthesizeMemoryAnswer({
+      db,
+      request: "tooling?",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: modelRegistry() as never,
+      sessionModel: sessionModel(),
+      finalizeNowSignal: answerNow.signal,
+      complete: sequenceComplete([
+        JSON.stringify({
+          action: "finalize",
+          answer: "No emoji, pnpm.",
+          sources: ["S:1"],
+        }),
+      ]),
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.partial?.reason, "answer requested");
+    assert.equal(result.steps, 1, "only the forced call runs");
+    assert.deepEqual(result.sources, ["S:1"]);
+  });
+});
+
+test("a forced finalize after answer now that fails hard-fails", async () => {
+  await withClaimedDb(async (db, runId) => {
+    seedTree(db, runId);
+    const answerNow = new AbortController();
+    answerNow.abort();
+    const result = await synthesizeMemoryAnswer({
+      db,
+      request: "x",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: modelRegistry() as never,
+      sessionModel: sessionModel(),
+      finalizeNowSignal: answerNow.signal,
+      complete: sequenceComplete(["not-json"]),
+    });
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /answer requested but the finalize call failed/);
+  });
+});
+
+test("an aborted finalizeNowSignal does not cancel the forced finalize call", async () => {
+  await withClaimedDb(async (db, runId) => {
+    seedTree(db, runId);
+    const answerNow = new AbortController();
+    answerNow.abort();
+    const result = await synthesizeMemoryAnswer({
+      db,
+      request: "tooling?",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: modelRegistry() as never,
+      sessionModel: sessionModel(),
+      finalizeNowSignal: answerNow.signal,
+      complete: async ({ signal }) => {
+        // Real completion paths (raceMemoryOperation) reject an already-aborted
+        // signal before the model is invoked; the forced call must run under
+        // the cancel signal only, so this must never fire.
+        if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+        return {
+          text: JSON.stringify({
+            action: "finalize",
+            answer: "No emoji, pnpm.",
+            sources: ["S:1"],
+          }),
+        };
+      },
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.partial?.reason, "answer requested");
+    assert.equal(result.answer, "No emoji, pnpm.");
+    assert.equal(result.steps, 1, "only the forced call runs");
+    assert.deepEqual(result.sources, ["S:1"]);
+  });
+});
+
+test("a cancel during the forced finalize hard-fails as aborted", async () => {
+  await withClaimedDb(async (db, runId) => {
+    seedTree(db, runId);
+    const controller = new AbortController();
+    let calls = 0;
+    const result = await synthesizeMemoryAnswer({
+      db,
+      request: "x",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: modelRegistry() as never,
+      sessionModel: sessionModel(),
+      signal: controller.signal,
+      complete: async () => {
+        calls++;
+        if (calls === 1) return { text: "not-json" };
+        controller.abort(); // Escape pressed during the forced call
+        throw new DOMException("Aborted", "AbortError");
+      },
+    });
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(
+      result.error,
+      "aborted",
+      "the cancel is not mislabeled as the loop failure",
+    );
+  });
+});
+
+test("a user cancel hard-fails without a forced finalize call", async () => {
+  await withClaimedDb(async (db, runId) => {
+    seedTree(db, runId);
+    const controller = new AbortController();
+    controller.abort();
+    let calls = 0;
+    const result = await synthesizeMemoryAnswer({
+      db,
+      request: "x",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: modelRegistry() as never,
+      sessionModel: sessionModel(),
+      signal: controller.signal,
+      complete: async () => {
+        calls++;
+        return {
+          text: JSON.stringify({
+            action: "finalize",
+            answer: "x",
+            sources: [],
+          }),
+        };
+      },
+    });
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.error, "aborted");
+    assert.equal(calls, 0, "cancel never draws a model call");
+  });
+});
+
+test("a cancel between calls stops the loop as a returned failure, not a throw", async () => {
+  await withClaimedDb(async (db, runId) => {
+    seedTree(db, runId);
+    const controller = new AbortController();
+    let calls = 0;
+    const result = await synthesizeMemoryAnswer({
+      db,
+      request: "tooling?",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: modelRegistry() as never,
+      sessionModel: sessionModel(),
+      signal: controller.signal,
+      complete: async () => {
+        calls++;
+        controller.abort(); // Escape lands between calls; the provider ignores it
+        return {
+          text: JSON.stringify({ action: "open", id: "S:1" }),
+        };
+      },
+    });
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.error, "aborted");
+    assert.equal(calls, 1, "the loop stops at the next iteration boundary");
+  });
+});
+
 test("answer token cap is enforced", async () => {
   await withClaimedDb(async (db, runId) => {
     seedTree(db, runId);
@@ -475,8 +739,11 @@ test("a concurrent mutation of a context node fails the next open/finalize close
     if (result.ok) return;
     assert.match(result.error, /no longer active/);
 
-    // Mutation of a source node between calls fails finalize.
+    // Mutation of a source node between calls fails finalize closed: the
+    // loop's refresh rejects it, and staleness never draws a forced finalize
+    // (the gathered context is provably invalid).
     seedTree(db, runId);
+    let secondCalls = 0;
     const second = await synthesizeMemoryAnswer({
       db,
       request: "x",
@@ -484,6 +751,7 @@ test("a concurrent mutation of a context node fails the next open/finalize close
       modelRegistry: modelRegistry() as never,
       sessionModel: sessionModel(),
       complete: async () => {
+        secondCalls++;
         db.prepare(
           `UPDATE memories SET state = 'conflicted' WHERE id = 1`,
         ).run();
@@ -499,6 +767,11 @@ test("a concurrent mutation of a context node fails the next open/finalize close
     assert.equal(second.ok, false);
     if (second.ok) return;
     assert.match(second.error, /no longer active/);
+    assert.equal(
+      secondCalls,
+      1,
+      "staleness never draws a forced finalize call",
+    );
   });
 });
 

@@ -286,6 +286,92 @@ test("synthesizer failure skips silently with an audit payload and no events", a
   }
 });
 
+test("an interrupted synthesis shows the partial answer with a marker, audit, and no events", async () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "manual");
+    assert.equal(claim.acquired, true);
+    seed(db, claim.runId!);
+    const responses = [
+      "not-json",
+      JSON.stringify({
+        action: "finalize",
+        answer: "No emoji, pnpm.",
+        sources: ["M:1"],
+      }),
+    ];
+    let i = 0;
+    const result = await buildMemorySessionBriefing({
+      db,
+      query: "anything",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: registry() as never,
+      currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
+      complete: async () => ({
+        text: responses[Math.min(i++, responses.length - 1)]!,
+      }),
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.ok(result.message, "the partial answer is shown, not skipped");
+    assert.match(
+      result.message!.content,
+      /Synthesis interrupted \(malformed synthesizer output/,
+    );
+    assert.match(result.message!.content, /No emoji, pnpm\./);
+    assert.equal(result.message!.details.status, "partial");
+    assert.equal(result.audit?.status, "synthesizer_partial");
+    assert.match(
+      String(result.audit?.error ?? ""),
+      /malformed synthesizer output/,
+    );
+    const events = db
+      .prepare(`SELECT COUNT(*) AS n FROM recall_events`)
+      .get() as {
+      n: number;
+    };
+    assert.equal(Number(events.n), 0, "no reheat on partial results");
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
+test("the answer-now key flows through the briefing as a partial result", async () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "manual");
+    assert.equal(claim.acquired, true);
+    seed(db, claim.runId!);
+    const answerNow = new AbortController();
+    answerNow.abort();
+    const result = await buildMemorySessionBriefing({
+      db,
+      query: "anything",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: registry() as never,
+      currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
+      finalizeNowSignal: answerNow.signal,
+      complete: completeWith(
+        JSON.stringify({
+          action: "finalize",
+          answer: "No emoji, pnpm.",
+          sources: ["M:1"],
+        }),
+      ),
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.match(
+      result.message!.content,
+      /Answered on request from partial context:/,
+    );
+    assert.equal(result.message!.details.reason, "answer requested");
+    assert.equal(result.audit?.status, "synthesizer_partial");
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
 test("an over-budget top layer yields the top_layer_over_budget audit", async () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {

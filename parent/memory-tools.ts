@@ -3,10 +3,16 @@
  */
 
 import type { DatabaseSync } from "node:sqlite";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type {
+  AgentToolResult,
+  ExtensionAPI,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { MemoryWorkspaceConfig } from "../shared/memory-config.ts";
-import { synthesizeMemoryAnswer } from "../shared/memory-synthesizer.ts";
+import {
+  renderPartialSynthesizerMarker,
+  synthesizeMemoryAnswer,
+} from "../shared/memory-synthesizer.ts";
 import {
   formatSessionModelId,
   resolveMemoryModel,
@@ -90,7 +96,7 @@ export function registerMemoryAgentTools(
     name: "memory_search",
     label: "Memory Search",
     description:
-      "Search workspace memory with the memory synthesizer. Returns a synthesized answer grounded in the memory tree, never raw hits.",
+      "Search workspace memory with the memory synthesizer. Returns a synthesized answer grounded in the memory tree, never raw hits. If the synthesis is interrupted, returns a best-effort answer marked partial.",
     promptSnippet: "Search durable workspace memory with memory_search",
     promptGuidelines: [
       "Use memory_search when you need preferences or workspace facts beyond the opening briefing.",
@@ -100,7 +106,17 @@ export function registerMemoryAgentTools(
     parameters: Type.Object({
       query: Type.String({ description: "Natural-language search query" }),
     }),
-    async execute(_toolCallId, params, signal) {
+    async execute(
+      _toolCallId: string,
+      params: { query: string },
+      signal?: AbortSignal,
+    ): Promise<
+      AgentToolResult<{
+        sources: string[];
+        partial?: boolean;
+        reason?: string;
+      }>
+    > {
       // No separate timeout: pi's tool signal is the only cancellation.
       const effectiveSignal = composeMemoryAbortSignal(signal ?? undefined);
       throwIfMemoryAborted(effectiveSignal);
@@ -163,6 +179,24 @@ export function registerMemoryAgentTools(
           );
         }
         throw new Error(`memory_search synthesizer failed: ${result.error}`);
+      }
+
+      if (result.partial) {
+        // Interrupted synthesis that still finalized: return the best-effort
+        // answer with an explicit marker; no recall events on partial runs.
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `${renderPartialSynthesizerMarker(result.partial.reason)}\n\n${result.answer}`,
+            },
+          ],
+          details: {
+            sources: result.sources as string[],
+            partial: true,
+            reason: result.partial.reason,
+          },
+        };
       }
 
       // Record recall events: sources are selection (search); opened summaries

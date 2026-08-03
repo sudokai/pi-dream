@@ -205,6 +205,63 @@ test("memory_search records no events when nothing relevant is found", async () 
   }
 });
 
+test("memory_search returns a partial answer with a marker when synthesis fails", async () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "manual");
+    assert.equal(claim.acquired, true);
+    seed(db, claim.runId!);
+    const { tools } = captureTools();
+    const responses = [
+      "not-json",
+      JSON.stringify({
+        action: "finalize",
+        answer: "No emoji, pnpm.",
+        sources: ["M:1"],
+      }),
+    ];
+    let i = 0;
+    registerMemoryAgentTools(
+      {
+        registerTool: (t: CapturedTool) => tools.set(t.name, t),
+      } as unknown as ExtensionAPI,
+      {
+        ...context(db),
+        getModelRegistry: () => ({
+          find: () => ({ id: "fake-model" }),
+          getProvider: () => ({
+            streamSimple: () => ({
+              result: async () => ({
+                content: [{ type: "text", text: responses[i++] }],
+              }),
+            }),
+          }),
+        }),
+      } as unknown as MemoryToolsContext,
+    );
+    const result = await tools
+      .get("memory_search")!
+      .execute("1", { query: "commit style?" });
+    assert.match(
+      result.content[0]!.text,
+      /Synthesis interrupted \(malformed synthesizer output/,
+    );
+    assert.equal(result.details?.partial, true);
+    assert.match(
+      String(result.details?.reason ?? ""),
+      /malformed synthesizer output/,
+    );
+    const events = db
+      .prepare(`SELECT COUNT(*) AS n FROM recall_events`)
+      .get() as {
+      n: number;
+    };
+    assert.equal(Number(events.n), 0, "no reheat on partial results");
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
 test("memory_search surfaces the named tool error for an over-budget top layer", async () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {

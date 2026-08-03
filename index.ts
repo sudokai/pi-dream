@@ -1,4 +1,28 @@
 /**
+ * Briefing loader: Escape cancels the synthesis outright (BorderedLoader's
+ * onAbort); `a` (answer now) interrupts navigation so the synthesizer forces
+ * a finalize from the context gathered so far.
+ */
+class MemoryBriefingLoader extends BorderedLoader {
+  constructor(
+    tui: TUI,
+    theme: Theme,
+    message: string,
+    private readonly onAnswerNow: () => void,
+  ) {
+    super(tui, theme, message);
+  }
+
+  override handleInput(data: string): void {
+    if (data === "a" || data === "A") {
+      this.onAnswerNow();
+      return;
+    }
+    super.handleInput(data);
+  }
+}
+
+/**
  * pi-dream — adaptive workspace memory extension.
  *
  * Parent: first-turn visible briefing, memory_search/memory_open, /memory,
@@ -9,8 +33,9 @@
 import {
   BorderedLoader,
   type ExtensionAPI,
+  type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { Box, Text } from "@earendil-works/pi-tui";
+import { Box, Text, type TUI } from "@earendil-works/pi-tui";
 import type { DatabaseSync } from "node:sqlite";
 import {
   closeMemoryDatabase,
@@ -212,13 +237,12 @@ export default function piDreamExtension(pi: ExtensionAPI) {
 
     // Shared handling for a settled briefing: surface the message, or record
     // the audit entry for silent skips (top-layer over budget, synthesizer
-    // failure). Never show raw tree content.
+    // failure) and for partial results (synthesizer_partial), which show a
+    // message and still need the interruption audited. Never show raw tree
+    // content.
     const handleBriefingResult = (result: BuildMemoryBriefingResult) => {
       if (!result.ok) {
         return { message: result.notice };
-      }
-      if (result.message) {
-        return { message: result.message };
       }
       if (result.audit) {
         try {
@@ -226,6 +250,9 @@ export default function piDreamExtension(pi: ExtensionAPI) {
         } catch {
           // appendEntry is optional outside interactive TUI sessions.
         }
+      }
+      if (result.message) {
+        return { message: result.message };
       }
       return undefined;
     };
@@ -250,20 +277,24 @@ export default function piDreamExtension(pi: ExtensionAPI) {
         return handleBriefingResult(result);
       }
 
-      // Model-backed synthesis can take seconds, so show a cancellable loader
-      // while it runs. Escape aborts the briefing, which fails closed into the
-      // audit path below.
+      // Model-backed synthesis can take seconds, so show a loader while it
+      // runs. Escape cancels the briefing outright (nothing is shown); `a`
+      // (answer now) stops navigation and forces a finalize with the context
+      // gathered so far.
       const abort = new AbortController();
+      const answerNow = new AbortController();
       const briefing = buildMemorySessionBriefing({
         ...briefingInput,
         // Pi 0.83 runs before_agent_start before creating the active run, so
         // ctx.signal is normally undefined here. Use its signal when a newer
-        // lifecycle provides one; Escape on the loader is the only other
-        // cancel — there is no time cap on the briefing.
+        // lifecycle provides one — it also cancels the answer-now finalize.
         signal: createMemoryBriefingSignal(
           AbortSignal.any(
             ctx.signal ? [abort.signal, ctx.signal] : [abort.signal],
           ),
+        ),
+        finalizeNowSignal: AbortSignal.any(
+          ctx.signal ? [answerNow.signal, ctx.signal] : [answerNow.signal],
         ),
       });
 
@@ -275,10 +306,13 @@ export default function piDreamExtension(pi: ExtensionAPI) {
       // the factory; the briefing promise still settles in the background.
       const verdict = await ctx.ui.custom<MemoryBriefingVerdict | undefined>(
         (tui, theme, _keybindings, done) => {
-          const loader = new BorderedLoader(
+          const loader = new MemoryBriefingLoader(
             tui,
             theme,
-            "Recalling your memories…",
+            // The cancel key is rendered by BorderedLoader's footer via
+            // keyHint (and is user-configurable); only document `a` here.
+            "Recalling your memories… (a = answer now)",
+            () => answerNow.abort(),
           );
           loader.onAbort = () => abort.abort();
           briefing.then(

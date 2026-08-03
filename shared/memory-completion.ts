@@ -105,10 +105,14 @@ export async function completeMemoryModelCall(
     );
   }
 
+  // The 30s backstop applies only when the caller passed no abort signal:
+  // the briefing and memory_search always pass one (Escape / the agent turn
+  // signal), so they are governed solely by that signal and never cut off at
+  // 30s. The backstop exists for any future no-signal caller.
   const message = await raceMemoryOperation(
     stream.result(),
     input.signal,
-    MEMORY_COMPLETION_TIMEOUT_MS,
+    input.signal ? undefined : MEMORY_COMPLETION_TIMEOUT_MS,
   );
   if (message.errorMessage) {
     throw new Error(message.errorMessage);

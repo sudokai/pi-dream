@@ -137,7 +137,7 @@ export const MEMORY_PI_SESSION_DIR_ENV = "PI_CODING_AGENT_SESSION_DIR";
 /** Provider auth resolution timeout (ms). */
 export const MEMORY_AUTH_TIMEOUT_MS = 10_000;
 
-/** Synthesizer completion clamp (ms); only binds when no tighter outer signal exists. */
+/** Synthesizer completion backstop (ms); only applies when the caller passes no abort signal. */
 export const MEMORY_COMPLETION_TIMEOUT_MS = 30_000;
 
 /** Maximum session JSONL bytes read for discovery/header checks. */

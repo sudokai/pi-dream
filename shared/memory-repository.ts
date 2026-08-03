@@ -24,6 +24,7 @@ import { getMemoryActivityGeneration, getMemoryById } from "./memory-graph.ts";
 import { memoryRunOwnsClaim } from "./memory-run-claim.ts";
 import { normalizeMemoryCwd } from "./memory-workspace-id.ts";
 
+/** Current workspace state row — cadence counters plus recall-capacity and embedding-degradation failures (created at store init). */
 export function getMemoryWorkspaceState(db: DatabaseSync): WorkspaceStateRow {
   const r = db
     .prepare(
@@ -55,6 +56,7 @@ export function getMemoryWorkspaceState(db: DatabaseSync): WorkspaceStateRow {
   };
 }
 
+/** Patch the cadence counters in the workspace state row: turns since last run, last successful run, last observed transcript mtime. */
 export function updateMemoryCadenceState(
   db: DatabaseSync,
   patch: {
@@ -104,6 +106,7 @@ export function setMemoryEmbeddingDegradedError(
   ).run(error);
 }
 
+/** Checkpoint row for a mined source session (processed mtime and content hash), or null when the session has not been checkpointed. */
 export function getSourceSessionCheckpoint(
   db: DatabaseSync,
   sessionId: string,

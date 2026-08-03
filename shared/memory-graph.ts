@@ -21,6 +21,7 @@ import {
   type PrefixedNodeId,
 } from "./memory-types.ts";
 
+/** Current activity generation: the audit-only session counter stamped as creation_generation on new observations and memories; never a ranking input. */
 export function getMemoryActivityGeneration(db: DatabaseSync): number {
   const row = db
     .prepare(`SELECT activity_generation FROM workspace_state WHERE id = 1`)
@@ -161,6 +162,7 @@ export function countMemoryNodesByState(
   return counts;
 }
 
+/** Graph edges leaving a node (from_type/from_id), active and retired, oldest first. */
 export function listGraphEdgesFrom(
   db: DatabaseSync,
   fromType: MemorySearchableNodeType,
@@ -185,6 +187,7 @@ export function listGraphEdgesFrom(
   }));
 }
 
+/** Graph edges arriving at a node (to_type/to_id), active and retired, oldest first. */
 export function listGraphEdgesTo(
   db: DatabaseSync,
   toType: MemorySearchableNodeType,

@@ -567,7 +567,9 @@ test("K consecutive rejections apply the deterministic fallback with an audit en
       { nodeType: "memory", nodeId: 1 },
       { nodeType: "memory", nodeId: 2 },
     );
-    // Two prior rejections (attempts 2); the next rejection is the K-th.
+    // Four prior rejections (attempts 4); the next rejection is the K-th.
+    incrementMemoryConsolidationAttempt(db, key, 0);
+    incrementMemoryConsolidationAttempt(db, key, 0);
     incrementMemoryConsolidationAttempt(db, key, 0);
     incrementMemoryConsolidationAttempt(db, key, 0);
     const result = commitMemoryDreamOps(db, {
@@ -743,7 +745,7 @@ test("describeMemoryOverBudgetRecovery promises urgent consolidation only when i
     );
     // Block the only pairable pair at the attempt bound: over budget, but no
     // candidate can be planned, so no next-settle run is promised.
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 5; i++) {
       incrementMemoryConsolidationAttempt(db, key, 0);
     }
     assert.equal(
@@ -779,7 +781,7 @@ test("candidates at the attempt bound no longer spawn doomed runs", async () => 
       { nodeType: "memory", nodeId: 1 },
       { nodeType: "memory", nodeId: 2 },
     );
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 5; i++) {
       incrementMemoryConsolidationAttempt(db, key, 0);
     }
     assert.equal(
@@ -908,6 +910,8 @@ test("promote rewrite failure accumulates attempts and falls back to the old tex
     });
     const promoteKey = "promote:memory:2:1";
     clearMemoryConsolidationAttempt(db, promoteKey);
+    incrementMemoryConsolidationAttempt(db, promoteKey, 0);
+    incrementMemoryConsolidationAttempt(db, promoteKey, 0);
     incrementMemoryConsolidationAttempt(db, promoteKey, 0);
     incrementMemoryConsolidationAttempt(db, promoteKey, 0);
     const badText =

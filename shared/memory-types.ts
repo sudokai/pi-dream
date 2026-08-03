@@ -55,9 +55,6 @@ export const MEMORY_CHARS_PER_TOKEN_ESTIMATE = 4;
 /** Heat at or above which a child is promote-eligible (hot). */
 export const MEMORY_HOT_HEAT_THRESHOLD = 1.5;
 
-/** Hard ceiling on synthesizer navigation steps per answer. */
-export const MEMORY_SYNTHESIZER_MAX_STEPS = 8;
-
 /** Serialized-context envelope: framing + request + layer + navigation + answer. */
 export const MEMORY_SYNTHESIZER_CONTEXT_BUDGET = 16000;
 
@@ -74,10 +71,7 @@ export const MEMORY_BRIEFING_INDEX_MAX_FACTS = 15;
 export const MEMORY_CONSOLIDATION_SUMMARY_GRACE_GENERATIONS = 3;
 
 /** Consecutive compaction rejections before the deterministic fallback applies. */
-export const MEMORY_CONSOLIDATION_MAX_ATTEMPTS = 3;
-
-/** Truncation cap on credited sources per synthesized answer. */
-export const MEMORY_SYNTHESIZER_MAX_SOURCES = 6;
+export const MEMORY_CONSOLIDATION_MAX_ATTEMPTS = 5;
 
 /** Tokens reserved inside the synthesizer envelope for navigation actions. */
 export const MEMORY_SYNTHESIZER_NAV_RESERVE = 256;
@@ -114,7 +108,7 @@ export const MEMORY_RECALL_EVENT_WEIGHT = 1.0;
 export const MEMORY_STALE_RUN_MS = 60 * 60 * 1000;
 
 /** SQLite busy timeout (ms). */
-export const MEMORY_DB_BUSY_TIMEOUT_MS = 3000;
+export const MEMORY_DB_BUSY_TIMEOUT_MS = 5000;
 
 /** Local embedding model id (Xenova MiniLM). */
 export const MEMORY_EMBEDDING_MODEL_ID = "Xenova/all-MiniLM-L6-v2";

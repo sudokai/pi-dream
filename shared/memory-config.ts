@@ -19,7 +19,6 @@ import {
   MEMORY_SYNTHESIZER_ANSWER_BUDGET,
   MEMORY_SYNTHESIZER_CONTEXT_BUDGET,
   MEMORY_SYNTHESIZER_FRAMING_BUDGET,
-  MEMORY_SYNTHESIZER_MAX_STEPS,
   MEMORY_SYNTHESIZER_NAV_RESERVE,
 } from "./memory-types.ts";
 import { memoryWorkspaceConfigPath } from "./memory-workspace-id.ts";
@@ -55,7 +54,6 @@ export interface MemoryWorkspaceConfig {
   briefingTokenBudget: number;
   embeddingModel: string;
   hotHeatThreshold: number;
-  synthesizerMaxSteps: number;
   synthesizerContextBudget: number;
   synthesizerAnswerBudget: number;
   noveltyBoost: number;
@@ -87,7 +85,6 @@ export function defaultMemoryWorkspaceConfig(): MemoryWorkspaceConfig {
     briefingTokenBudget: MEMORY_BRIEFING_TOKEN_BUDGET,
     embeddingModel: MEMORY_EMBEDDING_MODEL_ID,
     hotHeatThreshold: MEMORY_HOT_HEAT_THRESHOLD,
-    synthesizerMaxSteps: MEMORY_SYNTHESIZER_MAX_STEPS,
     synthesizerContextBudget: MEMORY_SYNTHESIZER_CONTEXT_BUDGET,
     synthesizerAnswerBudget: MEMORY_SYNTHESIZER_ANSWER_BUDGET,
     noveltyBoost: MEMORY_NOVELTY_BOOST,
@@ -152,7 +149,6 @@ export function parseMemoryWorkspaceConfig(
     "briefingTokenBudget",
     "embeddingModel",
     "hotHeatThreshold",
-    "synthesizerMaxSteps",
     "synthesizerContextBudget",
     "synthesizerAnswerBudget",
     "noveltyBoost",
@@ -209,10 +205,6 @@ export function parseMemoryWorkspaceConfig(
     hotHeatThreshold: positiveNumber(
       obj.hotHeatThreshold,
       defaults.hotHeatThreshold,
-    ),
-    synthesizerMaxSteps: positiveInt(
-      obj.synthesizerMaxSteps,
-      defaults.synthesizerMaxSteps,
     ),
     synthesizerContextBudget: positiveInt(
       obj.synthesizerContextBudget,

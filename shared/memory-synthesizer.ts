@@ -1,12 +1,15 @@
 /**
  * Memory synthesizer: a single shared LLM loop serving both the first-turn
  * briefing and memory_search. It reads the top layer, opens summaries only
- * when it needs more detail (bounded loop, <= synthesizerMaxSteps), and returns
- * {answer, sources, openedSummaryIds}. Only the synthesized answer is shown;
- * the sources and opened summaries are reheated by the callers.
+ * when it needs more detail (navigation is unbounded: the loop ends on
+ * finalize; an open that adds no new context draws one corrective hint and
+ * fails closed if repeated), and
+ * returns {answer, sources, openedSummaryIds}. Only the synthesized answer is
+ * shown; the sources and opened summaries are reheated by the callers.
  *
- * Fail-closed: any failure (model error, abort, malformed JSON, budget/step
- * exhaustion, unseen open target, post-refresh mismatch) returns { ok: false }.
+ * Fail-closed: any failure (model error, abort, malformed JSON, envelope or
+ * answer-budget overflow, repeated no-new-context open, unseen open target,
+ * post-refresh mismatch) returns { ok: false }.
  */
 
 import type { DatabaseSync } from "node:sqlite";
@@ -17,8 +20,6 @@ import {
   MEMORY_SYNTHESIZER_ANSWER_BUDGET,
   MEMORY_SYNTHESIZER_CONTEXT_BUDGET,
   MEMORY_SYNTHESIZER_FRAMING_BUDGET,
-  MEMORY_SYNTHESIZER_MAX_SOURCES,
-  MEMORY_SYNTHESIZER_MAX_STEPS,
   MEMORY_SYNTHESIZER_NAV_RESERVE,
   parsePrefixedNodeId,
   type MemoryNodeId,
@@ -227,7 +228,7 @@ function refreshSynthesizerContext(
 function renderSynthesizerContext(
   request: string,
   context: SynthesizerContextNode[],
-  stepsLeft: number,
+  note?: string | null,
 ): string {
   const lines: string[] = [
     "Workspace memory tree (top layer, heat descending):",
@@ -243,11 +244,13 @@ function renderSynthesizerContext(
       );
     }
   }
+  lines.push("", `User request: ${request.trim() || "(empty)"}`, "");
+  if (note) {
+    lines.push(note, "");
+  }
   lines.push(
-    "",
-    `User request: ${request.trim() || "(empty)"}`,
-    "",
-    `You may open at most ${stepsLeft} more summaries, then you must finalize.`,
+    "Open a summary only when its content is not yet visible and you need it for the answer; finalize as soon as the visible context is sufficient.",
+    "Never re-open a summary or open one that adds no new context — you get one hint, then the synthesis fails.",
     "Respond with strict JSON only:",
     '{"action":"open","id":"S:n"} — open a summary visible above for more detail',
     '{"action":"finalize","answer":"...","sources":["M:1","S:2"]} — final answer citing every node your answer relies on',
@@ -258,7 +261,9 @@ function renderSynthesizerContext(
 /**
  * Run the synthesizer loop. Builds the top layer, then iterates open/finalize
  * against the recall model, refreshing the context after every model result.
- * Never truncates the top layer: an over-budget layer fails closed.
+ * Never truncates the top layer: an over-budget layer fails closed. An open
+ * that adds no new context nodes draws one corrective hint to the model; the
+ * second consecutive such open fails closed.
  */
 export async function synthesizeMemoryAnswer(
   input: MemorySynthesizerInput,
@@ -325,19 +330,22 @@ export async function synthesizeMemoryAnswer(
         signal: c.signal,
       }));
 
-  const maxSteps = config.synthesizerMaxSteps ?? MEMORY_SYNTHESIZER_MAX_STEPS;
   const openedSummaryIds: SummaryNodeId[] = [];
-  const openedKeys = new Set<string>();
   let usage: unknown;
+  let noNewContextOpens = 0;
+  let noNewContextNote: string | null = null;
   const answerBudget =
     config.synthesizerAnswerBudget ?? MEMORY_SYNTHESIZER_ANSWER_BUDGET;
 
-  for (let step = 0; step < maxSteps; step++) {
+  // Navigation is unbounded: the tree is finite, so the loop always ends —
+  // on finalize, on an abort, or fail-closed on the second consecutive open
+  // that adds no new context; the first such open returns a corrective hint.
+  for (let step = 0; ; step++) {
     throwIfMemoryAborted(signal);
     const user = renderSynthesizerContext(
       input.request,
       context,
-      maxSteps - step,
+      noNewContextNote,
     );
     let resultText: string;
     try {
@@ -398,41 +406,68 @@ export async function synthesizeMemoryAnswer(
           usage,
         };
       }
-      if (!openedKeys.has(contextKey("summary", parsed.id))) {
-        // First open: append active children and enforce the cumulative
-        // envelope. Re-opening an already-open summary is a no-op (its
-        // children are already in the context; appending again would
-        // double-count their tokens).
-        const children = listMemoryNodeActiveChildren(db, "summary", parsed.id);
-        const childNodes: SynthesizerContextNode[] = children.map((c) => ({
-          nodeType: c.nodeType,
-          nodeId: c.nodeId,
-          prefixedId: c.prefixedId,
-          kind: c.kind,
-          text: c.text,
-          heat: c.heat,
-          tokens: c.estimatedTokens,
-          versionId: c.currentVersionId,
-          path:
-            target.path === "root"
-              ? target.prefixedId
-              : `${target.path}>${target.prefixedId}`,
-        }));
-        const addedTokens = childNodes.reduce((sum, c) => sum + c.tokens, 0);
-        // The cumulative envelope covers framing + request + top layer +
-        // opened children payloads + navigation + answer: the request tokens
-        // count here too, exactly as in the initial check.
-        if (requestTokens + contextTokens() + addedTokens > availableForNodes) {
+      // Append the target's active children and enforce the cumulative
+      // envelope. The tree is finite, so every successful open grows the
+      // context; an open that adds no new nodes makes no progress and
+      // fails closed.
+      const children = listMemoryNodeActiveChildren(db, "summary", parsed.id);
+      const childNodes: SynthesizerContextNode[] = children.map((c) => ({
+        nodeType: c.nodeType,
+        nodeId: c.nodeId,
+        prefixedId: c.prefixedId,
+        kind: c.kind,
+        text: c.text,
+        heat: c.heat,
+        tokens: c.estimatedTokens,
+        versionId: c.currentVersionId,
+        path:
+          target.path === "root"
+            ? target.prefixedId
+            : `${target.path}>${target.prefixedId}`,
+      }));
+      const knownKeys = new Set(
+        context.map((n) => contextKey(n.nodeType, n.nodeId)),
+      );
+      const newNodes = childNodes.filter(
+        (c) => !knownKeys.has(contextKey(c.nodeType, c.nodeId)),
+      );
+      if (newNodes.length === 0) {
+        // No new context: the first such open returns a corrective hint
+        // (the model may open an unopened summary or finalize); the second
+        // consecutive such open fails closed.
+        if (noNewContextOpens > 0) {
           return {
             ok: false,
-            error: `opening ${parsed.prefixed} would exceed the context envelope`,
+            error: `open target ${parsed.prefixed} adds no new context nodes after a prior hint; refusing to loop without new context`,
             usage,
           };
         }
-        context.push(...childNodes);
-        openedKeys.add(contextKey("summary", parsed.id));
-        openedSummaryIds.push(parsed.prefixed as SummaryNodeId);
+        noNewContextOpens = 1;
+        const reason = openedSummaryIds.includes(
+          parsed.prefixed as SummaryNodeId,
+        )
+          ? "it is already open and its children are listed above"
+          : children.length === 0
+            ? "it has no active children"
+            : "its children are already listed above";
+        noNewContextNote = `Note: your previous open of ${parsed.prefixed} added no new context nodes — everything it contains is already visible above (${reason}). If the visible context is sufficient for the request, finalize now; otherwise open a summary whose content is not yet visible.`;
+        continue;
       }
+      noNewContextOpens = 0;
+      noNewContextNote = null;
+      const addedTokens = newNodes.reduce((sum, c) => sum + c.tokens, 0);
+      // The cumulative envelope covers framing + request + top layer +
+      // opened children payloads + navigation + answer: the request tokens
+      // count here too, exactly as in the initial check.
+      if (requestTokens + contextTokens() + addedTokens > availableForNodes) {
+        return {
+          ok: false,
+          error: `opening ${parsed.prefixed} would exceed the context envelope`,
+          usage,
+        };
+      }
+      context.push(...newNodes);
+      openedSummaryIds.push(parsed.prefixed as SummaryNodeId);
       continue;
     }
 
@@ -482,13 +517,12 @@ export async function synthesizeMemoryAnswer(
         }
         sources.push(parsed.prefixed as MemoryNodeId | SummaryNodeId);
       }
-      // Sources beyond the cap are truncated, not fatal: the remainder are
-      // uncredited and render via the briefing index (which never heats).
-      const credited = sources.slice(0, MEMORY_SYNTHESIZER_MAX_SOURCES);
+      // Every validated source is credited: the context envelope and the
+      // visibility check already bound what the model can cite.
       return {
         ok: true,
         answer: action.answer.trim(),
-        sources: credited,
+        sources,
         openedSummaryIds,
         steps: step + 1,
         usage,
@@ -501,12 +535,6 @@ export async function synthesizeMemoryAnswer(
       usage,
     };
   }
-
-  return {
-    ok: false,
-    error: `step budget exhausted after ${maxSteps} steps without finalize`,
-    usage,
-  };
 }
 
 /** Default system prompt (used when prompts/memory-synthesizer.md is missing). */
@@ -515,9 +543,10 @@ export function defaultMemorySynthesizerSystemPrompt(): string {
     "You are the memory synthesizer for a coding agent.",
     "Given the user's request and the workspace memory tree, produce a concise grounded answer.",
     "The request filters the memories: judge relevance yourself.",
-    "Open a summary only when its condensation is insufficient for the request; never open everything.",
+    "Open a summary only when its content is not yet visible and its condensation is insufficient; finalize as soon as the visible context suffices.",
     "Never invent facts; base the answer only on the context.",
-    "List in sources every node whose content your answer relies on — not everything you read — at most 6, most important first (sources beyond 6 are not credited).",
+    "List in sources every node whose content your answer relies on — not everything you read — most important first; a well-supported answer may cite many.",
+    "Never re-open a summary or open one that adds no new context nodes (a repeated no-op ends the synthesis).",
     'If nothing is relevant, finalize with answer "No relevant memories found" and sources [].',
     "Output strict JSON only — no markdown fences.",
   ].join(" ");

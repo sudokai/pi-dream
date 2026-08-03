@@ -9,7 +9,6 @@ import { commitMemoryDreamSession } from "./memory-repository.ts";
 import { synthesizeMemoryAnswer } from "./memory-synthesizer.ts";
 import { defaultMemoryWorkspaceConfig } from "./memory-config.ts";
 import { retireMemoryNode } from "./memory-graph.ts";
-import { MEMORY_SYNTHESIZER_MAX_STEPS } from "./memory-types.ts";
 
 async function withClaimedDb(
   fn: (
@@ -161,7 +160,7 @@ test("opening an unseen id fails closed", async () => {
   });
 });
 
-test("sources outside the context fail closed; over-cap sources truncate", async () => {
+test("sources outside the context fail closed; every visible source is credited", async () => {
   await withClaimedDb(async (db, runId) => {
     seedTree(db, runId);
     const bad = await synthesizeMemoryAnswer({
@@ -182,8 +181,9 @@ test("sources outside the context fail closed; over-cap sources truncate", async
     if (bad.ok) return;
     assert.match(bad.error, /not visible in the current context/);
 
-    // More than MEMORY_SYNTHESIZER_MAX_SOURCES sources: first N credited.
-    // Build a tree with 8 visible nodes: S:1 wrapping M:1..M:7, plus S:1.
+    // Nine visible sources: every one must be credited.
+    // Build a tree with 9 visible nodes: roots S:1 and S:2, plus S:2's
+    // children M:3..M:9.
     commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "rich",
@@ -209,7 +209,7 @@ test("sources outside the context fail closed; over-cap sources truncate", async
         ],
       },
     });
-    const tooMany = await synthesizeMemoryAnswer({
+    const many = await synthesizeMemoryAnswer({
       db,
       request: "x",
       config: defaultMemoryWorkspaceConfig(),
@@ -224,16 +224,18 @@ test("sources outside the context fail closed; over-cap sources truncate", async
         }),
       ]),
     });
-    assert.equal(tooMany.ok, true, "over-citation is truncated, not fatal");
-    if (!tooMany.ok) return;
-    assert.equal(tooMany.sources.length, 6);
-    assert.deepEqual(tooMany.sources, [
+    assert.equal(many.ok, true, "all visible sources are credited");
+    if (!many.ok) return;
+    assert.equal(many.sources.length, 8);
+    assert.deepEqual(many.sources, [
       "M:3",
       "M:4",
       "M:5",
       "M:6",
       "M:7",
       "M:8",
+      "M:9",
+      "S:2",
     ]);
   });
 });
@@ -267,7 +269,48 @@ test("malformed output and unknown actions fail closed", async () => {
   });
 });
 
-test("step budget exhaustion fails closed", async () => {
+test("a single redundant open draws a corrective hint and the synthesis continues", async () => {
+  await withClaimedDb(async (db, runId) => {
+    seedTree(db, runId);
+    const users: string[] = [];
+    const responses = [
+      JSON.stringify({ action: "open", id: "S:1" }),
+      JSON.stringify({ action: "open", id: "S:1" }),
+      JSON.stringify({
+        action: "finalize",
+        answer: "Tooling: no emoji, pnpm.",
+        sources: ["M:1", "M:2"],
+      }),
+    ];
+    let i = 0;
+    const result = await synthesizeMemoryAnswer({
+      db,
+      request: "tooling?",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: modelRegistry() as never,
+      sessionModel: sessionModel(),
+      complete: async (input) => {
+        users.push(input.user);
+        return { text: responses[Math.min(i++, responses.length - 1)]! };
+      },
+    });
+    assert.equal(
+      result.ok,
+      true,
+      "a redundant open alone does not fail the synthesis",
+    );
+    if (!result.ok) return;
+    assert.deepEqual(result.sources, ["M:1", "M:2"]);
+    assert.equal(result.steps, 3);
+    assert.match(
+      users[2]!,
+      /previous open of S:1 added no new context nodes — everything it contains is already visible above \(it is already open and its children are listed above\). If the visible context is sufficient for the request, finalize now/,
+      "the third render carries the corrective hint",
+    );
+  });
+});
+
+test("a repeated open that adds no new context fails closed after the hint", async () => {
   await withClaimedDb(async (db, runId) => {
     seedTree(db, runId);
     const result = await synthesizeMemoryAnswer({
@@ -278,11 +321,66 @@ test("step budget exhaustion fails closed", async () => {
       sessionModel: sessionModel(),
       complete: sequenceComplete([
         JSON.stringify({ action: "open", id: "S:1" }),
+        JSON.stringify({ action: "open", id: "S:1" }),
+        JSON.stringify({ action: "open", id: "S:1" }),
       ]),
     });
     assert.equal(result.ok, false);
     if (result.ok) return;
-    assert.match(result.error, /step budget exhausted/);
+    assert.match(result.error, /no new context nodes after a prior hint/);
+  });
+});
+
+test("an open that adds new context resets the no-new-context hint", async () => {
+  await withClaimedDb(async (db, runId) => {
+    seedTree(db, runId);
+    // S:2 wraps M:3..M:9, a second summary to open.
+    commitMemoryDreamSession(db, {
+      runId,
+      sourceSessionId: "rich",
+      sessionPath: "/tmp/rich.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1,
+      contentHash: "h-rich",
+      plan: {
+        operations: [
+          ...Array.from({ length: 7 }, (_, i) => ({
+            op: "create" as const,
+            tempRef: `m${i + 1}`,
+            kind: "fact" as const,
+            observationText: `Fact ${i + 1}`,
+            memoryText: `Fact ${i + 1}`,
+          })),
+          {
+            op: "summarize",
+            tempRef: "s2",
+            text: "Rich",
+            memberIds: Array.from({ length: 7 }, (_, i) => `m${i + 1}`),
+          },
+        ],
+      },
+    });
+    const result = await synthesizeMemoryAnswer({
+      db,
+      request: "x",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: modelRegistry() as never,
+      sessionModel: sessionModel(),
+      complete: sequenceComplete([
+        JSON.stringify({ action: "open", id: "S:1" }),
+        JSON.stringify({ action: "open", id: "S:1" }), // no new context: hint only
+        JSON.stringify({ action: "open", id: "S:2" }), // new context clears the hint
+        JSON.stringify({ action: "open", id: "S:2" }), // no new context: hint only
+        JSON.stringify({
+          action: "finalize",
+          answer: "x",
+          sources: ["M:3"],
+        }),
+      ]),
+    });
+    assert.equal(result.ok, true, "only consecutive no-new-context opens fail");
+    if (!result.ok) return;
+    assert.deepEqual(result.openedSummaryIds, ["S:1", "S:2"]);
   });
 });
 
@@ -451,25 +549,70 @@ test("envelope enforcement: opening a summary whose children overflow fails clos
   });
 });
 
-test("max steps is configurable", async () => {
+test("deep tree navigation: a 10-level chain opens and finalizes", async () => {
   await withClaimedDb(async (db, runId) => {
-    seedTree(db, runId);
+    // S:10 -> S:9 -> ... -> S:1 -> M:1 (summary ids follow creation order:
+    // the root is the last-created summary). Opening down the chain takes 10
+    // opens (11 model calls). Summary texts strictly shrink upward (90..99
+    // tokens vs the memory's 100) so every level satisfies strict compaction.
+    commitMemoryDreamSession(db, {
+      runId,
+      sourceSessionId: "deep",
+      sessionPath: "/tmp/deep.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1,
+      contentHash: "h-deep",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "m1",
+            kind: "fact",
+            observationText: "x",
+            memoryText: "x".repeat(400),
+          },
+          ...Array.from({ length: 10 }, (_, i) => ({
+            op: "summarize" as const,
+            tempRef: `s${10 - i}`,
+            text: "x".repeat(360 + 4 * (10 - i - 1)),
+            memberIds: [i === 0 ? "m1" : `s${11 - i}`],
+          })),
+        ],
+      },
+    });
     const result = await synthesizeMemoryAnswer({
       db,
-      request: "x",
-      config: {
-        ...defaultMemoryWorkspaceConfig(),
-        synthesizerMaxSteps: MEMORY_SYNTHESIZER_MAX_STEPS + 1,
-      },
+      request: "deep?",
+      config: defaultMemoryWorkspaceConfig(),
       modelRegistry: modelRegistry() as never,
       sessionModel: sessionModel(),
       complete: sequenceComplete([
-        JSON.stringify({ action: "open", id: "S:1" }),
+        ...Array.from({ length: 10 }, (_, i) =>
+          JSON.stringify({ action: "open", id: `S:${10 - i}` }),
+        ),
+        JSON.stringify({
+          action: "finalize",
+          answer: "Deep fact",
+          sources: ["M:1"],
+        }),
       ]),
     });
-    assert.equal(result.ok, false);
-    if (result.ok) return;
-    assert.match(result.error, /step budget exhausted/);
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.steps, 11, "11 model calls for the 10-level chain");
+    assert.deepEqual(result.openedSummaryIds, [
+      "S:10",
+      "S:9",
+      "S:8",
+      "S:7",
+      "S:6",
+      "S:5",
+      "S:4",
+      "S:3",
+      "S:2",
+      "S:1",
+    ]);
+    assert.deepEqual(result.sources, ["M:1"]);
   });
 });
 
@@ -492,41 +635,6 @@ test("a long request counts against the context envelope and fails closed", asyn
     assert.equal(result.ok, false);
     if (result.ok) return;
     assert.match(result.error, /context envelope/);
-  });
-});
-
-test("re-opening an already-open summary does not duplicate its children", async () => {
-  await withClaimedDb(async (db, runId) => {
-    seedTree(db, runId);
-    const result = await synthesizeMemoryAnswer({
-      db,
-      request: "tooling?",
-      config: defaultMemoryWorkspaceConfig(),
-      modelRegistry: modelRegistry() as never,
-      sessionModel: sessionModel(),
-      complete: sequenceComplete([
-        JSON.stringify({ action: "open", id: "S:1" }),
-        JSON.stringify({ action: "open", id: "S:1" }),
-        JSON.stringify({
-          action: "finalize",
-          answer: "Tooling: no emoji, pnpm.",
-          sources: ["M:1", "M:2"],
-        }),
-      ]),
-    });
-    assert.equal(
-      result.ok,
-      true,
-      "double-open must not fail or corrupt context",
-    );
-    if (!result.ok) return;
-    assert.deepEqual(
-      result.openedSummaryIds,
-      ["S:1"],
-      "opened summaries are deduplicated",
-    );
-    assert.equal(result.steps, 3);
-    assert.deepEqual(result.sources, ["M:1", "M:2"]);
   });
 });
 

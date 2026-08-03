@@ -147,7 +147,6 @@ test("new consolidation/synthesizer keys parse with defaults", () => {
   assert.equal(r.ok, true);
   if (r.ok) {
     assert.equal(r.config.hotHeatThreshold, 1.5);
-    assert.equal(r.config.synthesizerMaxSteps, 8);
     assert.equal(r.config.synthesizerContextBudget, 16000);
     assert.equal(r.config.synthesizerAnswerBudget, 2000);
   }
@@ -160,6 +159,7 @@ test("removed keys fail closed like any unknown key", () => {
     "semanticFloor",
     "coldHeatThreshold",
     "consolidationMergeBound",
+    "synthesizerMaxSteps",
   ]) {
     const r = parseMemoryWorkspaceConfig({
       version: 1,

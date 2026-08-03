@@ -345,7 +345,7 @@ test("buildMemoryStatusText shows essentials; verbose adds internals", () => {
     assert.match(verbose, /cadence turns:\s+0 \(min 10\)/);
     assert.match(
       verbose,
-      /pending attempts: merge:memory:1\+memory:2 \(1\/3\)/,
+      /pending attempts: merge:memory:1\+memory:2 \(1\/5\)/,
     );
   } finally {
     closeMemoryDatabase(db);

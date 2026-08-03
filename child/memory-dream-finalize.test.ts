@@ -194,6 +194,8 @@ test("finalize fails loudly when the last inspect batch has outstanding candidat
     incrementMemoryConsolidationAttempt(db, "merge:memory:1+memory:2", 0);
     incrementMemoryConsolidationAttempt(db, "merge:memory:1+memory:2", 0);
     incrementMemoryConsolidationAttempt(db, "merge:memory:1+memory:2", 0);
+    incrementMemoryConsolidationAttempt(db, "merge:memory:1+memory:2", 0);
+    incrementMemoryConsolidationAttempt(db, "merge:memory:1+memory:2", 0);
     const bound = await findMemoryConsolidationCoverageError(
       db,
       claim.runId,

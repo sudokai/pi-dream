@@ -64,7 +64,6 @@ All fields are optional except `version` and `enabled`; missing optional fields 
   "briefingTokenBudget": 8000,
   "embeddingModel": "Xenova/all-MiniLM-L6-v2",
   "hotHeatThreshold": 1.5,
-  "synthesizerMaxSteps": 8,
   "synthesizerContextBudget": 16000,
   "synthesizerAnswerBudget": 2000,
   "noveltyBoost": 1.0,
@@ -86,14 +85,13 @@ All fields are optional except `version` and `enabled`; missing optional fields 
 | `briefingTokenBudget`      | 8000                      | Estimated-token cap for the top layer (consolidation-enforced; reads fail closed above it, and while merge-eligible candidates exist an over-budget layer waives the cadence gates so the next settle runs urgent consolidation). Must be ≥ 200 (the largest single-node estimate). |
 | `embeddingModel`           | `Xenova/all-MiniLM-L6-v2` | Local embedding model id (first use may download it). Used by consolidation and dreaming only — never by the briefing/search read path.                                                                                                                                             |
 | `hotHeatThreshold`         | 1.5                       | Children at or above this heat are promote-eligible (resurfaced).                                                                                                                                                                                                                   |
-| `synthesizerMaxSteps`      | 8                         | Hard ceiling on synthesizer navigation steps (open + finalize calls) per answer.                                                                                                                                                                                                    |
-| `synthesizerContextBudget` | 16000                     | Serialized-context envelope: framing + request + top layer + navigation reserve + answer reserve.                                                                                                                                                                                   |
+| `synthesizerContextBudget` | 16000                     | Serialized-context envelope: framing + request + top layer + navigation reserve + answer reserve. Synthesizer navigation has no step limit: the loop ends on finalize; an open that adds no new context draws one corrective hint and fails closed if repeated.                     |
 | `synthesizerAnswerBudget`  | 2000                      | Answer token cap inside the envelope.                                                                                                                                                                                                                                               |
 | `noveltyBoost`             | 1.0                       | Temporary heat added to a newly activated memory.                                                                                                                                                                                                                                   |
 | `noveltyGenerations`       | 3                         | Activity generations novelty lasts.                                                                                                                                                                                                                                                 |
 | `heatDecay`                | 0.85                      | Per-generation exponential decay factor for recall heat; repeated recalls of a node within one generation count once.                                                                                                                                                               |
 
-**Removed keys**: `hybridPoolSize`, `rrfK`, `semanticFloor`, `coldHeatThreshold`, and `consolidationMergeBound` no longer exist. A `config.json` containing them (or any other unknown key) fails closed — memory is disabled for the workspace until the file is repaired.
+**Removed keys**: `hybridPoolSize`, `rrfK`, `semanticFloor`, `coldHeatThreshold`, `consolidationMergeBound`, and `synthesizerMaxSteps` no longer exist. A `config.json` containing them (or any other unknown key) fails closed — memory is disabled for the workspace until the file is repaired.
 
 **Unknown keys are rejected**: a `config.json` containing a key not listed above fails closed — memory is disabled for the workspace until the file is repaired. Invalid configured models fail that operation closed (no silent fallback); invalid or unreadable `config.json` disables memory until repaired. Cross-key validation rejects `briefingTokenBudget < 200` and `synthesizerContextBudget` at or below the envelope floor (see the table row) the same way.
 

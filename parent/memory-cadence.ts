@@ -1,6 +1,6 @@
 /**
- * Automatic dreaming cadence: turns + elapsed time + transcript advancement,
- * with an urgent over-budget override. Evaluated on agent_settled.
+ * Automatic dreaming cadence: turns + elapsed time + transcript advancement.
+ * Evaluated on agent_settled.
  */
 
 import type { DatabaseSync } from "node:sqlite";
@@ -9,12 +9,7 @@ import {
   getMemoryWorkspaceState,
   updateMemoryCadenceState,
 } from "../shared/memory-repository.ts";
-import {
-  estimateTopLayerTokens,
-  listMemoryTreeRoots,
-} from "../shared/memory-tree.ts";
 import { hasMemoryDreamEligibleSession } from "../shared/memory-session-discovery.ts";
-import { hasMemoryConsolidationCandidates } from "../shared/memory-consolidation.ts";
 
 export interface MemoryCadenceEvaluation {
   shouldDream: boolean;
@@ -26,8 +21,7 @@ export interface MemoryCadenceEvaluation {
 
 /**
  * Update turn counter on settle and evaluate the automatic gates: turns and
- * elapsed time (waived while the top layer is over the briefing budget),
- * plus transcript advancement or consolidation candidates.
+ * elapsed time since the last successful run, plus transcript advancement.
  * Does not launch a dream — caller decides.
  */
 export function evaluateMemoryDreamCadence(
@@ -60,48 +54,26 @@ export function evaluateMemoryDreamCadence(
     input.cwd,
     input.workspaceId,
   );
-  // Dream-only mode: deterministic tree candidates replace the transcript
-  // gate (pure SQL — no embedder load on the interactive settle path).
-  const consolidationCandidates = hasMemoryConsolidationCandidates(db, {
-    config: input.config,
-  });
-
-  // Urgent consolidation: an over-budget top layer fails closed on reads, so
-  // when merge-eligible candidates exist the turn/time gates are waived and
-  // the next settle launches a dream-only consolidation run. With no
-  // candidates (summary grace window, attempt bounds) the gates stay in force;
-  // reads remain closed until candidates appear (grace expires as
-  // generations advance).
-  const layerTokens = estimateTopLayerTokens(db, listMemoryTreeRoots(db));
-  const layerOverBudget = layerTokens > input.config.briefingTokenBudget;
 
   const reasons: string[] = [];
   if (!enabled) reasons.push("paused");
-  if (layerOverBudget) {
-    reasons.push(
-      consolidationCandidates
-        ? `top layer ${layerTokens}/${input.config.briefingTokenBudget} tokens over budget (urgent consolidation)`
-        : `top layer ${layerTokens}/${input.config.briefingTokenBudget} tokens over budget (no consolidation candidates yet)`,
-    );
-  } else {
-    if (turns < input.config.minTurns) {
-      reasons.push(`turns ${turns}/${input.config.minTurns}`);
-    }
-    if (minutesSince < input.config.minMinutes) {
-      reasons.push(
-        `minutes ${minutesSince === Number.POSITIVE_INFINITY ? "∞" : minutesSince.toFixed(1)}/${input.config.minMinutes}`,
-      );
-    }
+  if (turns < input.config.minTurns) {
+    reasons.push(`turns ${turns}/${input.config.minTurns}`);
   }
-  if (!transcriptAdvanced && !consolidationCandidates) {
+  if (minutesSince < input.config.minMinutes) {
+    reasons.push(
+      `minutes ${minutesSince === Number.POSITIVE_INFINITY ? "∞" : minutesSince.toFixed(1)}/${input.config.minMinutes}`,
+    );
+  }
+  if (!transcriptAdvanced) {
     reasons.push("no uncheckpointed transcripts");
   }
 
-  const gatesMet =
-    layerOverBudget ||
-    (turns >= input.config.minTurns && minutesSince >= input.config.minMinutes);
   const shouldDream =
-    enabled && gatesMet && (transcriptAdvanced || consolidationCandidates);
+    enabled &&
+    turns >= input.config.minTurns &&
+    minutesSince >= input.config.minMinutes &&
+    transcriptAdvanced;
 
   return {
     shouldDream,

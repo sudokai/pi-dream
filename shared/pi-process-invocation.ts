@@ -45,9 +45,7 @@ export const MEMORY_DREAMER_TASK =
 export const MEMORY_DREAMER_CHILD_TOOLS = [
   "memory_list_sessions",
   "memory_read_session",
-  "memory_inspect_graph",
   "memory_commit_session",
-  "memory_commit_consolidation",
 ] as const;
 
 export interface BuildMemoryDreamerSpawnInput {
@@ -58,6 +56,8 @@ export interface BuildMemoryDreamerSpawnInput {
   runId: string;
   dreamModel: string;
   dreamThinking?: string;
+  /** Local embedding model id; the child maintains the embeddings projection with it. */
+  embeddingModel: string;
 }
 
 /**
@@ -102,6 +102,7 @@ export function buildMemoryDreamerSpawnArgs(
     PI_DREAM_DB: input.dbPath,
     PI_DREAM_MANIFEST: input.manifestPath,
     PI_DREAM_RUN_ID: input.runId,
+    PI_DREAM_EMBEDDING_MODEL: input.embeddingModel,
   };
 
   return { args, env };

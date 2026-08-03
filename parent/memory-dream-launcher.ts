@@ -16,7 +16,6 @@ import {
   buildMemoryDreamManifest,
   writeMemoryDreamManifest,
 } from "../shared/memory-session-discovery.ts";
-import { hasMemoryConsolidationCandidates } from "../shared/memory-consolidation.ts";
 import {
   formatSessionModelId,
   resolveMemoryModel,
@@ -95,12 +94,7 @@ export function launchMemoryDreamRun(
       input.workspaceId,
       { snapshotDir: runDir },
     );
-    // Dream-only mode: an empty manifest is valid when deterministic
-    // consolidation candidates exist (pure SQL gate — no embedder here).
-    const consolidationCandidates =
-      manifest.length === 0 &&
-      hasMemoryConsolidationCandidates(input.db, { config: input.config });
-    if (manifest.length === 0 && !consolidationCandidates) {
+    if (manifest.length === 0) {
       releaseMemoryRunClaim(input.db, runId, "No eligible sessions to dream");
       try {
         fs.rmSync(runDir, { recursive: true, force: true });
@@ -123,6 +117,7 @@ export function launchMemoryDreamRun(
       runId,
       dreamModel: resolved.resolved.modelId,
       dreamThinking: resolved.resolved.thinking,
+      embeddingModel: input.config.embeddingModel,
     });
 
     const invocation = getMemoryPiInvocation(args);

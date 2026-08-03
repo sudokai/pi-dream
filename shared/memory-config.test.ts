@@ -18,7 +18,7 @@ test("defaultMemoryWorkspaceConfig is enabled with cadence defaults", () => {
   assert.equal(c.enabled, true);
   assert.equal(c.minTurns, 10);
   assert.equal(c.minMinutes, 120);
-  assert.equal(c.briefingTokenBudget, 8000);
+  assert.equal(c.embeddingModel, "Xenova/all-MiniLM-L6-v2");
 });
 
 test("parseMemoryWorkspaceConfig rejects unknown keys", () => {
@@ -139,21 +139,15 @@ test("splitMemoryModelId and validateOptionalMemoryModel", () => {
   );
 });
 
-test("new consolidation/synthesizer keys parse with defaults", () => {
-  const r = parseMemoryWorkspaceConfig({
-    version: 1,
-    enabled: true,
-  });
-  assert.equal(r.ok, true);
-  if (r.ok) {
-    assert.equal(r.config.hotHeatThreshold, 1.5);
-    assert.equal(r.config.synthesizerContextBudget, 16000);
-    assert.equal(r.config.synthesizerAnswerBudget, 2000);
-  }
-});
-
-test("removed keys fail closed like any unknown key", () => {
+test("retired heat and token-capacity keys fail closed like any unknown key", () => {
   for (const key of [
+    "hotHeatThreshold",
+    "synthesizerContextBudget",
+    "synthesizerAnswerBudget",
+    "noveltyBoost",
+    "noveltyGenerations",
+    "heatDecay",
+    "briefingTokenBudget",
     "hybridPoolSize",
     "rrfK",
     "semanticFloor",
@@ -171,24 +165,16 @@ test("removed keys fail closed like any unknown key", () => {
   }
 });
 
-test("briefingTokenBudget below the single-node floor is rejected", () => {
-  const r = parseMemoryWorkspaceConfig({
-    version: 1,
-    enabled: true,
-    briefingTokenBudget: 199,
-  });
-  assert.equal(r.ok, false);
-  if (!r.ok) assert.match(r.error, /single-node floor/);
-
-  const ok = parseMemoryWorkspaceConfig({
-    version: 1,
-    enabled: true,
-    briefingTokenBudget: 200,
-  });
-  assert.equal(ok.ok, true);
+test("a config with only version and enabled parses", () => {
+  const r = parseMemoryWorkspaceConfig({ version: 1, enabled: true });
+  assert.equal(r.ok, true);
+  if (r.ok) {
+    assert.equal(r.config.minTurns, 10);
+    assert.equal(r.config.minMinutes, 120);
+  }
 });
 
-test("loadMemoryWorkspaceConfig with legacy hybrid keys disables memory", () => {
+test("loadMemoryWorkspaceConfig with legacy heat keys disables memory", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-cfg-legacy-"));
   try {
     const p = path.join(dir, "config.json");
@@ -197,9 +183,8 @@ test("loadMemoryWorkspaceConfig with legacy hybrid keys disables memory", () => 
       JSON.stringify({
         version: 1,
         enabled: true,
-        hybridPoolSize: 50,
-        rrfK: 20,
-        semanticFloor: 0.25,
+        heatDecay: 0.85,
+        hotHeatThreshold: 1.5,
       }),
       "utf-8",
     );
@@ -212,30 +197,4 @@ test("loadMemoryWorkspaceConfig with legacy hybrid keys disables memory", () => 
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
-});
-
-test("synthesizerContextBudget at/below the envelope floor is rejected", () => {
-  const floor = 8000 + 512 + 2000 + 256; // briefing + framing + answer + nav
-  const at = parseMemoryWorkspaceConfig({
-    version: 1,
-    enabled: true,
-    synthesizerContextBudget: floor,
-  });
-  assert.equal(at.ok, false, "equality leaves no room for a request");
-  if (!at.ok) assert.match(at.error, /synthesizer envelope/);
-
-  const below = parseMemoryWorkspaceConfig({
-    version: 1,
-    enabled: true,
-    synthesizerContextBudget: 5000,
-  });
-  assert.equal(below.ok, false);
-  if (!below.ok) assert.match(below.error, /synthesizerContextBudget/);
-
-  const ok = parseMemoryWorkspaceConfig({
-    version: 1,
-    enabled: true,
-    synthesizerContextBudget: floor + 1,
-  });
-  assert.equal(ok.ok, true);
 });

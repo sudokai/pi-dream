@@ -13,7 +13,14 @@ import {
 } from "./memory-workspace-id.ts";
 import { ensureMemorySecureDir } from "./memory-fs.ts";
 
-export const MEMORY_SCHEMA_VERSION = 3;
+/**
+ * Schema version. Bumped from 4 to 5 when `workspace_state` gained
+ * `embedding_degraded_error`: user_version uniquely determines shape, and
+ * the wipe-on-bump policy means a store from the previous build must not
+ * open against the new shape. No v4 store exists in the wild (all real
+ * stores were v3 before the retrieval redesign), so the bump is free.
+ */
+export const MEMORY_SCHEMA_VERSION = 5;
 
 const SCHEMA_SQL = `
 CREATE TABLE workspace_state (
@@ -22,6 +29,8 @@ CREATE TABLE workspace_state (
   turns_since_last_run INTEGER NOT NULL DEFAULT 0,
   last_successful_run_at_ms INTEGER NOT NULL DEFAULT 0,
   last_observed_transcript_mtime_ms INTEGER,
+  recall_capacity_error TEXT,
+  embedding_degraded_error TEXT,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -62,7 +71,6 @@ CREATE TABLE memories (
   state TEXT NOT NULL CHECK (state IN ('active', 'conflicted', 'superseded', 'retired')),
   current_version_id INTEGER,
   creation_generation INTEGER NOT NULL,
-  novelty_until_generation INTEGER,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -81,52 +89,33 @@ CREATE TABLE memory_observations (
   PRIMARY KEY (memory_id, observation_id)
 );
 
-CREATE TABLE summaries (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  state TEXT NOT NULL CHECK (state IN ('active', 'conflicted', 'superseded', 'retired')),
-  current_version_id INTEGER,
-  creation_generation INTEGER NOT NULL,
-  label_source TEXT NOT NULL DEFAULT 'model' CHECK (label_source IN ('model', 'fallback')),
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE summary_versions (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  summary_id INTEGER NOT NULL REFERENCES summaries(id),
-  text TEXT NOT NULL,
-  previous_version_id INTEGER REFERENCES summary_versions(id),
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
 CREATE TABLE graph_edges (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  relation TEXT NOT NULL CHECK (relation IN ('contains', 'related_to', 'supersedes', 'conflicts_with')),
-  from_type TEXT NOT NULL CHECK (from_type IN ('memory', 'summary')),
+  relation TEXT NOT NULL CHECK (relation IN ('related_to', 'supersedes', 'conflicts_with')),
+  from_type TEXT NOT NULL CHECK (from_type IN ('memory')),
   from_id INTEGER NOT NULL,
-  to_type TEXT NOT NULL CHECK (to_type IN ('memory', 'summary')),
+  to_type TEXT NOT NULL CHECK (to_type IN ('memory')),
   to_id INTEGER NOT NULL,
   state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'retired')),
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- Only active rows must be unique: append-only retired history never blocks a
--- new active edge (retire -> re-merge under the same parent after promote).
+-- new active edge (retire -> re-link the same pair later).
 CREATE UNIQUE INDEX idx_graph_edges_active_unique ON graph_edges
   (relation, from_type, from_id, to_type, to_id) WHERE state = 'active';
 
-CREATE TABLE recall_events (
+CREATE TABLE citation_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  node_type TEXT NOT NULL CHECK (node_type IN ('memory', 'summary')),
+  node_type TEXT NOT NULL CHECK (node_type IN ('memory')),
   node_id INTEGER NOT NULL,
-  activity_generation INTEGER NOT NULL,
-  source TEXT NOT NULL CHECK (source IN ('startup', 'search', 'open')),
+  source TEXT NOT NULL CHECK (source IN ('briefing', 'search')),
   pi_session_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE search_documents (
-  node_type TEXT NOT NULL CHECK (node_type IN ('memory', 'summary')),
+  node_type TEXT NOT NULL CHECK (node_type IN ('memory')),
   node_id INTEGER NOT NULL,
   text TEXT NOT NULL,
   kind TEXT NOT NULL,
@@ -135,15 +124,13 @@ CREATE TABLE search_documents (
   PRIMARY KEY (node_type, node_id)
 );
 
-CREATE TABLE consolidation_attempts (
-  key TEXT PRIMARY KEY,
-  attempts INTEGER NOT NULL DEFAULT 0,
-  last_generation INTEGER NOT NULL,
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+-- FTS5 over active memory text; rowid equals the memory id so projection
+-- maintenance can upsert/delete by rowid. Maintained alongside
+-- search_documents by the shared projection helpers.
+CREATE VIRTUAL TABLE memory_fts USING fts5(text, tokenize='unicode61');
 
 CREATE TABLE embeddings (
-  node_type TEXT NOT NULL CHECK (node_type IN ('memory', 'summary')),
+  node_type TEXT NOT NULL CHECK (node_type IN ('memory')),
   node_id INTEGER NOT NULL,
   model_id TEXT NOT NULL,
   content_hash TEXT NOT NULL,
@@ -153,12 +140,11 @@ CREATE TABLE embeddings (
 );
 
 CREATE INDEX idx_memories_state ON memories(state);
-CREATE INDEX idx_summaries_state ON summaries(state);
 CREATE INDEX idx_observations_source ON observations(source_session_id);
 CREATE INDEX idx_memory_observations_obs ON memory_observations(observation_id);
 CREATE INDEX idx_graph_from ON graph_edges(from_type, from_id);
 CREATE INDEX idx_graph_to ON graph_edges(to_type, to_id);
-CREATE INDEX idx_recall_node ON recall_events(node_type, node_id);
+CREATE INDEX idx_citation_node ON citation_events(node_type, node_id, created_at);
 CREATE INDEX idx_dream_runs_status ON dream_runs(status, reported_to_parent);
 `;
 
@@ -198,13 +184,11 @@ const REQUIRED_TABLES = [
   "memories",
   "memory_versions",
   "memory_observations",
-  "summaries",
-  "summary_versions",
   "graph_edges",
-  "recall_events",
+  "citation_events",
   "search_documents",
+  "memory_fts",
   "embeddings",
-  "consolidation_attempts",
 ] as const;
 
 function validateMemorySchema(db: DatabaseSync): void {
@@ -231,6 +215,7 @@ const ALL_KNOWN_TABLES = [
   "summary_versions",
   "graph_edges",
   "recall_events",
+  "citation_events",
   "search_documents",
   "search_fts",
   "search_fts_data",
@@ -238,6 +223,12 @@ const ALL_KNOWN_TABLES = [
   "search_fts_content",
   "search_fts_docsize",
   "search_fts_config",
+  "memory_fts",
+  "memory_fts_data",
+  "memory_fts_idx",
+  "memory_fts_content",
+  "memory_fts_docsize",
+  "memory_fts_config",
   "embeddings",
   "consolidation_attempts",
   "maintenance_attempts",
@@ -351,11 +342,11 @@ export function closeMemoryDatabase(db: DatabaseSync | null | undefined): void {
   }
 }
 
-/** Upsert one search document (canonical node-text projection). */
+/** Upsert one search document (canonical node-text projection + FTS row). */
 export function upsertMemorySearchDocument(
   db: DatabaseSync,
   doc: {
-    nodeType: "memory" | "summary";
+    nodeType: "memory";
     nodeId: number;
     text: string;
     kind: string;
@@ -369,17 +360,39 @@ export function upsertMemorySearchDocument(
     `INSERT INTO search_documents (node_type, node_id, text, kind, state, updated_at)
      VALUES (?, ?, ?, ?, ?, datetime('now'))`,
   ).run(doc.nodeType, doc.nodeId, doc.text, doc.kind, doc.state);
+  db.prepare(`DELETE FROM memory_fts WHERE rowid = ?`).run(doc.nodeId);
+  db.prepare(`INSERT INTO memory_fts (rowid, text) VALUES (?, ?)`).run(
+    doc.nodeId,
+    doc.text,
+  );
 }
 
-/** Remove a node from the derived search projection (documents + embeddings). */
+/** Remove a node from the derived search projections (FTS + documents + embeddings). */
 export function deleteMemorySearchDocument(
   db: DatabaseSync,
-  nodeType: "memory" | "summary",
+  nodeType: "memory",
   nodeId: number,
 ): void {
   db.prepare(
     "DELETE FROM search_documents WHERE node_type = ? AND node_id = ?",
   ).run(nodeType, nodeId);
+  db.prepare("DELETE FROM embeddings WHERE node_type = ? AND node_id = ?").run(
+    nodeType,
+    nodeId,
+  );
+  db.prepare(`DELETE FROM memory_fts WHERE rowid = ?`).run(nodeId);
+}
+
+/**
+ * Remove every embedding row for a memory (all models). Used by write paths
+ * whose text changed but whose search document stays (revise): the next
+ * embedding pass re-embeds from the fresh search_documents row.
+ */
+export function deleteMemoryEmbeddings(
+  db: DatabaseSync,
+  nodeType: "memory",
+  nodeId: number,
+): void {
   db.prepare("DELETE FROM embeddings WHERE node_type = ? AND node_id = ?").run(
     nodeType,
     nodeId,

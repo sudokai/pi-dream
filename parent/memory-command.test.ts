@@ -27,6 +27,10 @@ import {
   finalizeMemoryRun,
 } from "../shared/memory-run-claim.ts";
 import { consumeMemoryRunNotification } from "./memory-session-lifecycle.ts";
+import {
+  setMemoryEmbeddingDegradedError,
+  setMemoryRecallCapacityError,
+} from "../shared/memory-repository.ts";
 
 test("parseMemoryCommandArgs", () => {
   assert.deepEqual(parseMemoryCommandArgs(""), { action: "status" });
@@ -57,9 +61,9 @@ test("parseMemoryCommandArgs", () => {
   assert.deepEqual(parseMemoryCommandArgs("dream"), { action: "dream" });
   assert.deepEqual(parseMemoryCommandArgs("pause"), { action: "pause" });
   assert.deepEqual(parseMemoryCommandArgs("resume"), { action: "resume" });
-  assert.deepEqual(parseMemoryCommandArgs("forget S:2"), {
+  assert.deepEqual(parseMemoryCommandArgs("forget M:2"), {
     action: "forget",
-    id: "S:2",
+    id: "M:2",
   });
   assert.equal(parseMemoryCommandArgs("nope").action, "error");
 });
@@ -78,6 +82,7 @@ test("buildMemoryDreamerSpawnArgs is stable and isolated", () => {
     manifestPath: "/tmp/manifest.json",
     runId: "run-1",
     dreamModel: "anthropic/claude-sonnet-4-5",
+    embeddingModel: "Xenova/all-MiniLM-L6-v2",
   });
   assert.ok(args.includes("--no-session"));
   assert.ok(args.includes("--no-extensions"));
@@ -85,9 +90,10 @@ test("buildMemoryDreamerSpawnArgs is stable and isolated", () => {
   assert.equal(env.PI_DREAM_CHILD, "1");
   assert.equal(env.PI_DREAM_RUN_ID, "run-1");
   assert.equal(env.PI_DREAM_WORKSPACE_ID, "abc_widget");
+  assert.equal(env.PI_DREAM_EMBEDDING_MODEL, "Xenova/all-MiniLM-L6-v2");
 });
 
-test("evaluateMemoryDreamCadence requires three gates", () => {
+test("evaluateMemoryDreamCadence requires turns, minutes, and transcripts", () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     const config = {
@@ -310,21 +316,19 @@ test("buildMemoryStatusText shows essentials; verbose adds internals", () => {
         ],
       },
     });
-    db.prepare(
-      `INSERT INTO consolidation_attempts (key, attempts, last_generation) VALUES ('merge:memory:1+memory:2', 1, 0)`,
-    ).run();
-    const cfg = { ...defaultMemoryWorkspaceConfig(), briefingTokenBudget: 1 };
     const text = buildMemoryStatusText({
       workspaceId: "ws-test",
       db,
-      config: cfg,
+      config: defaultMemoryWorkspaceConfig(),
     });
-    assert.match(text, /OVER BUDGET: \d+\/1 tokens — 2 roots/);
-    assert.match(text, /last dream:\s+none/);
     assert.match(
       text,
       /memories:\s+2 active \(0 conflicted, 0 superseded, 0 retired\)/,
     );
+    assert.match(text, /citations:\s+0/);
+    assert.match(text, /active dream:/);
+    assert.doesNotMatch(text, /summaries/);
+    assert.doesNotMatch(text, /top layer/);
     assert.doesNotMatch(text, /pending attempts/);
     assert.doesNotMatch(text, /workspace id/);
     assert.doesNotMatch(text, /unreported dreams/);
@@ -334,7 +338,7 @@ test("buildMemoryStatusText shows essentials; verbose adds internals", () => {
     const verbose = buildMemoryStatusText({
       workspaceId: "ws-test",
       db,
-      config: cfg,
+      config: defaultMemoryWorkspaceConfig(),
       verbose: true,
     });
     assert.match(verbose, /workspace id:\s+ws-test/);
@@ -343,215 +347,65 @@ test("buildMemoryStatusText shows essentials; verbose adds internals", () => {
     assert.match(verbose, /unreported dreams: 0/);
     assert.match(verbose, /config:\s+\S+ws-test/);
     assert.match(verbose, /cadence turns:\s+0 \(min 10\)/);
-    assert.match(
-      verbose,
-      /pending attempts: merge:memory:1\+memory:2 \(1\/5\)/,
-    );
   } finally {
     closeMemoryDatabase(db);
   }
 });
 
-test("cadence fires a dream-only run with no transcripts when candidates exist", () => {
+test("status surfaces a persisted recall-capacity failure", () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
-    const claim = acquireMemoryRunClaim(db, "auto");
-    assert.ok(claim.runId);
-    commitMemoryDreamSession(db, {
-      runId: claim.runId!,
-      sourceSessionId: "s1",
-      sessionPath: "/tmp/s1.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: 1,
-      contentHash: "h1",
-      plan: {
-        operations: [
-          {
-            op: "create",
-            tempRef: "m",
-            kind: "fact",
-            observationText: "Use tabs for indentation",
-            memoryText: "Use tabs for indentation",
-          },
-          {
-            op: "create",
-            tempRef: "m2",
-            kind: "fact",
-            observationText: "No emoji in commits",
-            memoryText: "No emoji in commits",
-          },
-        ],
-      },
-    });
-    updateMemoryCadenceState(db, {
-      turnsSinceLastRun: 0,
-      lastSuccessfulRunAtMs: 1_000_000,
-    });
-    const config = {
-      ...defaultMemoryWorkspaceConfig(),
-      minTurns: 2,
-      minMinutes: 1,
-    };
-    // Without candidates: transcript gate blocks.
-    const noCandidates = evaluateMemoryDreamCadence(db, {
-      cwd: "/nonexistent-dream-path",
-      workspaceId: "ws",
-      config,
-      nowMs: 2_000_000,
-    });
-    assert.equal(noCandidates.shouldDream, false);
-
-    // Over-budget top layer -> consolidation candidates -> shouldDream
-    // without transcripts (under budget, cold roots alone never qualify).
-    const withCandidates = evaluateMemoryDreamCadence(db, {
-      cwd: "/nonexistent-dream-path",
-      workspaceId: "ws",
-      config: { ...config, briefingTokenBudget: 1 },
-      nowMs: 2_000_000 + 120_000,
-    });
-    assert.equal(withCandidates.shouldDream, true);
-    assert.ok(
-      !withCandidates.reasons.some((r) => r.includes("no uncheckpointed")),
-      "consolidation candidates replace the transcript gate",
+    setMemoryRecallCapacityError(
+      db,
+      "recall model x/y context (100 tokens) cannot hold the complete request (4000 tokens)",
     );
+    const text = buildMemoryStatusText({
+      workspaceId: "ws-test",
+      db,
+      config: defaultMemoryWorkspaceConfig(),
+    });
+    assert.match(text, /recall capacity:\s+FAILED CLOSED/);
+    assert.match(text, /4000 tokens/);
+    setMemoryRecallCapacityError(db, null);
+    const cleared = buildMemoryStatusText({
+      workspaceId: "ws-test",
+      db,
+      config: defaultMemoryWorkspaceConfig(),
+    });
+    assert.doesNotMatch(cleared, /recall capacity/);
   } finally {
     closeMemoryDatabase(db);
   }
 });
 
-test("an over-budget top layer waives the cadence gates for urgent consolidation", () => {
+test("status surfaces a persisted embedding-pass degradation", () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
-    const claim = acquireMemoryRunClaim(db, "auto");
-    assert.ok(claim.runId);
-    const ops = Array.from({ length: 60 }, (_, i) => ({
-      op: "create" as const,
-      tempRef: `m${i}`,
-      kind: "fact" as const,
-      observationText: `Fact ${i}`,
-      memoryText: `Fact ${i}`,
-    }));
-    commitMemoryDreamSession(db, {
-      runId: claim.runId!,
-      sourceSessionId: "s1",
-      sessionPath: "/tmp/s1.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: 1,
-      contentHash: "h1",
-      plan: { operations: ops },
-    });
-    updateMemoryCadenceState(db, {
-      turnsSinceLastRun: 0,
-      lastSuccessfulRunAtMs: 1_000_000,
-    });
-    const config = {
-      ...defaultMemoryWorkspaceConfig(),
-      minTurns: 2,
-      minMinutes: 1,
-    };
-    // First settle: turns=1, minutes≈0 — the gates block while under budget.
-    const gated = evaluateMemoryDreamCadence(db, {
-      cwd: "/nonexistent-dream-path",
-      workspaceId: "ws",
-      config,
-      nowMs: 1_000_001,
-    });
-    assert.equal(gated.shouldDream, false);
-
-    // Reset the turn counter; an over-budget layer waives the same gates.
-    updateMemoryCadenceState(db, { turnsSinceLastRun: 0 });
-    const urgent = evaluateMemoryDreamCadence(db, {
-      cwd: "/nonexistent-dream-path",
-      workspaceId: "ws",
-      config: { ...config, briefingTokenBudget: 1 },
-      nowMs: 1_000_002,
-    });
-    assert.equal(urgent.shouldDream, true);
-    assert.ok(
-      urgent.reasons.some((r) => r.includes("over budget")),
-      "reason names the over-budget urgency",
+    setMemoryEmbeddingDegradedError(
+      db,
+      "Semantic embedder unavailable: model download failed",
     );
-    assert.ok(
-      !urgent.reasons.some((r) => r.startsWith("turns")),
-      "turn gate reason is hidden while over budget",
-    );
+    const text = buildMemoryStatusText({
+      workspaceId: "ws-test",
+      db,
+      config: defaultMemoryWorkspaceConfig(),
+    });
+    assert.match(text, /semantic index:\s+DEGRADED/);
+    assert.match(text, /model download failed/);
+    // Cleared on a later successful pass: the line disappears.
+    setMemoryEmbeddingDegradedError(db, null);
+    const cleared = buildMemoryStatusText({
+      workspaceId: "ws-test",
+      db,
+      config: defaultMemoryWorkspaceConfig(),
+    });
+    assert.doesNotMatch(cleared, /semantic index/);
   } finally {
     closeMemoryDatabase(db);
   }
 });
 
-test("an over-budget layer with no candidates does not claim urgent consolidation", () => {
-  const db = openMemoryDatabaseAtPath(":memory:");
-  try {
-    const claim = acquireMemoryRunClaim(db, "auto");
-    assert.ok(claim.runId);
-    commitMemoryDreamSession(db, {
-      runId: claim.runId!,
-      sourceSessionId: "s1",
-      sessionPath: "/tmp/s1.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: 1,
-      contentHash: "h1",
-      plan: {
-        operations: [
-          {
-            op: "create",
-            tempRef: "f1",
-            kind: "fact",
-            observationText: "obs",
-            memoryText: "The build runs on Linux",
-          },
-          {
-            op: "create",
-            tempRef: "f2",
-            kind: "fact",
-            observationText: "obs",
-            memoryText: "Deploys use rolling releases",
-          },
-          // A fresh summary: within the merge grace window, so it is not a
-          // merge-eligible root — the over-budget layer has no candidates.
-          {
-            op: "summarize",
-            tempRef: "s1",
-            text: "Tooling",
-            memberIds: ["M:1", "M:2"],
-          },
-        ],
-      },
-    });
-    updateMemoryCadenceState(db, {
-      turnsSinceLastRun: 0,
-      lastSuccessfulRunAtMs: 1_000_000,
-    });
-    const config = {
-      ...defaultMemoryWorkspaceConfig(),
-      briefingTokenBudget: 1,
-      minTurns: 2,
-      minMinutes: 1,
-    };
-    const evaluation = evaluateMemoryDreamCadence(db, {
-      cwd: "/nonexistent-dream-path",
-      workspaceId: "ws",
-      config,
-      nowMs: 1_000_001,
-    });
-    assert.equal(evaluation.shouldDream, false);
-    assert.ok(
-      !evaluation.reasons.some((r) => r.includes("urgent consolidation")),
-      "no urgent-consolidation claim while no candidates exist",
-    );
-    assert.ok(
-      evaluation.reasons.some((r) =>
-        r.includes("no consolidation candidates yet"),
-      ),
-      "reason names the missing candidates",
-    );
-  } finally {
-    closeMemoryDatabase(db);
-  }
-});
-
-test("buildMemoryListText renders the tree indented", () => {
+test("buildMemoryListText renders memories flat; non-active states stay visible", () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     const claim = acquireMemoryRunClaim(db, "auto");
@@ -579,27 +433,27 @@ test("buildMemoryListText renders the tree indented", () => {
             observationText: "No emoji",
             memoryText: "No emoji in commits",
           },
-          {
-            op: "summarize",
-            tempRef: "s1",
-            text: "Tooling",
-            memberIds: ["m1", "m2"],
-          },
         ],
       },
     });
+    // Retire one so the "Other states" section renders.
+    db.prepare(`UPDATE memories SET state = 'retired' WHERE id = 2`).run();
     const text = buildMemoryListText(db);
-    assert.match(text, /^## Tree/m);
-    assert.match(text, /- \*\*S:1\*\* \[summary\]: Tooling/);
+    assert.match(text, /^## Active/m);
     assert.match(
       text,
-      / {2}- \*\*M:1\*\* \[memory\] \(r=1\): Use tabs for indentation/,
-      "children are indented under their summary",
+      /- \*\*M:1\*\* \[fact\] \(r=1\): Use tabs for indentation/,
     );
+    assert.match(text, /## Other states/);
     assert.match(
       text,
-      / {2}- \*\*M:2\*\* \[memory\] \(r=1\): No emoji in commits/,
+      /- \*\*M:2\*\* \[retired\/fact\] \(r=1\): No emoji in commits/,
     );
+    assert.doesNotMatch(text, /summary/, "no summaries exist in the list");
+    // Query filtering works.
+    const filtered = buildMemoryListText(db, "tabs");
+    assert.ok(filtered.includes("M:1"));
+    assert.ok(!filtered.includes("M:2"));
   } finally {
     closeMemoryDatabase(db);
   }

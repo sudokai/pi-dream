@@ -1,38 +1,36 @@
 /**
- * First-turn visible memory briefing: activity generation advance → synthesizer
- * → synthesized answer + a preference/fact index of the remaining top layer.
+ * First-turn visible memory briefing: activity generation advance → retrieval
+ * → payload → one synthesis call → deterministic standing-preferences section
+ * rendered ahead of the call and preserved on cancel.
  *
  * The activity generation advances on every first-turn recall opportunity
  * (after the abort guard, before model resolution) whether synthesis succeeds
- * or fails; only a pre-aborted attempt does not advance. Synthesizer failure
- * skips silently (no message, no reheat) with an audit payload for the call
- * site to append via pi.appendEntry.
+ * or fails; only a pre-aborted attempt does not advance. The deterministic
+ * preference section is rendered before the model call and survives a cancel
+ * or a synthesis failure, so the first turn never leaves the user empty when
+ * standing preferences exist.
  */
 
 import type { DatabaseSync } from "node:sqlite";
 import type { MemoryWorkspaceConfig } from "../shared/memory-config.ts";
-import {
-  renderPartialSynthesizerMarker,
-  synthesizeMemoryAnswer,
-} from "../shared/memory-synthesizer.ts";
+import { synthesizeMemoryContext } from "../shared/memory-synthesizer.ts";
 import {
   incrementMemoryActivityGeneration,
-  recordMemoryRecallEvent,
+  listActiveMemories,
+  recordMemoryCitation,
 } from "../shared/memory-graph.ts";
-import { listMemoryTreeRoots } from "../shared/memory-tree.ts";
+import { findMemoryCandidates } from "../shared/memory-retrieval.ts";
+import { buildMemorySynthesisPayload } from "../shared/memory-payload.ts";
 import {
   formatSessionModelId,
   resolveMemoryModel,
   type MemoryModelRegistryLike,
 } from "../shared/memory-model.ts";
-import { describeMemoryOverBudgetRecovery } from "../shared/memory-consolidation.ts";
+import { setMemoryRecallCapacityError } from "../shared/memory-repository.ts";
 import {
   MEMORY_BRIEFING_CUSTOM_TYPE,
-  MEMORY_BRIEFING_INDEX_MAX_FACTS,
-  MEMORY_BRIEFING_INDEX_MAX_PREFERENCES,
+  MEMORY_BRIEFING_MAX_CHARS,
   parsePrefixedNodeId,
-  type MemoryNodeId,
-  type SummaryNodeId,
 } from "../shared/memory-types.ts";
 import {
   composeMemoryAbortSignal,
@@ -57,14 +55,14 @@ export interface BuildMemoryBriefingInput {
   currentSessionModel?: { provider?: string; id?: string } | null;
   piSessionId?: string | null;
   signal?: AbortSignal;
-  /** Answer-now key: when fired, force a finalize from the context gathered so far. */
-  finalizeNowSignal?: AbortSignal;
   /** Injected complete for tests; defaults to the pi-ai provider adapter. */
   complete?: (input: {
     system: string;
     user: string;
     signal?: AbortSignal;
   }) => Promise<{ text: string; usage?: unknown }>;
+  /** Diagnostic sink (Phase 2 trigger, capacity failures, retries). */
+  log?: (entry: Record<string, unknown>) => void;
 }
 
 export type BuildMemoryBriefingResult =
@@ -91,68 +89,65 @@ export type BuildMemoryBriefingResult =
     };
 
 /**
- * Render the visible briefing: the synthesized answer plus a preference/fact
- * index of top-layer roots not among the answer's sources (render-only; never
- * heats). Preferences come first, then facts, heat-desc within each kind, each
- * capped (35 / 15). Summaries and rare kinds are not indexed: the synthesizer
- * opens summaries when relevant, and /memory list shows everything.
+ * Render the deterministic standing-preferences section: active preference
+ * memories, id-ascending, whole units, capped at MEMORY_BRIEFING_MAX_CHARS
+ * (the same ceiling as the synthesized section). This section is the
+ * deterministic fallback shown on cancel/failure and on every no-source first
+ * turn, so it must stay bounded as the store grows; truncation is by id
+ * (deterministic, never by score) and is noted in the rendered text so the
+ * agent knows the list is partial. Rendered before the model call and
+ * preserved on cancel or synthesis failure.
  */
-export function renderMemoryBriefingMessage(
-  db: DatabaseSync,
-  answer: string,
-  sources: Array<MemoryNodeId | SummaryNodeId>,
-): string {
-  const sourceKeys = new Set(sources as string[]);
-  const lines: string[] = [answer.trim(), ""];
-  const roots = listMemoryTreeRoots(db).filter(
-    (r) => !sourceKeys.has(r.prefixedId),
+export function renderMemoryStandingPreferences(db: DatabaseSync): string {
+  const preferences = listActiveMemories(db).filter(
+    (m) => m.kind === "preference",
   );
-  const preferences = roots.filter((r) => r.kind === "preference");
-  const facts = roots.filter((r) => r.kind === "fact");
-  if (preferences.length > 0 || facts.length > 0) {
-    lines.push("Other memories:");
-    let shown = 0;
-    // Deterministic grouping (render-only, no model call): preferences first,
-    // then facts, heat-desc within each kind, each capped (35 preferences,
-    // 15 facts). Full text is never truncated — the top layer is already
-    // bounded by the briefing token budget.
-    const groups: Array<[string, typeof roots, number]> = [
-      ["Preferences", preferences, MEMORY_BRIEFING_INDEX_MAX_PREFERENCES],
-      ["Facts", facts, MEMORY_BRIEFING_INDEX_MAX_FACTS],
-    ];
-    for (const [heading, group, cap] of groups) {
-      if (group.length === 0) continue;
-      lines.push(`${heading}:`);
-      const ordered = [...group].sort((a, b) => b.heat - a.heat);
-      let inGroup = 0;
-      for (const root of ordered) {
-        if (inGroup >= cap) break;
-        // Full text, never truncated: the index is render-only and the top
-        // layer is already bounded by the briefing token budget. Texts are
-        // guaranteed single-line by validateMemoryBodyText on every write path.
-        lines.push(`- ${root.prefixedId} (${root.kind}): ${root.text}`);
-        inGroup++;
-        shown++;
-      }
+  if (preferences.length === 0) return "";
+  const lines: string[] = [];
+  let totalChars = 0;
+  let skipped = 0;
+  for (const m of preferences) {
+    const line = `- M:${m.id} (preference): ${m.text}`;
+    if (totalChars + line.length > MEMORY_BRIEFING_MAX_CHARS) {
+      skipped++;
+      continue;
     }
-    if (roots.length > shown) {
-      lines.push(
-        `… and ${roots.length - shown} more (see /memory list for all)`,
-      );
-    }
+    lines.push(line);
+    totalChars += line.length;
   }
-  lines.push(
-    "",
-    "`memory_search` — ask a question in your own words; the synthesizer answers from the memory tree. `memory_open <id>` — open a memory to see everything beneath it; a summary opens into the raw memories it compresses, with the detail the compression drops.",
-  );
+  if (skipped > 0) {
+    lines.push(`… and ${skipped} more (see /memory list for all)`);
+  }
   return lines.join("\n");
 }
 
 /**
+ * Render the visible briefing message: task-relevant section first (when the
+ * synthesis produced one), then the standing preferences section.
+ */
+export function renderMemoryBriefingMessage(
+  standingPreferences: string,
+  answer: string | null,
+): string {
+  const sections: string[] = [];
+  if (answer !== null && answer.trim()) {
+    sections.push(`## Context relevant to this session\n\n${answer.trim()}`);
+  }
+  if (standingPreferences.trim()) {
+    sections.push(`## Standing preferences\n\n${standingPreferences.trim()}`);
+  }
+  sections.push(
+    "`memory_search` — ask a question in your own words; the synthesizer answers from workspace memory.",
+  );
+  return sections.join("\n\n");
+}
+
+/**
  * Run the first-turn recall pipeline once: advance the activity generation,
- * synthesize an answer from the top layer, record recall events for sources
- * and opened summaries, and render the answer + index. Failures skip silently
- * with an audit payload.
+ * render the deterministic standing preferences, retrieve candidates, build
+ * the bounded payload, and make exactly one synthesis call. Validated sources
+ * are recorded as citation events (source `briefing`). Failures preserve the
+ * standing-preferences section and record no citations.
  */
 export async function buildMemorySessionBriefing(
   input: BuildMemoryBriefingInput,
@@ -161,7 +156,11 @@ export async function buildMemorySessionBriefing(
   throwIfMemoryAborted(signal);
 
   // Every first-turn recall opportunity advances the generation — on success
-  // and failure alike; heat decays with time, not with success.
+  // and failure alike. The advance deliberately runs BEFORE model resolution:
+  // activityGeneration is audit/rotation only and never a ranking input, so a
+  // workspace with an unresolvable recall model burning one generation per
+  // turn corrupts nothing. A future consumer of activityGeneration must not
+  // read it as a turn counter inflated by config failures.
   incrementMemoryActivityGeneration(input.db);
 
   const sessionModelId = formatSessionModelId(input.currentSessionModel);
@@ -173,120 +172,136 @@ export async function buildMemorySessionBriefing(
     input.config.recallThinking,
   );
   if (!resolved.ok) {
+    // The deterministic section is the only non-model path to durable
+    // context; render it even when the recall model cannot be resolved.
+    const standing = renderMemoryStandingPreferences(input.db);
     return {
       ok: true,
-      message: null,
+      message: standing
+        ? {
+            customType: MEMORY_BRIEFING_CUSTOM_TYPE,
+            content: renderMemoryBriefingMessage(standing, null),
+            display: true,
+            details: { status: "no_recall_model", error: resolved.error },
+          }
+        : null,
       audit: { status: "synthesizer_failed", error: resolved.error },
     };
   }
 
-  if (listMemoryTreeRoots(input.db).length === 0) {
+  const standing = renderMemoryStandingPreferences(input.db);
+  if (listActiveMemories(input.db).length === 0) {
     return { ok: true, message: null, audit: null };
   }
 
-  const result = await synthesizeMemoryAnswer({
+  // Failure helper: preserve the preference section, audit, never cite.
+  const fail = (
+    status: string,
+    error: string,
+    extra: Record<string, unknown> = {},
+  ): BuildMemoryBriefingResult => ({
+    ok: true,
+    message: standing
+      ? {
+          customType: MEMORY_BRIEFING_CUSTOM_TYPE,
+          content: renderMemoryBriefingMessage(standing, null),
+          display: true,
+          details: { status, error, ...extra },
+        }
+      : null,
+    audit: { status, error, ...extra },
+  });
+
+  const retrieval = await findMemoryCandidates(input.db, input.query, {
+    modelId: input.config.embeddingModel,
+    signal,
+  });
+  const payload = buildMemorySynthesisPayload(retrieval.candidates, {
+    log: input.log,
+  });
+  if (payload.units.length === 0) {
+    // No memory above the relevance floor: no task-relevant section, but the
+    // standing preferences still render. No model call, no citations.
+    return {
+      ok: true,
+      message: standing
+        ? {
+            customType: MEMORY_BRIEFING_CUSTOM_TYPE,
+            content: renderMemoryBriefingMessage(standing, null),
+            display: true,
+            details: { status: "no_relevant_memories" },
+          }
+        : null,
+      audit: null,
+    };
+  }
+
+  const result = await synthesizeMemoryContext({
     db: input.db,
+    purpose: "briefing",
     request: input.query,
+    payload,
     config: input.config,
     modelRegistry: input.modelRegistry,
     sessionModel: resolved.resolved,
     signal,
-    finalizeNowSignal: input.finalizeNowSignal,
     complete: input.complete,
+    log: input.log,
   });
 
   if (!result.ok) {
-    if (result.error === "top_layer_over_budget") {
+    if (result.error === "provider_context_insufficient") {
+      // Report the condition in /memory status; cleared on the next success.
+      setMemoryRecallCapacityError(input.db, result.detail ?? result.error);
+      return fail(
+        "provider_context_insufficient",
+        result.detail ?? result.error,
+      );
+    }
+    if (result.error === "aborted") {
       return {
         ok: true,
-        message: null,
-        audit: {
-          status: "top_layer_over_budget",
-          tokens: result.layerTokens,
-          budget: result.budget,
-          note: describeMemoryOverBudgetRecovery(input.db, {
-            config: input.config,
-          }),
-        },
+        message: standing
+          ? {
+              customType: MEMORY_BRIEFING_CUSTOM_TYPE,
+              content: renderMemoryBriefingMessage(standing, null),
+              display: true,
+              details: { status: "aborted" },
+            }
+          : null,
+        audit: { status: "aborted" },
       };
     }
-    return {
-      ok: true,
-      message: null,
-      audit: { status: "synthesizer_failed", error: result.error },
-    };
+    return fail(
+      result.error === "no_memories"
+        ? "no_relevant_memories"
+        : "synthesizer_failed",
+      result.detail ?? result.error,
+    );
   }
 
-  if (result.partial) {
-    // Interrupted synthesis that still finalized: show the partial answer
-    // with an explicit marker; no recall events (partial runs never heat)
-    // and the interruption is audited instead.
-    const marker = renderPartialSynthesizerMarker(result.partial.reason);
-    return {
-      ok: true,
-      message: {
-        customType: MEMORY_BRIEFING_CUSTOM_TYPE,
-        content: renderMemoryBriefingMessage(
-          input.db,
-          `${marker}\n\n${result.answer}`,
-          result.sources,
-        ),
-        display: true,
-        details: {
-          status: "partial",
-          sources: result.sources,
-          reason: result.partial.reason,
-        },
-      },
-      audit: {
-        status: "synthesizer_partial",
-        error: result.partial.reason,
-      },
-    };
-  }
+  // Success clears any persisted capacity failure.
+  setMemoryRecallCapacityError(input.db, null);
 
-  // Record recall events: sources are selection (startup); opened summaries
-  // are browse (open). A node that is both gets exactly one event.
-  const recorded = new Set<string>();
+  // Record citation events for validated sources only.
   for (const sourceId of result.sources) {
     const parsed = parsePrefixedNodeId(sourceId);
-    if (!parsed.ok || parsed.type === "observation") continue;
-    recordMemoryRecallEvent(input.db, {
-      nodeType: parsed.type,
+    if (!parsed.ok || parsed.type !== "memory") continue;
+    recordMemoryCitation(input.db, {
+      nodeType: "memory",
       nodeId: parsed.id,
-      source: "startup",
+      source: "briefing",
       piSessionId: input.piSessionId,
     });
-    recorded.add(`${parsed.type}:${parsed.id}`);
-  }
-  for (const openedId of result.openedSummaryIds) {
-    const parsed = parsePrefixedNodeId(openedId);
-    if (!parsed.ok || parsed.type !== "summary") continue;
-    if (recorded.has(`summary:${parsed.id}`)) continue;
-    recordMemoryRecallEvent(input.db, {
-      nodeType: "summary",
-      nodeId: parsed.id,
-      source: "open",
-      piSessionId: input.piSessionId,
-    });
-    recorded.add(`summary:${parsed.id}`);
   }
 
-  const content = renderMemoryBriefingMessage(
-    input.db,
-    result.answer,
-    result.sources,
-  );
   return {
     ok: true,
     message: {
       customType: MEMORY_BRIEFING_CUSTOM_TYPE,
-      content,
+      content: renderMemoryBriefingMessage(standing, result.content),
       display: true,
       details: {
-        // Agent-facing provenance only: sources name the nodes the briefing
-        // answer relies on (drill-down targets). Navigation internals stay
-        // out of the visible message.
         status: "ok",
         sources: result.sources,
       },

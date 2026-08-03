@@ -1,9 +1,7 @@
 /**
  * Detached memory dreamer child extension entry.
- * Registers internal dreamer tools and finalizes the run on agent_settled
- * (after retries and compaction have finished). Finalization is async and
- * awaited: the DB closes only after the post-ingestion consolidation recompute
- * settles.
+ * Registers internal dreamer tools (ingestion only) and finalizes the run on
+ * agent_settled after the dreamer has finished committing sessions.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -16,13 +14,9 @@ import {
   markMemoryRunRunning,
   releaseMemoryRunClaim,
 } from "../shared/memory-run-claim.ts";
+import { MEMORY_EMBEDDING_MODEL_ID } from "../shared/memory-types.ts";
 import { registerMemoryDreamTools } from "./memory-dream-tools.ts";
 import { finalizeMemoryDreamRun } from "./memory-dream-finalize.ts";
-import {
-  defaultMemoryWorkspaceConfig,
-  loadMemoryWorkspaceConfig,
-} from "../shared/memory-config.ts";
-import { memoryWorkspaceConfigPath } from "../shared/memory-workspace-id.ts";
 
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -37,7 +31,6 @@ export default function memoryDreamChildExtension(pi: ExtensionAPI) {
     return;
   }
 
-  const workspaceId = requireEnv("PI_DREAM_WORKSPACE_ID");
   const runId = requireEnv("PI_DREAM_RUN_ID");
   const manifestPath = requireEnv("PI_DREAM_MANIFEST");
   const dbPath = requireEnv("PI_DREAM_DB");
@@ -73,20 +66,11 @@ export default function memoryDreamChildExtension(pi: ExtensionAPI) {
     return;
   }
 
-  // The parent never launches a run with an invalid config (fail-closed), so
-  // defaults here are purely defensive.
-  const loaded = loadMemoryWorkspaceConfig(
-    memoryWorkspaceConfigPath(workspaceId),
-  );
-  const config = loaded.ok ? loaded.config : defaultMemoryWorkspaceConfig();
-
   registerMemoryDreamTools(pi, {
     db,
     runId,
-    workspaceId,
     manifestPath,
     cwd,
-    config,
   });
 
   let finalized = false;
@@ -99,8 +83,11 @@ export default function memoryDreamChildExtension(pi: ExtensionAPI) {
           db,
           runId,
           manifestPath,
-          workspaceId,
-          config,
+          // The launcher always sets the embedding model; the default here is
+          // defensive for manually invoked children.
+          embeddingModel:
+            process.env.PI_DREAM_EMBEDDING_MODEL?.trim() ||
+            MEMORY_EMBEDDING_MODEL_ID,
         });
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);

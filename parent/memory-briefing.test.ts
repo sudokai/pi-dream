@@ -4,6 +4,7 @@ import {
   buildMemorySessionBriefing,
   createMemoryBriefingSignal,
   renderMemoryBriefingMessage,
+  renderMemoryStandingPreferences,
 } from "./memory-briefing.ts";
 import {
   closeMemoryDatabase,
@@ -12,11 +13,9 @@ import {
 import { acquireMemoryRunClaim } from "../shared/memory-run-claim.ts";
 import { commitMemoryDreamSession } from "../shared/memory-repository.ts";
 import { defaultMemoryWorkspaceConfig } from "../shared/memory-config.ts";
-import {
-  getMemoryActivityGeneration,
-  recordMemoryRecallEvent,
-} from "../shared/memory-graph.ts";
-import { listMemoryTreeRoots } from "../shared/memory-tree.ts";
+import { getMemoryWorkspaceState } from "../shared/memory-repository.ts";
+import { getMemoryActivityGeneration as gen } from "../shared/memory-graph.ts";
+import { MEMORY_BRIEFING_MAX_CHARS } from "../shared/memory-types.ts";
 
 test("briefing signal never self-aborts; it fires only with the caller's signal", async () => {
   const signal = createMemoryBriefingSignal();
@@ -68,18 +67,42 @@ function registry() {
   };
 }
 
+function modelWithCapacity(
+  overrides: { contextWindow?: number; maxTokens?: number } = {},
+) {
+  return {
+    ...registry(),
+    find: () => ({
+      id: "fake-model",
+      contextWindow: overrides.contextWindow ?? 200_000,
+      maxTokens: overrides.maxTokens ?? 32_000,
+    }),
+  };
+}
+
 function completeWith(response: string) {
   return async () => ({ text: response });
 }
 
-test("success renders the synthesized answer + index and records startup/open events", async () => {
+function citationCount(
+  db: ReturnType<typeof openMemoryDatabaseAtPath>,
+): number {
+  return Number(
+    (
+      db.prepare(`SELECT COUNT(*) AS n FROM citation_events`).get() as {
+        n: number;
+      }
+    ).n,
+  );
+}
+
+test("success renders task-relevant context then standing preferences, and records citations", async () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     const claim = acquireMemoryRunClaim(db, "manual");
     assert.equal(claim.acquired, true);
     seed(db, claim.runId!);
-    // Wrap m1+m2 so the synthesizer can open a summary; M:3 stays a root so
-    // the rendered briefing has an "Other memories" index line.
+    // A third memory adds a standing preference beyond the task-relevant one.
     commitMemoryDreamSession(db, {
       runId: claim.runId!,
       sourceSessionId: "s2",
@@ -92,169 +115,96 @@ test("success renders the synthesized answer + index and records startup/open ev
           {
             op: "create",
             tempRef: "m3",
-            kind: "fact",
-            observationText: "CI runs on Ubuntu",
-            memoryText: "CI runs on Ubuntu",
-          },
-          {
-            op: "summarize",
-            tempRef: "s1",
-            text: "Tooling",
-            memberIds: ["M:1", "M:2"],
+            kind: "preference",
+            observationText: "Prefers tabs",
+            memoryText: "Prefer tabs over spaces",
           },
         ],
       },
     });
 
-    const calls: Array<Record<string, unknown>> = [];
-    const responses = [
-      JSON.stringify({ action: "open", id: "S:1" }),
-      JSON.stringify({
-        action: "finalize",
-        answer: "What should I know? Avoid emoji and use pnpm.",
-        sources: ["S:1"],
-      }),
-    ];
-    let callIndex = 0;
-    const modelRegistry = {
-      find: () => ({ id: "fake-model" }),
-      getProvider: (providerId: string) => {
-        calls.push({ kind: "provider", providerId });
-        return {
-          streamSimple: (
-            _model: unknown,
-            context: unknown,
-            options: unknown,
-          ) => {
-            calls.push({ kind: "streamSimple", context, options });
-            return {
-              result: async () => ({
-                content: [
-                  {
-                    type: "text",
-                    text: responses[
-                      Math.min(callIndex++, responses.length - 1)
-                    ]!,
-                  },
-                ],
-                usage: { inputTokens: 10, outputTokens: 3 },
-              }),
-            };
-          },
-        };
-      },
-      getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "sk-test" }),
-    };
-
     const result = await buildMemorySessionBriefing({
       db,
-      query: "what should I know before we start?",
+      query: "what commit style do we use?",
       config: {
         ...defaultMemoryWorkspaceConfig(),
         recallThinking: "high",
       },
-      modelRegistry: modelRegistry as never,
+      modelRegistry: modelWithCapacity() as never,
       currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
+      complete: completeWith(
+        JSON.stringify({
+          content: "No emoji in commits.",
+          sources: ["M:1"],
+        }),
+      ),
     });
 
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.ok(result.message, "successful synthesis must render a briefing");
-    assert.match(result.message!.content, /What should I know/);
-    assert.match(result.message!.content, /Other memories:/);
-    assert.match(result.message!.content, /memory_open/);
-    assert.equal(result.audit, null);
-    assert.equal(callIndex, 2, "open then finalize: two model calls");
-
-    // The default completion path went through provider.streamSimple with
-    // recallThinking mapped to SimpleStreamOptions.reasoning.
-    const streamCall = calls.find((c) => c.kind === "streamSimple");
+    const content = result.message!.content;
+    assert.ok(content.includes("No emoji in commits."));
     assert.ok(
-      streamCall,
-      "default completion must use the pi-ai provider adapter",
+      content.indexOf("## Context relevant to this session") <
+        content.indexOf("## Standing preferences"),
+      "task-relevant context comes before standing preferences",
     );
-    const options = streamCall!.options as Record<string, unknown>;
-    assert.equal(options.reasoning, "high");
-    assert.equal(options.apiKey, "sk-test");
-
-    // S:1 was opened and then cited as the source: exactly one event (startup).
+    assert.ok(content.includes("Do not use emoji in commits"));
+    assert.ok(content.includes("Prefer tabs over spaces"));
+    assert.ok(content.includes("`memory_search`"));
+    assert.equal(result.audit, null);
+    // Only the cited source is recorded (briefing source).
     const events = db
-      .prepare(`SELECT node_type, node_id, source FROM recall_events`)
+      .prepare(`SELECT node_type, node_id, source FROM citation_events`)
       .all() as Array<{ node_type: string; node_id: number; source: string }>;
     assert.equal(events.length, 1);
-    assert.equal(events[0]!.source, "startup");
-    assert.equal(events[0]!.node_type, "summary");
+    assert.equal(events[0]!.node_type, "memory");
+    assert.equal(events[0]!.node_id, 1);
+    assert.equal(events[0]!.source, "briefing");
   } finally {
     closeMemoryDatabase(db);
   }
 });
 
-test("sources get startup events; both opened+source summaries get one event", async () => {
+test("the deterministic preference section renders ahead of the call and survives cancel", async () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     const claim = acquireMemoryRunClaim(db, "manual");
     assert.equal(claim.acquired, true);
     seed(db, claim.runId!);
-    commitMemoryDreamSession(db, {
-      runId: claim.runId!,
-      sourceSessionId: "s2",
-      sessionPath: "/tmp/s2.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: 1,
-      contentHash: "h2",
-      plan: {
-        operations: [
-          {
-            op: "summarize",
-            tempRef: "s1",
-            text: "Tooling",
-            memberIds: ["M:1", "M:2"],
-          },
-        ],
+    const controller = new AbortController();
+    const briefing = buildMemorySessionBriefing({
+      db,
+      query: "do you use emoji?",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: registry() as never,
+      currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
+      signal: controller.signal,
+      complete: async () => {
+        controller.abort(); // Escape pressed during the model call
+        throw new DOMException("Aborted", "AbortError");
       },
     });
-    const responses = [
-      JSON.stringify({ action: "open", id: "S:1" }),
-      JSON.stringify({
-        action: "finalize",
-        answer: "Tooling: no emoji, pnpm.",
-        sources: ["S:1"],
-      }),
-    ];
-    let i = 0;
-    const result = await buildMemorySessionBriefing({
-      db,
-      query: "tooling?",
-      config: defaultMemoryWorkspaceConfig(),
-      modelRegistry: {
-        find: () => ({ id: "fake-model" }),
-        getProvider: () => ({
-          streamSimple: () => ({
-            result: async () => ({
-              content: [{ type: "text", text: responses[i++] }],
-            }),
-          }),
-        }),
-      } as never,
-      currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
-    });
+    const result = await briefing;
     assert.equal(result.ok, true);
     if (!result.ok) return;
-    assert.ok(result.message);
-    // S:1 was both opened and sourced: exactly one event (startup wins).
-    const events = db
-      .prepare(`SELECT node_type, node_id, source FROM recall_events`)
-      .all() as Array<{ node_type: string; node_id: number; source: string }>;
-    assert.equal(events.length, 1);
-    assert.equal(events[0]!.node_type, "summary");
-    assert.equal(events[0]!.source, "startup");
-    assert.equal(events[0]!.node_id, 1);
+    assert.ok(result.message, "cancel must not leave the turn empty");
+    assert.ok(
+      result.message!.content.includes("## Standing preferences"),
+      "the preference section is preserved on cancel",
+    );
+    assert.ok(
+      !result.message!.content.includes("## Context relevant to this session"),
+    );
+    assert.equal(citationCount(db), 0, "cancel records no citations");
+    assert.equal(result.audit?.status, "aborted");
   } finally {
     closeMemoryDatabase(db);
   }
 });
 
-test("synthesizer failure skips silently with an audit payload and no events", async () => {
+test("synthesizer failure renders preferences only, with an audit and no citations", async () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     const claim = acquireMemoryRunClaim(db, "manual");
@@ -262,7 +212,7 @@ test("synthesizer failure skips silently with an audit payload and no events", a
     seed(db, claim.runId!);
     const result = await buildMemorySessionBriefing({
       db,
-      query: "anything",
+      query: "emoji",
       config: defaultMemoryWorkspaceConfig(),
       modelRegistry: registry() as never,
       currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
@@ -270,145 +220,51 @@ test("synthesizer failure skips silently with an audit payload and no events", a
     });
     assert.equal(result.ok, true);
     if (!result.ok) return;
-    assert.equal(result.message, null);
-    assert.deepEqual(result.audit, {
-      status: "synthesizer_failed",
-      error: result.audit?.error,
-    });
-    const events = db
-      .prepare(`SELECT COUNT(*) AS n FROM recall_events`)
-      .get() as {
-      n: number;
-    };
-    assert.equal(Number(events.n), 0, "no reheat on failure");
+    assert.ok(result.message, "preferences still render on failure");
+    assert.ok(result.message!.content.includes("## Standing preferences"));
+    assert.equal(result.message!.details.status, "synthesizer_failed");
+    assert.equal(result.audit?.status, "synthesizer_failed");
+    assert.equal(citationCount(db), 0, "no citations on failure");
   } finally {
     closeMemoryDatabase(db);
   }
 });
 
-test("an interrupted synthesis shows the partial answer with a marker, audit, and no events", async () => {
+test("a no-source first turn renders no task-relevant section but does render preferences", async () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     const claim = acquireMemoryRunClaim(db, "manual");
     assert.equal(claim.acquired, true);
     seed(db, claim.runId!);
-    const responses = [
-      "not-json",
-      JSON.stringify({
-        action: "finalize",
-        answer: "No emoji, pnpm.",
-        sources: ["M:1"],
-      }),
-    ];
-    let i = 0;
     const result = await buildMemorySessionBriefing({
       db,
-      query: "anything",
+      query: "zzz nothing matches this",
       config: defaultMemoryWorkspaceConfig(),
       modelRegistry: registry() as never,
       currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
-      complete: async () => ({
-        text: responses[Math.min(i++, responses.length - 1)]!,
-      }),
     });
     assert.equal(result.ok, true);
     if (!result.ok) return;
-    assert.ok(result.message, "the partial answer is shown, not skipped");
-    assert.match(
-      result.message!.content,
-      /Synthesis interrupted \(malformed synthesizer output/,
+    assert.ok(result.message, "preferences render on a no-source turn");
+    assert.ok(result.message!.content.includes("## Standing preferences"));
+    assert.ok(
+      !result.message!.content.includes("## Context relevant to this session"),
     );
-    assert.match(result.message!.content, /No emoji, pnpm\./);
-    assert.equal(result.message!.details.status, "partial");
-    assert.equal(result.audit?.status, "synthesizer_partial");
-    assert.match(
-      String(result.audit?.error ?? ""),
-      /malformed synthesizer output/,
-    );
-    const events = db
-      .prepare(`SELECT COUNT(*) AS n FROM recall_events`)
-      .get() as {
-      n: number;
-    };
-    assert.equal(Number(events.n), 0, "no reheat on partial results");
+    assert.equal(result.message!.details.status, "no_relevant_memories");
+    assert.equal(result.audit, null);
+    assert.equal(citationCount(db), 0);
   } finally {
     closeMemoryDatabase(db);
   }
 });
 
-test("the answer-now key flows through the briefing as a partial result", async () => {
-  const db = openMemoryDatabaseAtPath(":memory:");
-  try {
-    const claim = acquireMemoryRunClaim(db, "manual");
-    assert.equal(claim.acquired, true);
-    seed(db, claim.runId!);
-    const answerNow = new AbortController();
-    answerNow.abort();
-    const result = await buildMemorySessionBriefing({
-      db,
-      query: "anything",
-      config: defaultMemoryWorkspaceConfig(),
-      modelRegistry: registry() as never,
-      currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
-      finalizeNowSignal: answerNow.signal,
-      complete: completeWith(
-        JSON.stringify({
-          action: "finalize",
-          answer: "No emoji, pnpm.",
-          sources: ["M:1"],
-        }),
-      ),
-    });
-    assert.equal(result.ok, true);
-    if (!result.ok) return;
-    assert.match(
-      result.message!.content,
-      /Answered on request from partial context:/,
-    );
-    assert.equal(result.message!.details.reason, "answer requested");
-    assert.equal(result.audit?.status, "synthesizer_partial");
-  } finally {
-    closeMemoryDatabase(db);
-  }
-});
-
-test("an over-budget top layer yields the top_layer_over_budget audit", async () => {
-  const db = openMemoryDatabaseAtPath(":memory:");
-  try {
-    const claim = acquireMemoryRunClaim(db, "manual");
-    assert.equal(claim.acquired, true);
-    seed(db, claim.runId!);
-    const result = await buildMemorySessionBriefing({
-      db,
-      query: "anything",
-      config: {
-        ...defaultMemoryWorkspaceConfig(),
-        briefingTokenBudget: 1,
-      },
-      modelRegistry: registry() as never,
-      currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
-      complete: async () => {
-        throw new Error("model must not be called for an over-budget layer");
-      },
-    });
-    assert.equal(result.ok, true);
-    if (!result.ok) return;
-    assert.equal(result.message, null);
-    assert.equal(result.audit?.status, "top_layer_over_budget");
-    assert.ok(typeof result.audit?.tokens === "number");
-    assert.equal(result.audit?.budget, 1);
-  } finally {
-    closeMemoryDatabase(db);
-  }
-});
-
-test("empty top layer yields no message and no model call", async () => {
+test("empty store yields no message and no model call", async () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     let called = false;
     const result = await buildMemorySessionBriefing({
       db,
-      query: "anything",
+      query: "emoji",
       config: defaultMemoryWorkspaceConfig(),
       modelRegistry: {
         find: () => ({ id: "fake-model" }),
@@ -435,13 +291,13 @@ test("generation advances on model-resolution failure, synthesizer failure, and 
     // Model-resolution failure (no model anywhere).
     const r1 = await buildMemorySessionBriefing({
       db,
-      query: "anything",
+      query: "emoji",
       config: defaultMemoryWorkspaceConfig(),
       modelRegistry: { find: () => undefined } as never,
       currentSessionModel: undefined,
     });
     assert.equal(r1.ok, true);
-    assert.equal(getMemoryActivityGeneration(db), 1);
+    assert.equal(gen(db), 1);
 
     // Synthesizer failure with memories present.
     const claim = acquireMemoryRunClaim(db, "manual");
@@ -449,32 +305,26 @@ test("generation advances on model-resolution failure, synthesizer failure, and 
     seed(db, claim.runId!);
     const r2 = await buildMemorySessionBriefing({
       db,
-      query: "anything",
+      query: "emoji",
       config: defaultMemoryWorkspaceConfig(),
       modelRegistry: registry() as never,
       currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
       complete: completeWith("garbage"),
     });
     assert.equal(r2.ok, true);
-    if (!r2.ok) return;
-    assert.equal(r2.message, null);
-    assert.equal(getMemoryActivityGeneration(db), 2);
+    assert.equal(gen(db), 2);
 
-    // Empty top layer (everything retired).
-    for (const m of listMemoryTreeRoots(db)) {
-      db.prepare(
-        `UPDATE ${m.nodeType === "memory" ? "memories" : "summaries"} SET state = 'retired' WHERE id = ?`,
-      ).run(m.nodeId);
-    }
+    // Empty layer (everything retired).
+    db.prepare(`UPDATE memories SET state = 'retired'`).run();
     const r3 = await buildMemorySessionBriefing({
       db,
-      query: "anything",
+      query: "emoji",
       config: defaultMemoryWorkspaceConfig(),
       modelRegistry: registry() as never,
       currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
     });
     assert.equal(r3.ok, true);
-    assert.equal(getMemoryActivityGeneration(db), 3);
+    assert.equal(gen(db), 3);
   } finally {
     closeMemoryDatabase(db);
   }
@@ -491,20 +341,241 @@ test("a pre-aborted attempt does not advance the generation", async () => {
     await assert.rejects(() =>
       buildMemorySessionBriefing({
         db,
-        query: "what should I know?",
+        query: "do you use emoji?",
         config: defaultMemoryWorkspaceConfig(),
         modelRegistry: registry() as never,
         currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
         signal: controller.signal,
       }),
     );
-    assert.equal(getMemoryActivityGeneration(db), 0);
+    assert.equal(gen(db), 0);
   } finally {
     closeMemoryDatabase(db);
   }
 });
 
-test("renderMemoryBriefingMessage indexes preferences then facts, heat-ordered, without summaries", () => {
+test("provider context insufficiency fails closed, persists for status, and never calls the model", async () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "manual");
+    assert.equal(claim.acquired, true);
+    seed(db, claim.runId!);
+    let calls = 0;
+    const result = await buildMemorySessionBriefing({
+      db,
+      query: "do you use emoji?",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: modelWithCapacity({ contextWindow: 100 }) as never,
+      currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
+      complete: async () => {
+        calls++;
+        return { text: "{}" };
+      },
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(calls, 0, "no truncation: the model is never called");
+    assert.ok(
+      result.message!.content.includes("## Standing preferences"),
+      "preferences still render",
+    );
+    assert.equal(result.audit?.status, "provider_context_insufficient");
+    // The condition is persisted for /memory status.
+    assert.match(
+      getMemoryWorkspaceState(db).recallCapacityError ?? "",
+      /context/,
+    );
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
+test("a successful briefing clears the persisted capacity failure", async () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "manual");
+    assert.equal(claim.acquired, true);
+    seed(db, claim.runId!);
+    // Simulate a previously persisted failure.
+    db.prepare(
+      `UPDATE workspace_state SET recall_capacity_error = 'old failure' WHERE id = 1`,
+    ).run();
+    const result = await buildMemorySessionBriefing({
+      db,
+      query: "emoji",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: modelWithCapacity() as never,
+      currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
+      complete: completeWith(
+        JSON.stringify({
+          content: "No emoji.",
+          sources: ["M:1"],
+        }),
+      ),
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(getMemoryWorkspaceState(db).recallCapacityError, null);
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
+test("mutating a CITED memory mid-call yields no content, no citations, and preferences only", async () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "manual");
+    assert.equal(claim.acquired, true);
+    seed(db, claim.runId!);
+    const result = await buildMemorySessionBriefing({
+      db,
+      query: "emoji",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: modelWithCapacity() as never,
+      currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
+      complete: async () => {
+        // The dreamer retires the memory the model is about to cite.
+        db.prepare(`UPDATE memories SET state = 'retired' WHERE id = 1`).run();
+        return {
+          text: JSON.stringify({
+            content: "No emoji in commits.",
+            sources: ["M:1"],
+          }),
+        };
+      },
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.ok(result.message, "preferences still render");
+    assert.ok(
+      !result.message!.content.includes("No emoji in commits."),
+      "no partial answer is emitted",
+    );
+    assert.ok(result.message!.content.includes("## Standing preferences"));
+    assert.equal(result.message!.details.status, "synthesizer_failed");
+    assert.equal(citationCount(db), 0, "no citation event on stale sources");
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
+test("mutating an UNCITED memory mid-call still produces the briefing", async () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "manual");
+    assert.equal(claim.acquired, true);
+    seed(db, claim.runId!);
+    const result = await buildMemorySessionBriefing({
+      db,
+      query: "emoji",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: modelWithCapacity() as never,
+      currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
+      complete: async () => {
+        db.prepare(
+          `UPDATE memory_versions SET text = 'The build uses bun' WHERE memory_id = 2`,
+        ).run();
+        return {
+          text: JSON.stringify({
+            content: "No emoji in commits.",
+            sources: ["M:1"],
+          }),
+        };
+      },
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.ok(
+      result.message!.content.includes("No emoji in commits."),
+      "uncited changes never invalidate the answer",
+    );
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
+test("the long subsequent-review fixture flows through the delimited task block untrusted", async () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "manual");
+    assert.equal(claim.acquired, true);
+    seed(db, claim.runId!);
+    const query =
+      "Review the changes in the last three commits and tell me what needs fixing; also write a test plan. I could not perform the review myself, so please do it for me.";
+    let capturedUser = "";
+    const result = await buildMemorySessionBriefing({
+      db,
+      query,
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: modelWithCapacity() as never,
+      currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
+      complete: async (input) => {
+        capturedUser = input.user;
+        return {
+          text: JSON.stringify({
+            content: "Commit style: no emoji in commit messages.",
+            sources: ["M:1"],
+          }),
+        };
+      },
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    // The task is delimited and instruction-free: only cited durable context
+    // reaches the rendered briefing.
+    assert.ok(capturedUser.includes("<task>"));
+    assert.ok(capturedUser.includes(query));
+    assert.ok(capturedUser.includes("untrusted relevance data"));
+    const content = result.message!.content;
+    assert.ok(content.includes("no emoji in commit messages"));
+    for (const forbidden of [
+      "could not perform",
+      "not provided",
+      "cannot access",
+      "review the changes",
+      "write a test plan",
+    ]) {
+      assert.ok(
+        !content.toLowerCase().includes(forbidden),
+        `briefing must not echo task-execution language: ${forbidden}`,
+      );
+    }
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
+test("a briefing over three memories is materially shorter than the output cap", async () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const claim = acquireMemoryRunClaim(db, "manual");
+    assert.equal(claim.acquired, true);
+    seed(db, claim.runId!);
+    const result = await buildMemorySessionBriefing({
+      db,
+      query: "do you use emoji?",
+      config: defaultMemoryWorkspaceConfig(),
+      modelRegistry: modelWithCapacity() as never,
+      currentSessionModel: { provider: "anthropic", id: "claude-sonnet-4-5" },
+      complete: completeWith(
+        JSON.stringify({
+          content: "Two short facts.",
+          sources: ["M:1", "M:2"],
+        }),
+      ),
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.ok(
+      result.message!.content.length < MEMORY_BRIEFING_MAX_CHARS / 10,
+      "the rendered briefing is far below the cap (no padding toward the ceiling)",
+    );
+  } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
+test("renderMemoryStandingPreferences lists active preferences only, id-ascending", () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     const claim = acquireMemoryRunClaim(db, "manual");
@@ -518,13 +589,6 @@ test("renderMemoryBriefingMessage indexes preferences then facts, heat-ordered, 
       contentHash: "h1",
       plan: {
         operations: [
-          {
-            op: "create",
-            tempRef: "p1",
-            kind: "preference",
-            observationText: "obs",
-            memoryText: "Prefer tabs over spaces",
-          },
           {
             op: "create",
             tempRef: "f1",
@@ -534,97 +598,76 @@ test("renderMemoryBriefingMessage indexes preferences then facts, heat-ordered, 
           },
           {
             op: "create",
-            tempRef: "f2",
-            kind: "fact",
+            tempRef: "p1",
+            kind: "preference",
             observationText: "obs",
-            memoryText: "CI runs on Ubuntu",
+            memoryText: "Prefer tabs over spaces",
           },
           {
             op: "create",
-            tempRef: "f3",
-            kind: "fact",
+            tempRef: "p2",
+            kind: "preference",
             observationText: "obs",
-            memoryText: "Use git rebase",
-          },
-          {
-            op: "create",
-            tempRef: "f4",
-            kind: "fact",
-            observationText: "obs",
-            memoryText: "Ship on Fridays",
-          },
-          {
-            op: "create",
-            tempRef: "c1",
-            kind: "correction",
-            observationText: "obs",
-            memoryText: "Actually CI runs on macOS",
-          },
-          {
-            op: "summarize",
-            tempRef: "s1",
-            text: "Tooling",
-            memberIds: ["M:2", "M:3"],
+            memoryText: "No emoji in commits",
           },
         ],
       },
     });
-    // Reheat M:5 once so it outranks M:4 inside the Facts group.
-    recordMemoryRecallEvent(db, {
-      nodeType: "memory",
-      nodeId: 5,
-      source: "search",
-      piSessionId: "s-test",
-    });
-    const content = renderMemoryBriefingMessage(db, "Answer.", []);
-    const sections = content
-      .split("\n")
-      .filter((l) => /^(Preferences|Facts|Summaries|Other):$/.test(l));
-    assert.deepEqual(sections, ["Preferences:", "Facts:"]);
+    // Both preferences render id-ascending; facts never do.
+    const text = renderMemoryStandingPreferences(db);
+    assert.ok(text.includes("- M:2 (preference): Prefer tabs over spaces"));
+    assert.ok(text.includes("- M:3 (preference): No emoji in commits"));
+    assert.ok(!text.includes("Build uses pnpm"), "facts are not preferences");
     assert.ok(
-      content.indexOf("- M:5 (fact)") < content.indexOf("- M:4 (fact)"),
-      "heat-desc ordering within a group",
+      text.indexOf("M:2") < text.indexOf("M:3"),
+      "id-ascending deterministic order",
     );
-    assert.ok(
-      content.indexOf("Preferences:") < content.indexOf("Facts:"),
-      "preferences come before facts",
-    );
-    assert.match(content, /- M:1 \(preference\): Prefer tabs over spaces/);
-    assert.ok(
-      !content.includes("- S:1 (summary): Tooling"),
-      "summaries are not indexed",
-    );
-    assert.ok(
-      !content.includes("- M:6 (correction)"),
-      "rare kinds are not indexed",
-    );
-    assert.match(content, /… and 2 more/);
+    // One preference retired: it must not render.
+    db.prepare(`UPDATE memories SET state = 'retired' WHERE id = 3`).run();
+    const afterRetire = renderMemoryStandingPreferences(db);
+    assert.ok(!afterRetire.includes("- M:3 (preference)"));
+    assert.ok(afterRetire.includes("- M:2 (preference)"));
   } finally {
     closeMemoryDatabase(db);
   }
 });
 
-test("renderMemoryBriefingMessage caps preferences at 35 and facts at 15 with a tail", () => {
+test("renderMemoryBriefingMessage orders context before preferences and adds the footer", () => {
+  const content = renderMemoryBriefingMessage(
+    "- M:1 (preference): Prefer tabs",
+    "Task context here.",
+  );
+  assert.ok(
+    content.indexOf("## Context relevant to this session") <
+      content.indexOf("## Standing preferences"),
+  );
+  assert.ok(
+    content
+      .trimEnd()
+      .endsWith(
+        "`memory_search` — ask a question in your own words; the synthesizer answers from workspace memory.",
+      ),
+  );
+  const noAnswer = renderMemoryBriefingMessage(
+    "- M:1 (preference): Prefer tabs",
+    null,
+  );
+  assert.ok(!noAnswer.includes("## Context relevant to this session"));
+  assert.ok(noAnswer.includes("## Standing preferences"));
+});
+
+test("renderMemoryStandingPreferences caps the deterministic section and notes partialness", () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     const claim = acquireMemoryRunClaim(db, "manual");
     assert.equal(claim.acquired, true);
-    const ops = [
-      ...Array.from({ length: 40 }, (_, i) => ({
-        op: "create" as const,
-        tempRef: `p${i}`,
-        kind: "preference" as const,
-        observationText: `Pref ${i}`,
-        memoryText: `Prefer pattern ${i}`,
-      })),
-      ...Array.from({ length: 20 }, (_, i) => ({
-        op: "create" as const,
-        tempRef: `f${i}`,
-        kind: "fact" as const,
-        observationText: `Fact ${i}`,
-        memoryText: `Fact ${i}`,
-      })),
-    ];
+    const ops = Array.from({ length: 60 }, (_, i) => ({
+      op: "create" as const,
+      tempRef: `p${i}`,
+      kind: "preference" as const,
+      observationText: `Pref ${i}`,
+      memoryText: `Preference number ${i} ${"y".repeat(370)}`,
+    }));
     commitMemoryDreamSession(db, {
       runId: claim.runId!,
       sourceSessionId: "s1",
@@ -634,64 +677,20 @@ test("renderMemoryBriefingMessage caps preferences at 35 and facts at 15 with a 
       contentHash: "h1",
       plan: { operations: ops },
     });
-    const content = renderMemoryBriefingMessage(db, "Answer.", []);
-    const indexLines = content.split("\n").filter((l) => l.startsWith("- M:"));
-    assert.equal(indexLines.length, 50);
-    const preferencesCount = content
-      .split("\n")
-      .filter((l) => l.startsWith("- M:") && l.includes("(preference)")).length;
-    assert.equal(preferencesCount, 35);
-    const factsCount = content
-      .split("\n")
-      .filter((l) => l.startsWith("- M:") && l.includes("(fact)")).length;
-    assert.equal(factsCount, 15);
-    assert.match(content, /… and 10 more/);
-  } finally {
-    closeMemoryDatabase(db);
-  }
-});
-
-test("renderMemoryBriefingMessage shows full memory text, never truncated", () => {
-  const db = openMemoryDatabaseAtPath(":memory:");
-  try {
-    const claim = acquireMemoryRunClaim(db, "manual");
-    assert.equal(claim.acquired, true);
-    const longText = `Long memory text. ${"x".repeat(300)}`;
-    commitMemoryDreamSession(db, {
-      runId: claim.runId!,
-      sourceSessionId: "s1",
-      sessionPath: "/tmp/s1.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: 1,
-      contentHash: "h1",
-      plan: {
-        operations: [
-          {
-            op: "create" as const,
-            tempRef: "m0",
-            kind: "fact" as const,
-            observationText: "obs",
-            memoryText: longText,
-          },
-        ],
-      },
-    });
-    const content = renderMemoryBriefingMessage(db, "Answer.", []);
-    assert.ok(content.includes(longText), "long memory text renders in full");
-    assert.ok(!content.includes("…"), "no truncation marker in the index");
-  } finally {
-    closeMemoryDatabase(db);
-  }
-});
-
-test("renderMemoryBriefingMessage footer points to memory_search and memory_open", () => {
-  const db = openMemoryDatabaseAtPath(":memory:");
-  try {
-    const content = renderMemoryBriefingMessage(db, "Answer.", []);
-    const footer = content.trimEnd().split("\n").at(-1)!;
-    assert.ok(footer.startsWith("`memory_search`"));
-    assert.ok(footer.includes("`memory_open <id>`"));
-    assert.ok(!footer.startsWith("_") && !footer.endsWith("_"));
+    const text = renderMemoryStandingPreferences(db);
+    assert.ok(
+      text.length <= MEMORY_BRIEFING_MAX_CHARS + 64,
+      "the deterministic section stays bounded",
+    );
+    assert.match(text, /… and \d+ more \(see \/memory list for all\)/);
+    assert.ok(
+      text.includes("- M:1 (preference):"),
+      "truncation is by id: the earliest preferences render",
+    );
+    assert.ok(
+      !text.includes("- M:60 (preference):"),
+      "the tail is omitted, not rendered in full",
+    );
   } finally {
     closeMemoryDatabase(db);
   }

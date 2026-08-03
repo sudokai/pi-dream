@@ -362,10 +362,8 @@ export function loadVerifiedMemorySessionSnapshot(
  */
 const MEMORY_TOOL_NAMES: ReadonlySet<string> = new Set([
   "memory_search",
-  "memory_open",
   "memory_list_sessions",
   "memory_read_session",
-  "memory_inspect_graph",
   "memory_commit_session",
 ]);
 

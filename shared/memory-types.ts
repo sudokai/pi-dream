@@ -1,21 +1,18 @@
 /**
  * Domain types for adaptive workspace memory.
- * Prefixed node IDs (M:/S:/O:) are the public API surface; internal rows use integers.
+ * Prefixed node IDs (M:/O:) are the public API surface; internal rows use integers.
  */
 
 /** Stable memory node id as rendered at API boundaries (`M:<n>`). */
 export type MemoryNodeId = `M:${number}`;
 
-/** Stable summary node id as rendered at API boundaries (`S:<n>`). */
-export type SummaryNodeId = `S:${number}`;
-
 /** Immutable observation leaf id as rendered at API boundaries (`O:<n>`). */
 export type ObservationNodeId = `O:${number}`;
 
 /** Any public node id with a type prefix. */
-export type PrefixedNodeId = MemoryNodeId | SummaryNodeId | ObservationNodeId;
+export type PrefixedNodeId = MemoryNodeId | ObservationNodeId;
 
-/** Lifecycle state for memories and summaries. */
+/** Lifecycle state for memories. */
 export type MemoryLifecycleState =
   "active" | "conflicted" | "superseded" | "retired";
 
@@ -23,86 +20,66 @@ export type MemoryLifecycleState =
 export type MemoryKnowledgeKind =
   "preference" | "fact" | "correction" | "other";
 
-/** Typed graph edge relations between memory/summary nodes. */
+/** Typed graph edge relations between memory nodes. */
 export type MemoryGraphRelation =
-  "contains" | "related_to" | "supersedes" | "conflicts_with";
-
-/** Relations the dreamer `link` op may create (containment is ops-only). */
-export type MemoryDreamerLinkRelation =
   "related_to" | "supersedes" | "conflicts_with";
+
+/** Relations the dreamer `link` op may create. */
+export type MemoryDreamerLinkRelation = MemoryGraphRelation;
 
 /** Lifecycle state of a graph edge (retired edges are append-only history). */
 export type MemoryGraphEdgeState = "active" | "retired";
 
-/** Where a recall event originated. */
-export type MemoryRecallSource = "startup" | "search" | "open";
+/** Where a citation event originated. */
+export type MemoryCitationSource = "briefing" | "search";
 
-/** Node types that participate in search, heat, and briefing. */
-export type MemorySearchableNodeType = "memory" | "summary";
+/** Node types that participate in search, retrieval, and citation. */
+export type MemorySearchableNodeType = "memory";
 
 /** Maximum characters for one observation or memory body. */
 export const MEMORY_MAX_TEXT_CHARS = 400;
 
-/** Maximum characters for one summary body. */
-export const MEMORY_MAX_SUMMARY_CHARS = 800;
+/** Hard cap on the synthesized briefing content (chars; no target length). */
+export const MEMORY_BRIEFING_MAX_CHARS = 20_000;
 
-/** Estimated briefing ceiling in tokens (complete atomic nodes only). */
-export const MEMORY_BRIEFING_TOKEN_BUDGET = 8000;
+/** Synthesizer input budget: whole memory units only, never split mid-text. */
+export const MEMORY_SYNTHESIS_INPUT_CHARS = 40_000;
 
-/** Rough chars-per-token estimate used for budget packing. */
-export const MEMORY_CHARS_PER_TOKEN_ESTIMATE = 4;
+/** Secondary sanity guard on the number of units in one payload. */
+export const MEMORY_SYNTHESIS_INPUT_MAX_UNITS = 150;
 
-/** Heat at or above which a child is promote-eligible (hot). */
-export const MEMORY_HOT_HEAT_THRESHOLD = 1.5;
+/** RRF fusion constant: score = Σ 1/(K + rank). */
+export const MEMORY_RETRIEVAL_RRF_K = 60;
 
-/** Serialized-context envelope: framing + request + layer + navigation + answer. */
-export const MEMORY_SYNTHESIZER_CONTEXT_BUDGET = 16000;
+/** Semantic-retriever cosine floor: below this a candidate is excluded. */
+export const MEMORY_RETRIEVAL_COSINE_FLOOR = 0.15;
 
-/** Answer token cap inside the synthesizer envelope. */
-export const MEMORY_SYNTHESIZER_ANSWER_BUDGET = 2000;
+/** Upper bound on retrieved candidate units (retrieve more than fits). */
+export const MEMORY_RETRIEVAL_MAX_UNITS = 600;
 
-/** Render-only cap for preference entries in the briefing index. */
-export const MEMORY_BRIEFING_INDEX_MAX_PREFERENCES = 35;
+/** Upper bound on retrieved candidate chars. */
+export const MEMORY_RETRIEVAL_MAX_CHARS = 240_000;
 
-/** Render-only cap for fact entries in the briefing index. */
-export const MEMORY_BRIEFING_INDEX_MAX_FACTS = 15;
+/** Long queries are segmented; each segment stays under this many chars. */
+export const MEMORY_RETRIEVAL_SEGMENT_MAX_CHARS = 800;
 
-/** Fresh summaries are merge-ineligible for this many activity generations. */
-export const MEMORY_CONSOLIDATION_SUMMARY_GRACE_GENERATIONS = 3;
+/** Queries shorter than this many chars are trivially short (no retrieval). */
+export const MEMORY_RETRIEVAL_MIN_QUERY_CHARS = 3;
 
-/** Consecutive compaction rejections before the deterministic fallback applies. */
-export const MEMORY_CONSOLIDATION_MAX_ATTEMPTS = 5;
+/** Rough tokens reserved for framing (system prompt + user template) in the
+ * provider-context capacity check. */
+export const MEMORY_SYNTHESIS_FRAMING_TOKENS = 2000;
 
-/** Tokens reserved inside the synthesizer envelope for navigation actions. */
-export const MEMORY_SYNTHESIZER_NAV_RESERVE = 256;
-
-/** Rough tokens reserved for framing + request inside the synthesizer envelope. */
-export const MEMORY_SYNTHESIZER_FRAMING_BUDGET = 512;
+/** Output reserve for the provider-context capacity check: covers the full
+ * briefing cap (≈5000 tokens at 4 chars/token) plus the JSON wrapper and a
+ * repair-payload growth margin. */
+export const MEMORY_SYNTHESIS_OUTPUT_RESERVE_TOKENS = 6000;
 
 /** Default automatic dreaming cadence: settled turns. */
 export const MEMORY_DEFAULT_MIN_TURNS = 10;
 
 /** Default automatic dreaming cadence: minutes since last successful run. */
 export const MEMORY_DEFAULT_MIN_MINUTES = 120;
-
-/** Novelty heat boost for newly activated memories. */
-export const MEMORY_NOVELTY_BOOST = 1.0;
-
-/** Novelty duration in activity generations. */
-export const MEMORY_NOVELTY_GENERATIONS = 3;
-
-/** Maximum source-session age (days) for novelty: older evidence enters cold. */
-export const MEMORY_NOVELTY_MAX_SOURCE_AGE_DAYS = 14;
-
-/** Same cutoff in milliseconds (day-derived, single source of truth). */
-export const MEMORY_NOVELTY_MAX_SOURCE_AGE_MS =
-  MEMORY_NOVELTY_MAX_SOURCE_AGE_DAYS * 86_400_000;
-
-/** Exponential heat decay base per activity generation. */
-export const MEMORY_HEAT_DECAY = 0.85;
-
-/** Weight of one recall event before decay. */
-export const MEMORY_RECALL_EVENT_WEIGHT = 1.0;
 
 /** Stale dream-run claim threshold (ms). */
 export const MEMORY_STALE_RUN_MS = 60 * 60 * 1000;
@@ -143,12 +120,6 @@ export const MEMORY_SESSION_PAGE_DEFAULT = 40;
 /** Maximum page size for dreamer session paging. */
 export const MEMORY_SESSION_PAGE_MAX = 200;
 
-/** Default page size for memory_open /memory open children. */
-export const MEMORY_OPEN_PAGE_DEFAULT = 40;
-
-/** Maximum graph children returned per memory_open page. */
-export const MEMORY_OPEN_CHILDREN_MAX = 50;
-
 export interface MemoryObservationRow {
   id: number;
   kind: MemoryKnowledgeKind;
@@ -173,31 +144,12 @@ export interface MemoryRow {
   state: MemoryLifecycleState;
   currentVersionId: number;
   creationGeneration: number;
-  noveltyUntilGeneration: number | null;
   createdAt: string;
   updatedAt: string;
   /** Current version text (projection). */
   text: string;
   /** Derived: distinct source sessions via observations. */
   recurrence: number;
-}
-
-export interface SummaryVersionRow {
-  id: number;
-  summaryId: number;
-  text: string;
-  previousVersionId: number | null;
-  createdAt: string;
-}
-
-export interface SummaryRow {
-  id: number;
-  state: MemoryLifecycleState;
-  currentVersionId: number;
-  creationGeneration: number;
-  createdAt: string;
-  updatedAt: string;
-  text: string;
 }
 
 export interface GraphEdgeRow {
@@ -211,12 +163,11 @@ export interface GraphEdgeRow {
   createdAt: string;
 }
 
-export interface RecallEventRow {
+export interface CitationEventRow {
   id: number;
   nodeType: MemorySearchableNodeType;
   nodeId: number;
-  activityGeneration: number;
-  source: MemoryRecallSource;
+  source: MemoryCitationSource;
   piSessionId: string | null;
   createdAt: string;
 }
@@ -250,31 +201,12 @@ export interface WorkspaceStateRow {
   turnsSinceLastRun: number;
   lastSuccessfulRunAtMs: number;
   lastObservedTranscriptMtimeMs: number | null;
+  /** Set when the last recall capacity check failed (provider context too small). */
+  recallCapacityError: string | null;
+  /** Set when the last dream's embedding pass degraded (semantic retriever off). */
+  embeddingDegradedError: string | null;
   updatedAt: string;
 }
-
-/** Structured summary create/update operation; updates carry the observed version. */
-export type MemoryDreamerSummaryOperation =
-  | {
-      op: "summarize";
-      /** Create a summary and optionally expose it to later in-commit operations. */
-      tempRef?: string;
-      summaryId?: undefined;
-      expectedVersionId?: undefined;
-      text: string;
-      /** Prefixed M:/S: ids or in-commit temp refs from create/summarize. */
-      memberIds: string[];
-    }
-  | {
-      op: "summarize";
-      /** Update this active summary only when its observed version still matches. */
-      summaryId: SummaryNodeId;
-      expectedVersionId: number;
-      tempRef?: undefined;
-      text: string;
-      /** Prefixed M:/S: ids or in-commit temp refs from create/summarize. */
-      memberIds: string[];
-    };
 
 export type MemoryDreamerOperation =
   | {
@@ -303,39 +235,19 @@ export type MemoryDreamerOperation =
       kind: MemoryKnowledgeKind;
       observationText: string;
       memoryText: string;
-      /** Keep the direct parent summary alive by rewriting it without the excluded node. */
-      newSummaryText?: string;
-      /** CAS version of the parent summary when newSummaryText is provided. */
-      expectedSummaryVersionId?: number;
     }
   | {
       op: "conflict";
       memoryIds: MemoryNodeId[];
       observationText?: string;
-      /** Keep the direct parent summary alive by rewriting it without the excluded node. */
-      newSummaryText?: string;
-      /** CAS version of the parent summary when newSummaryText is provided. */
-      expectedSummaryVersionId?: number;
-    }
-  | {
-      op: "promote";
-      /** Hot child to resurface out of its parent summary. */
-      nodeId: MemoryNodeId | SummaryNodeId;
-      /** Parent summary id (must be the child's single active parent). */
-      summaryId: SummaryNodeId;
-      /** CAS version of the parent summary. */
-      expectedSummaryVersionId: number;
-      /** Rewritten parent text when the parent keeps >= 2 members. */
-      newSummaryText?: string;
     }
   | {
       op: "link";
       relation: MemoryDreamerLinkRelation;
-      /** Prefixed M:/S: ids or in-commit temp refs. */
+      /** Prefixed M: ids or in-commit temp refs. */
       fromId: string;
       toId: string;
     }
-  | MemoryDreamerSummaryOperation
   | { op: "no_op"; reason?: string };
 
 export interface MemoryDreamSessionPlan {
@@ -357,15 +269,14 @@ export function parsePrefixedNodeId(
   raw: string,
 ):
   | { ok: true; type: "memory"; id: number; prefixed: MemoryNodeId }
-  | { ok: true; type: "summary"; id: number; prefixed: SummaryNodeId }
   | { ok: true; type: "observation"; id: number; prefixed: ObservationNodeId }
   | { ok: false; error: string } {
   const trimmed = raw.trim();
-  const match = /^(M|S|O):(\d+)$/.exec(trimmed);
+  const match = /^(M|O):(\d+)$/.exec(trimmed);
   if (!match) {
     return {
       ok: false,
-      error: `Invalid memory node id "${raw}"; expected M:<n>, S:<n>, or O:<n>`,
+      error: `Invalid memory node id "${raw}"; expected M:<n> or O:<n>`,
     };
   }
   const id = Number(match[2]);
@@ -375,20 +286,12 @@ export function parsePrefixedNodeId(
   if (match[1] === "M") {
     return { ok: true, type: "memory", id, prefixed: `M:${id}` };
   }
-  if (match[1] === "S") {
-    return { ok: true, type: "summary", id, prefixed: `S:${id}` };
-  }
   return { ok: true, type: "observation", id, prefixed: `O:${id}` };
 }
 
 /** Format an integer memory id as `M:<n>`. */
 export function formatMemoryNodeId(id: number): MemoryNodeId {
   return `M:${id}`;
-}
-
-/** Format an integer summary id as `S:<n>`. */
-export function formatSummaryNodeId(id: number): SummaryNodeId {
-  return `S:${id}`;
 }
 
 /** Format an integer observation id as `O:<n>`. */
@@ -399,11 +302,6 @@ export function formatObservationNodeId(id: number): ObservationNodeId {
 /** Normalize observation text for uniqueness within a source session. */
 export function normalizeObservationText(text: string): string {
   return text.trim().replace(/\s+/g, " ").toLowerCase();
-}
-
-/** Estimate tokens for budget packing from character length. */
-export function estimateMemoryTextTokens(text: string): number {
-  return Math.max(1, Math.ceil(text.length / MEMORY_CHARS_PER_TOKEN_ESTIMATE));
 }
 
 /** Validate one-line atomic observation/memory text shape. */

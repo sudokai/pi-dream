@@ -6,20 +6,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import * as path from "node:path";
 import {
-  MEMORY_BRIEFING_TOKEN_BUDGET,
-  MEMORY_CHARS_PER_TOKEN_ESTIMATE,
   MEMORY_DEFAULT_MIN_MINUTES,
   MEMORY_DEFAULT_MIN_TURNS,
   MEMORY_EMBEDDING_MODEL_ID,
-  MEMORY_HEAT_DECAY,
-  MEMORY_HOT_HEAT_THRESHOLD,
-  MEMORY_MAX_SUMMARY_CHARS,
-  MEMORY_NOVELTY_BOOST,
-  MEMORY_NOVELTY_GENERATIONS,
-  MEMORY_SYNTHESIZER_ANSWER_BUDGET,
-  MEMORY_SYNTHESIZER_CONTEXT_BUDGET,
-  MEMORY_SYNTHESIZER_FRAMING_BUDGET,
-  MEMORY_SYNTHESIZER_NAV_RESERVE,
 } from "./memory-types.ts";
 import { memoryWorkspaceConfigPath } from "./memory-workspace-id.ts";
 import {
@@ -51,14 +40,7 @@ export interface MemoryWorkspaceConfig {
   recallThinking?: MemoryThinkingLevel;
   minTurns: number;
   minMinutes: number;
-  briefingTokenBudget: number;
   embeddingModel: string;
-  hotHeatThreshold: number;
-  synthesizerContextBudget: number;
-  synthesizerAnswerBudget: number;
-  noveltyBoost: number;
-  noveltyGenerations: number;
-  heatDecay: number;
 }
 
 export type MemoryConfigLoadResult =
@@ -82,14 +64,7 @@ export function defaultMemoryWorkspaceConfig(): MemoryWorkspaceConfig {
     enabled: true,
     minTurns: MEMORY_DEFAULT_MIN_TURNS,
     minMinutes: MEMORY_DEFAULT_MIN_MINUTES,
-    briefingTokenBudget: MEMORY_BRIEFING_TOKEN_BUDGET,
     embeddingModel: MEMORY_EMBEDDING_MODEL_ID,
-    hotHeatThreshold: MEMORY_HOT_HEAT_THRESHOLD,
-    synthesizerContextBudget: MEMORY_SYNTHESIZER_CONTEXT_BUDGET,
-    synthesizerAnswerBudget: MEMORY_SYNTHESIZER_ANSWER_BUDGET,
-    noveltyBoost: MEMORY_NOVELTY_BOOST,
-    noveltyGenerations: MEMORY_NOVELTY_GENERATIONS,
-    heatDecay: MEMORY_HEAT_DECAY,
   };
 }
 
@@ -105,25 +80,6 @@ function positiveInt(value: unknown, fallback: number): number {
     return fallback;
   }
   return Math.floor(value);
-}
-
-function positiveNumber(value: unknown, fallback: number): number {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    return fallback;
-  }
-  return value;
-}
-
-function unitInterval(value: unknown, fallback: number): number {
-  if (
-    typeof value !== "number" ||
-    !Number.isFinite(value) ||
-    value <= 0 ||
-    value > 1
-  ) {
-    return fallback;
-  }
-  return value;
 }
 
 /**
@@ -146,14 +102,7 @@ export function parseMemoryWorkspaceConfig(
     "recallThinking",
     "minTurns",
     "minMinutes",
-    "briefingTokenBudget",
     "embeddingModel",
-    "hotHeatThreshold",
-    "synthesizerContextBudget",
-    "synthesizerAnswerBudget",
-    "noveltyBoost",
-    "noveltyGenerations",
-    "heatDecay",
   ]);
   const unknown = Object.keys(obj).filter((key) => !allowed.has(key));
   if (unknown.length) {
@@ -194,32 +143,10 @@ export function parseMemoryWorkspaceConfig(
     enabled: obj.enabled,
     minTurns: positiveInt(obj.minTurns, defaults.minTurns),
     minMinutes: positiveInt(obj.minMinutes, defaults.minMinutes),
-    briefingTokenBudget: positiveInt(
-      obj.briefingTokenBudget,
-      defaults.briefingTokenBudget,
-    ),
     embeddingModel:
       typeof obj.embeddingModel === "string" && obj.embeddingModel.trim()
         ? obj.embeddingModel.trim()
         : defaults.embeddingModel,
-    hotHeatThreshold: positiveNumber(
-      obj.hotHeatThreshold,
-      defaults.hotHeatThreshold,
-    ),
-    synthesizerContextBudget: positiveInt(
-      obj.synthesizerContextBudget,
-      defaults.synthesizerContextBudget,
-    ),
-    synthesizerAnswerBudget: positiveInt(
-      obj.synthesizerAnswerBudget,
-      defaults.synthesizerAnswerBudget,
-    ),
-    noveltyBoost: positiveNumber(obj.noveltyBoost, defaults.noveltyBoost),
-    noveltyGenerations: positiveInt(
-      obj.noveltyGenerations,
-      defaults.noveltyGenerations,
-    ),
-    heatDecay: unitInterval(obj.heatDecay, defaults.heatDecay),
   };
   if (typeof obj.dreamModel === "string" && obj.dreamModel.trim()) {
     config.dreamModel = obj.dreamModel.trim();
@@ -232,33 +159,6 @@ export function parseMemoryWorkspaceConfig(
   }
   if (isThinkingLevel(obj.recallThinking)) {
     config.recallThinking = obj.recallThinking;
-  }
-  // Cross-key validation: the top layer must be able to fit a single root,
-  // and the synthesizer envelope must hold framing + request + the full top
-  // layer + navigation + the answer.
-  const singleNodeFloor = Math.ceil(
-    MEMORY_MAX_SUMMARY_CHARS / MEMORY_CHARS_PER_TOKEN_ESTIMATE,
-  );
-  if (config.briefingTokenBudget < singleNodeFloor) {
-    return {
-      ok: false,
-      error: `Memory config briefingTokenBudget (${config.briefingTokenBudget}) is below the single-node floor (${singleNodeFloor} tokens); the top layer could never fit.`,
-    };
-  }
-  // The synthesizer envelope must be able to hold framing + request + the full
-  // top layer + navigation + the answer; otherwise every briefing/search fails
-  // closed permanently with an envelope error, misclassified as a synthesizer
-  // failure. Strictly greater: equality leaves no room for a non-empty request.
-  const envelopeFloor =
-    config.briefingTokenBudget +
-    MEMORY_SYNTHESIZER_FRAMING_BUDGET +
-    config.synthesizerAnswerBudget +
-    MEMORY_SYNTHESIZER_NAV_RESERVE;
-  if (config.synthesizerContextBudget <= envelopeFloor) {
-    return {
-      ok: false,
-      error: `Memory config synthesizerContextBudget (${config.synthesizerContextBudget}) must exceed briefingTokenBudget + framing + answer + navigation reserves (${envelopeFloor} tokens); the top layer could never fit the synthesizer envelope.`,
-    };
   }
   return { ok: true, config, invalidFallback: false };
 }

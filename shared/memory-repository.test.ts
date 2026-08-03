@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import {
   closeMemoryDatabase,
   openMemoryDatabaseAtPath,
@@ -7,8 +10,10 @@ import {
 import { acquireMemoryRunClaim } from "./memory-run-claim.ts";
 import {
   commitMemoryDreamSession,
+  getMemoryWorkspaceState,
   getSourceSessionCheckpoint,
-  listMemoryGraphSnapshot,
+  setMemoryEmbeddingDegradedError,
+  setMemoryRecallCapacityError,
 } from "./memory-repository.ts";
 import {
   getMemoryActivityGeneration,
@@ -17,20 +22,9 @@ import {
   listActiveMemories,
   listObservationsForMemory,
   openMemoryNodeExact,
+  recordMemoryCitation,
   retireMemoryNode,
-  wouldMemoryContainsEdgeCycle,
 } from "./memory-graph.ts";
-import { computeMemoryNodeHeat } from "./memory-heat.ts";
-import {
-  isMemoryRoot,
-  listMemoryNodeChildren,
-  listMemoryTreeRoots,
-} from "./memory-tree.ts";
-import {
-  MEMORY_NOVELTY_GENERATIONS,
-  MEMORY_NOVELTY_MAX_SOURCE_AGE_DAYS,
-  MEMORY_NOVELTY_MAX_SOURCE_AGE_MS,
-} from "./memory-types.ts";
 
 async function withClaimedDb(
   fn: (
@@ -46,6 +40,13 @@ async function withClaimedDb(
   } finally {
     closeMemoryDatabase(db);
   }
+}
+
+function ftsRowids(db: ReturnType<typeof openMemoryDatabaseAtPath>): number[] {
+  const rows = db
+    .prepare(`SELECT rowid FROM memory_fts ORDER BY rowid ASC`)
+    .all() as Array<{ rowid: number }>;
+  return rows.map((r) => Number(r.rowid));
 }
 
 test("commitMemoryDreamSession create + reinforce is idempotent per session", async () => {
@@ -73,6 +74,8 @@ test("commitMemoryDreamSession create + reinforce is idempotent per session", as
     const memories = listActiveMemories(db);
     assert.equal(memories.length, 1);
     assert.equal(memories[0]!.recurrence, 1);
+    // The FTS row is maintained on create.
+    assert.deepEqual(ftsRowids(db), [memories[0]!.id]);
 
     // Replay same session checkpoint → no-op
     const r2 = commitMemoryDreamSession(db, {
@@ -165,7 +168,7 @@ test("duplicate observation creates keep support: no orphan active memories", as
   });
 });
 
-test("supersede excludes old memory from active search", async () => {
+test("supersede excludes old memory from active search and projections", async () => {
   await withClaimedDb((db, runId) => {
     commitMemoryDreamSession(db, {
       runId,
@@ -212,6 +215,19 @@ test("supersede excludes old memory from active search", async () => {
     assert.match(active[0]!.text, /tabs/i);
     const oldRow = getMemoryById(db, old.id)!;
     assert.equal(oldRow.state, "superseded");
+    // The superseded memory is gone from FTS, search_documents, embeddings.
+    assert.deepEqual(ftsRowids(db), [active[0]!.id]);
+    const docs = db
+      .prepare(`SELECT COUNT(*) AS n FROM search_documents`)
+      .get() as { n: number };
+    assert.equal(Number(docs.n), 1);
+    // The supersedes edge is intact (audit).
+    const edges = db
+      .prepare(
+        `SELECT relation, state FROM graph_edges WHERE relation = 'supersedes'`,
+      )
+      .all() as Array<{ relation: string; state: string }>;
+    assert.equal(edges.length, 1);
     // open still shows history
     const opened = openMemoryNodeExact(db, `M:${old.id}`);
     assert.equal(opened.target.state, "superseded");
@@ -219,7 +235,7 @@ test("supersede excludes old memory from active search", async () => {
   });
 });
 
-test("openMemoryNodeExact exposes summary revision history", async () => {
+test("revise keeps identity, CAS-guards, and refreshes projections", async () => {
   await withClaimedDb((db, runId) => {
     commitMemoryDreamSession(db, {
       runId,
@@ -237,18 +253,106 @@ test("openMemoryNodeExact exposes summary revision history", async () => {
             observationText: "Build uses pnpm",
             memoryText: "The build uses pnpm",
           },
+        ],
+      },
+    });
+    const m = listActiveMemories(db)[0]!;
+    // Stale CAS fails closed.
+    assert.throws(
+      () =>
+        commitMemoryDreamSession(db, {
+          runId,
+          sourceSessionId: "s2",
+          sessionPath: "/tmp/s2.jsonl",
+          cwd: "/tmp",
+          processedMtimeMs: 2,
+          contentHash: "h2",
+          plan: {
+            operations: [
+              {
+                op: "revise",
+                memoryId: `M:${m.id}`,
+                observationText: "Build uses pnpm",
+                memoryText: "The build uses pnpm and pnpm-lock.yaml",
+                expectedVersionId: 999,
+              },
+            ],
+          },
+        }),
+      /version is stale/,
+    );
+    const applied = commitMemoryDreamSession(db, {
+      runId,
+      sourceSessionId: "s3",
+      sessionPath: "/tmp/s3.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 3,
+      contentHash: "h3",
+      plan: {
+        operations: [
           {
-            op: "summarize",
-            tempRef: "s1",
-            text: "Build uses pnpm",
-            memberIds: ["m1"],
+            op: "revise",
+            memoryId: `M:${m.id}`,
+            observationText: "Build uses pnpm",
+            memoryText: "The build uses pnpm and pnpm-lock.yaml",
+            expectedVersionId: m.currentVersionId,
           },
         ],
       },
     });
-    // The extend path absorbs a NEW root (strict-tree: members must be roots);
-    // compaction is measured against the old summary text + the listed members.
+    assert.equal(applied.applied, true);
+    assert.equal(
+      getMemoryById(db, m.id)!.text,
+      "The build uses pnpm and pnpm-lock.yaml",
+    );
+    // FTS reflects the new text and holds exactly one row for the memory.
+    const hit = db
+      .prepare(
+        `SELECT rowid FROM memory_fts WHERE memory_fts MATCH '"pnpm-lock.yaml"'`,
+      )
+      .all() as Array<{ rowid: number }>;
+    assert.deepEqual(
+      hit.map((r) => Number(r.rowid)),
+      [m.id],
+    );
+    const count = db.prepare(`SELECT COUNT(*) AS n FROM memory_fts`).get() as {
+      n: number;
+    };
+    assert.equal(Number(count.n), 1);
+  });
+});
+
+test("revise invalidates the embeddings row only when the text changes", async () => {
+  await withClaimedDb((db, runId) => {
     commitMemoryDreamSession(db, {
+      runId,
+      sourceSessionId: "s1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1,
+      contentHash: "h1",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "m1",
+            kind: "fact",
+            observationText: "Build uses pnpm",
+            memoryText: "The build uses pnpm",
+          },
+        ],
+      },
+    });
+    const m = listActiveMemories(db)[0]!;
+    // Simulate a prior embedding pass for this memory.
+    db.prepare(
+      `INSERT INTO embeddings (node_type, node_id, model_id, content_hash, vector, updated_at)
+       VALUES ('memory', ?, 'test/m', 'hash-1', ?, datetime('now'))`,
+    ).run(m.id, Buffer.from(new Float32Array([1, 0]).buffer));
+
+    // A revise that keeps the text identical must preserve the embedding
+    // (the content hash still matches the search document).
+    const sameText = commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s2",
       sessionPath: "/tmp/s2.jsonl",
@@ -258,34 +362,62 @@ test("openMemoryNodeExact exposes summary revision history", async () => {
       plan: {
         operations: [
           {
-            op: "create",
-            tempRef: "m2",
-            kind: "fact",
-            observationText: "Deploys to Fly.io",
-            memoryText: "Deploys to Fly.io",
-          },
-          {
-            op: "summarize",
-            summaryId: "S:1",
-            expectedVersionId: 1,
-            text: "Build + deploy",
-            memberIds: ["M:2"],
+            op: "revise",
+            memoryId: `M:${m.id}`,
+            observationText: "Build uses pnpm",
+            memoryText: "The build uses pnpm",
+            expectedVersionId: m.currentVersionId,
           },
         ],
       },
     });
-
-    const opened = openMemoryNodeExact(db, "S:1");
-    assert.deepEqual(
-      opened.versions?.map((version) => version.text),
-      ["Build + deploy", "Build uses pnpm"],
+    assert.equal(sameText.applied, true);
+    assert.equal(
+      (
+        db.prepare(`SELECT COUNT(*) AS n FROM embeddings`).get() as {
+          n: number;
+        }
+      ).n,
+      1,
+      "identical text keeps the embedding row",
     );
-    assert.equal(isMemoryRoot(db, "memory", 2), false, "m2 is absorbed");
-    assert.equal(isMemoryRoot(db, "memory", 1), false);
+
+    // A text change invalidates the stale embedding (all models); the next
+    // embedding pass re-embeds from the fresh search_documents row.
+    const current = getMemoryById(db, m.id)!;
+    const changed = commitMemoryDreamSession(db, {
+      runId,
+      sourceSessionId: "s3",
+      sessionPath: "/tmp/s3.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 3,
+      contentHash: "h3",
+      plan: {
+        operations: [
+          {
+            op: "revise",
+            memoryId: `M:${m.id}`,
+            observationText: "Build uses pnpm",
+            memoryText: "The build uses pnpm and pnpm-lock.yaml",
+            expectedVersionId: current.currentVersionId,
+          },
+        ],
+      },
+    });
+    assert.equal(changed.applied, true);
+    assert.equal(
+      (
+        db.prepare(`SELECT COUNT(*) AS n FROM embeddings`).get() as {
+          n: number;
+        }
+      ).n,
+      0,
+      "a changed text must invalidate the embeddings row",
+    );
   });
 });
 
-test("conflict marks both memories conflicted", async () => {
+test("conflict marks both memories conflicted and removes them from projections", async () => {
   await withClaimedDb((db, runId) => {
     commitMemoryDreamSession(db, {
       runId,
@@ -333,10 +465,21 @@ test("conflict marks both memories conflicted", async () => {
     assert.equal(listActiveMemories(db).length, 0);
     assert.equal(getMemoryById(db, m1!.id)!.state, "conflicted");
     assert.equal(getMemoryById(db, m2!.id)!.state, "conflicted");
+    assert.deepEqual(ftsRowids(db), [], "conflicted memories leave FTS");
+    const docs = db
+      .prepare(`SELECT COUNT(*) AS n FROM search_documents`)
+      .get() as { n: number };
+    assert.equal(Number(docs.n), 0);
+    const conflicts = db
+      .prepare(
+        `SELECT relation FROM graph_edges WHERE relation = 'conflicts_with'`,
+      )
+      .all() as Array<{ relation: string }>;
+    assert.equal(conflicts.length, 1);
   });
 });
 
-test("contains edges stay acyclic", async () => {
+test("link with the retired contains relation is rejected", async () => {
   await withClaimedDb((db, runId) => {
     commitMemoryDreamSession(db, {
       runId,
@@ -344,7 +487,7 @@ test("contains edges stay acyclic", async () => {
       sessionPath: "/tmp/s1.jsonl",
       cwd: "/tmp",
       processedMtimeMs: 1,
-      contentHash: null,
+      contentHash: "h1",
       plan: {
         operations: [
           {
@@ -355,19 +498,106 @@ test("contains edges stay acyclic", async () => {
             memoryText: "Package manager is pnpm",
           },
           {
-            op: "summarize",
-            tempRef: "sum1",
-            text: "Tooling preferences",
-            memberIds: ["m1"],
+            op: "create",
+            tempRef: "m2",
+            kind: "fact",
+            observationText: "Uses bun",
+            memoryText: "Package manager is bun",
           },
         ],
       },
     });
-    // try to make memory contain its parent summary via link would need memory->summary contains
-    // wouldMemoryContainsEdgeCycle for self
-    assert.equal(
-      wouldMemoryContainsEdgeCycle(db, "summary", 1, "summary", 1),
-      true,
+    assert.throws(
+      () =>
+        commitMemoryDreamSession(db, {
+          runId,
+          sourceSessionId: "s2",
+          sessionPath: "/tmp/s2.jsonl",
+          cwd: "/tmp",
+          processedMtimeMs: 2,
+          contentHash: "h2",
+          plan: {
+            operations: [
+              {
+                op: "link",
+                relation: "contains" as never,
+                fromId: "M:1",
+                toId: "M:2",
+              },
+            ],
+          },
+        }),
+      /CHECK/i,
+    );
+  });
+});
+
+test("lateral link relations are accepted and idempotent", async () => {
+  await withClaimedDb((db, runId) => {
+    commitMemoryDreamSession(db, {
+      runId,
+      sourceSessionId: "s1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1,
+      contentHash: "h1",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "m1",
+            kind: "fact",
+            observationText: "Uses pnpm",
+            memoryText: "Package manager is pnpm",
+          },
+          {
+            op: "create",
+            tempRef: "m2",
+            kind: "fact",
+            observationText: "Uses bun",
+            memoryText: "Package manager is bun",
+          },
+          {
+            op: "link",
+            relation: "related_to",
+            fromId: "m1",
+            toId: "m2",
+          },
+          {
+            op: "link",
+            relation: "related_to",
+            fromId: "M:1",
+            toId: "M:2",
+          },
+        ],
+      },
+    });
+    const edges = db
+      .prepare(`SELECT relation, state FROM graph_edges`)
+      .all() as Array<{ relation: string; state: string }>;
+    assert.equal(edges.length, 1, "duplicate active link is idempotent");
+    // Self-link is rejected.
+    assert.throws(
+      () =>
+        commitMemoryDreamSession(db, {
+          runId,
+          sourceSessionId: "s2",
+          sessionPath: "/tmp/s2.jsonl",
+          cwd: "/tmp",
+          processedMtimeMs: 2,
+          contentHash: "h2",
+          plan: {
+            operations: [
+              {
+                op: "link",
+                relation: "related_to",
+                fromId: "M:1",
+                toId: "M:1",
+              },
+            ],
+          },
+        }),
+      /cannot link a node to itself/,
     );
   });
 });
@@ -394,212 +624,12 @@ test("forget soft-retires and preserves observations", async () => {
       },
     });
     const m = listActiveMemories(db)[0]!;
-    assert.ok(
-      listMemoryTreeRoots(db).some((r) => r.prefixedId === `M:${m.id}`),
-      "active memory appears in the top layer",
-    );
     retireMemoryNode(db, `M:${m.id}`);
     assert.equal(getMemoryById(db, m.id)!.state, "retired");
     assert.equal(listActiveMemories(db).length, 0);
     assert.ok(listObservationsForMemory(db, m.id).length >= 1);
     assert.equal(getSourceSessionCheckpoint(db, "s1")?.sessionId, "s1");
-    assert.equal(
-      listMemoryTreeRoots(db).some((r) => r.prefixedId === `M:${m.id}`),
-      false,
-      "retired memory never appears in the top layer",
-    );
-  });
-});
-
-test("heat warms with novelty and cools without recall", () => {
-  const hot = computeMemoryNodeHeat({
-    currentGeneration: 1,
-    noveltyUntilGeneration: 3,
-    recallGenerations: [],
-  });
-  assert.ok(hot > 0);
-  const cold = computeMemoryNodeHeat({
-    currentGeneration: 20,
-    noveltyUntilGeneration: 3,
-    recallGenerations: [1],
-  });
-  const reheated = computeMemoryNodeHeat({
-    currentGeneration: 20,
-    noveltyUntilGeneration: null,
-    recallGenerations: [1, 20],
-  });
-  assert.ok(reheated > cold);
-});
-
-test("top layer lists active root memories", async () => {
-  await withClaimedDb((db, runId) => {
-    commitMemoryDreamSession(db, {
-      runId,
-      sourceSessionId: "s1",
-      sessionPath: "/tmp/s1.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: 1,
-      contentHash: null,
-      plan: {
-        operations: [
-          {
-            op: "create",
-            tempRef: "m1",
-            kind: "fact",
-            observationText: "Deploy target is Fly.io",
-            memoryText: "Production deploys to Fly.io",
-          },
-        ],
-      },
-    });
-    const roots = listMemoryTreeRoots(db);
-    assert.equal(roots.length, 1);
-    assert.equal(roots[0]!.nodeType, "memory");
-    assert.match(roots[0]!.text, /Fly\.io/);
-  });
-});
-
-test("summarize with a non-root member is rejected", async () => {
-  await withClaimedDb((db, runId) => {
-    commitMemoryDreamSession(db, {
-      runId,
-      sourceSessionId: "s1",
-      sessionPath: "/tmp/s1.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: 1,
-      contentHash: "h1",
-      plan: {
-        operations: [
-          {
-            op: "create",
-            tempRef: "m1",
-            kind: "fact",
-            observationText: "Uses pnpm",
-            memoryText: "Package manager is pnpm",
-          },
-          {
-            op: "summarize",
-            tempRef: "s1",
-            text: "Tooling",
-            memberIds: ["m1"],
-          },
-        ],
-      },
-    });
-    // M:1 is now a child of S:1 — re-listing it in a new summary must fail.
-    assert.throws(
-      () =>
-        commitMemoryDreamSession(db, {
-          runId,
-          sourceSessionId: "s2",
-          sessionPath: "/tmp/s2.jsonl",
-          cwd: "/tmp",
-          processedMtimeMs: 2,
-          contentHash: "h2",
-          plan: {
-            operations: [
-              {
-                op: "summarize",
-                tempRef: "s2",
-                text: "Duplicate",
-                memberIds: ["M:1"],
-              },
-            ],
-          },
-        }),
-      /not a root/,
-    );
-  });
-});
-
-test("summarize with non-compacting text is rejected", async () => {
-  await withClaimedDb((db, runId) => {
-    commitMemoryDreamSession(db, {
-      runId,
-      sourceSessionId: "s1",
-      sessionPath: "/tmp/s1.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: 1,
-      contentHash: "h1",
-      plan: {
-        operations: [
-          {
-            op: "create",
-            tempRef: "m1",
-            kind: "fact",
-            observationText: "Uses pnpm",
-            memoryText: "Package manager is pnpm",
-          },
-        ],
-      },
-    });
-    assert.throws(
-      () =>
-        commitMemoryDreamSession(db, {
-          runId,
-          sourceSessionId: "s2",
-          sessionPath: "/tmp/s2.jsonl",
-          cwd: "/tmp",
-          processedMtimeMs: 2,
-          contentHash: "h2",
-          plan: {
-            operations: [
-              {
-                op: "summarize",
-                text: "Package manager is pnpm (longer than the member)",
-                memberIds: ["M:1"],
-              },
-            ],
-          },
-        }),
-      /does not compact the top layer/,
-    );
-  });
-});
-
-test("link with contains is rejected at the repository boundary", async () => {
-  await withClaimedDb((db, runId) => {
-    commitMemoryDreamSession(db, {
-      runId,
-      sourceSessionId: "s1",
-      sessionPath: "/tmp/s1.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: 1,
-      contentHash: "h1",
-      plan: {
-        operations: [
-          {
-            op: "create",
-            tempRef: "m1",
-            kind: "fact",
-            observationText: "Uses pnpm",
-            memoryText: "Package manager is pnpm",
-          },
-        ],
-      },
-    });
-    assert.throws(
-      () =>
-        commitMemoryDreamSession(db, {
-          runId,
-          sourceSessionId: "s2",
-          sessionPath: "/tmp/s2.jsonl",
-          cwd: "/tmp",
-          processedMtimeMs: 2,
-          contentHash: "h2",
-          plan: {
-            operations: [
-              {
-                op: "link",
-                relation: "contains" as never,
-                fromId: "M:1",
-                toId: "M:1",
-              },
-            ],
-          },
-        }),
-      /link cannot create contains edges/,
-    );
+    assert.deepEqual(ftsRowids(db), [], "retired memory leaves FTS");
   });
 });
 
@@ -614,187 +644,6 @@ test("single-flight claim rejects second acquirer", () => {
   } finally {
     closeMemoryDatabase(db);
   }
-});
-
-test("summarize never resurrects a forgotten summary", async () => {
-  await withClaimedDb((db, runId) => {
-    commitMemoryDreamSession(db, {
-      runId,
-      sourceSessionId: "s1",
-      sessionPath: "/tmp/s1.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: 1,
-      contentHash: "h1",
-      plan: {
-        operations: [
-          {
-            op: "create",
-            tempRef: "m1",
-            kind: "fact",
-            observationText: "Build uses pnpm",
-            memoryText: "The build uses pnpm",
-          },
-          {
-            op: "summarize",
-            tempRef: "s1",
-            text: "Tooling overview",
-            memberIds: ["m1"],
-          },
-        ],
-      },
-    });
-    retireMemoryNode(db, "S:1");
-
-    // A later dream updating the forgotten summary must fail closed.
-    assert.throws(
-      () =>
-        commitMemoryDreamSession(db, {
-          runId,
-          sourceSessionId: "s2",
-          sessionPath: "/tmp/s2.jsonl",
-          cwd: "/tmp",
-          processedMtimeMs: 2,
-          contentHash: "h2",
-          plan: {
-            operations: [
-              {
-                op: "summarize",
-                summaryId: "S:1",
-                expectedVersionId: 1,
-                text: "Updated tooling overview",
-                memberIds: ["M:1"],
-              },
-            ],
-          },
-        }),
-      /only active summaries can be updated/,
-    );
-    assert.equal(getMemoryById(db, 1)!.state, "active");
-    // The summary stays retired and its text is untouched.
-    const opened = openMemoryNodeExact(db, "S:1");
-    assert.equal(opened.target.state, "retired");
-    assert.equal(opened.target.text, "Tooling overview");
-  });
-});
-
-test("summarize update honors the expectedVersionId CAS guard", async () => {
-  await withClaimedDb((db, runId) => {
-    commitMemoryDreamSession(db, {
-      runId,
-      sourceSessionId: "s1",
-      sessionPath: "/tmp/s1.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: 1,
-      contentHash: "h1",
-      plan: {
-        operations: [
-          {
-            op: "create",
-            tempRef: "m1",
-            kind: "fact",
-            observationText: "Build uses pnpm",
-            memoryText: "The build uses pnpm",
-          },
-          {
-            op: "summarize",
-            tempRef: "s1",
-            text: "Tooling",
-            memberIds: ["m1"],
-          },
-        ],
-      },
-    });
-    const snapshot = listMemoryGraphSnapshot(db);
-    assert.deepEqual(snapshot.summaries, [
-      {
-        id: "S:1",
-        state: "active",
-        currentVersionId: 1,
-        text: "Tooling",
-      },
-    ]);
-
-    // Runtime validation still rejects untyped tool input that omits CAS.
-    assert.throws(
-      () =>
-        commitMemoryDreamSession(db, {
-          runId,
-          sourceSessionId: "s-missing-version",
-          sessionPath: "/tmp/s-missing-version.jsonl",
-          cwd: "/tmp",
-          processedMtimeMs: 2,
-          contentHash: "h-missing-version",
-          plan: {
-            operations: [
-              {
-                op: "summarize",
-                summaryId: "S:1",
-                text: "Missing CAS update",
-                memberIds: ["M:1"],
-              },
-            ] as never,
-          },
-        }),
-      /update requires a positive expectedVersionId/,
-    );
-
-    // Version 1 exists; a stale expectedVersionId must fail closed.
-    assert.throws(
-      () =>
-        commitMemoryDreamSession(db, {
-          runId,
-          sourceSessionId: "s2",
-          sessionPath: "/tmp/s2.jsonl",
-          cwd: "/tmp",
-          processedMtimeMs: 2,
-          contentHash: "h2",
-          plan: {
-            operations: [
-              {
-                op: "summarize",
-                summaryId: "S:1",
-                expectedVersionId: 999,
-                text: "Stale update",
-                memberIds: ["M:1"],
-              },
-            ],
-          },
-        }),
-      /version is stale/,
-    );
-    // A matching CAS version succeeds with a NEW root member (strict-tree:
-    // an extend absorbs roots only; members are not re-listed).
-    const applied = commitMemoryDreamSession(db, {
-      runId,
-      sourceSessionId: "s3",
-      sessionPath: "/tmp/s3.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: 3,
-      contentHash: "h3",
-      plan: {
-        operations: [
-          {
-            op: "create",
-            tempRef: "m2",
-            kind: "fact",
-            observationText: "Deploys to Fly.io",
-            memoryText: "Deploys to Fly.io",
-          },
-          {
-            op: "summarize",
-            summaryId: "S:1",
-            expectedVersionId: 1,
-            text: "Tooling + deploy",
-            memberIds: ["M:2"],
-          },
-        ],
-      },
-    });
-    assert.equal(applied.applied, true);
-    const opened = openMemoryNodeExact(db, "S:1");
-    assert.equal(opened.target.state, "active");
-    assert.equal(opened.target.text, "Tooling + deploy");
-  });
 });
 
 test("changed content with a preserved mtime is reprocessed, not skipped", async () => {
@@ -882,96 +731,14 @@ test("changed content with a preserved mtime is reprocessed, not skipped", async
   });
 });
 
-test("source session exactly at the age cutoff still receives novelty", async () => {
-  await withClaimedDb((db, runId) => {
-    // One second inside the cutoff so wall-clock drift cannot flip the branch.
-    const boundaryMtime = Date.now() - MEMORY_NOVELTY_MAX_SOURCE_AGE_MS + 1000;
-    commitMemoryDreamSession(db, {
-      runId,
-      sourceSessionId: "boundary-sess",
-      sessionPath: "/tmp/boundary.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: boundaryMtime,
-      contentHash: "h-b",
-      plan: {
-        operations: [
-          {
-            op: "create",
-            tempRef: "m1",
-            kind: "fact",
-            observationText: "Uses pnpm",
-            memoryText: "Package manager is pnpm",
-          },
-        ],
-      },
-    });
-    const mem = listActiveMemories(db)[0]!;
-    assert.equal(
-      mem.noveltyUntilGeneration,
-      getMemoryActivityGeneration(db) + MEMORY_NOVELTY_GENERATIONS,
-    );
-  });
-});
-
-test("fresh session reinforcing a cold memory warms it", async () => {
-  await withClaimedDb((db, runId) => {
-    const oldMtime =
-      Date.now() - (MEMORY_NOVELTY_MAX_SOURCE_AGE_DAYS + 1) * 86_400_000;
-    commitMemoryDreamSession(db, {
-      runId,
-      sourceSessionId: "old-sess",
-      sessionPath: "/tmp/old.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: oldMtime,
-      contentHash: "h-old",
-      plan: {
-        operations: [
-          {
-            op: "create",
-            tempRef: "m1",
-            kind: "fact",
-            observationText: "Uses pnpm",
-            memoryText: "Package manager is pnpm",
-          },
-        ],
-      },
-    });
-    const cold = listActiveMemories(db)[0]!;
-    assert.equal(cold.noveltyUntilGeneration, null);
-
-    commitMemoryDreamSession(db, {
-      runId,
-      sourceSessionId: "fresh-sess",
-      sessionPath: "/tmp/fresh.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: Date.now(),
-      contentHash: "h-fresh",
-      plan: {
-        operations: [
-          {
-            op: "reinforce",
-            memoryId: `M:${cold.id}`,
-            observationText: "Still uses pnpm",
-          },
-        ],
-      },
-    });
-    const warmed = getMemoryById(db, cold.id)!;
-    assert.equal(
-      warmed.noveltyUntilGeneration,
-      getMemoryActivityGeneration(db) + MEMORY_NOVELTY_GENERATIONS,
-    );
-  });
-});
-
-test("fresh reinforce of an already-warm memory does not extend novelty", async () => {
+test("citation events are recorded and observability-only", async () => {
   await withClaimedDb((db, runId) => {
     commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s1",
       sessionPath: "/tmp/s1.jsonl",
       cwd: "/tmp",
-      processedMtimeMs: Date.now(),
+      processedMtimeMs: 1,
       contentHash: "h1",
       plan: {
         operations: [
@@ -985,491 +752,173 @@ test("fresh reinforce of an already-warm memory does not extend novelty", async 
         ],
       },
     });
-    const created = listActiveMemories(db)[0]!;
-    const firstWindow = created.noveltyUntilGeneration!;
-    // Advance a generation so a naive window extension would be observable.
-    incrementMemoryActivityGeneration(db);
-
-    commitMemoryDreamSession(db, {
-      runId,
-      sourceSessionId: "s2",
-      sessionPath: "/tmp/s2.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: Date.now(),
-      contentHash: "h2",
-      plan: {
-        operations: [
-          {
-            op: "reinforce",
-            memoryId: `M:${created.id}`,
-            observationText: "Still uses pnpm",
-          },
-        ],
-      },
+    const m = listActiveMemories(db)[0]!;
+    recordMemoryCitation(db, {
+      nodeType: "memory",
+      nodeId: m.id,
+      source: "briefing",
+      piSessionId: "sess-x",
     });
-    assert.equal(
-      getMemoryById(db, created.id)!.noveltyUntilGeneration,
-      firstWindow,
-    );
-  });
-});
-
-test("backfilled old sessions create cold memories (no novelty boost)", async () => {
-  await withClaimedDb((db, runId) => {
-    // Source session last touched past the source-age cutoff → cold entry.
-    const oldMtime =
-      Date.now() - (MEMORY_NOVELTY_MAX_SOURCE_AGE_DAYS + 1) * 86_400_000;
-    commitMemoryDreamSession(db, {
-      runId,
-      sourceSessionId: "old-sess",
-      sessionPath: "/tmp/old.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: oldMtime,
-      contentHash: "h-old",
-      plan: {
-        operations: [
-          {
-            op: "create",
-            tempRef: "m1",
-            kind: "fact",
-            observationText: "Uses pnpm",
-            memoryText: "Package manager is pnpm",
-          },
-        ],
-      },
+    recordMemoryCitation(db, {
+      nodeType: "memory",
+      nodeId: m.id,
+      source: "search",
     });
-    const cold = listActiveMemories(db)[0]!;
-    assert.equal(cold.noveltyUntilGeneration, null);
-    assert.equal(
-      computeMemoryNodeHeat({
-        currentGeneration: getMemoryActivityGeneration(db),
-        noveltyUntilGeneration: cold.noveltyUntilGeneration,
-        recallGenerations: [],
-      }),
-      0,
-    );
-
-    // Fresh source session → novelty granted as before.
-    commitMemoryDreamSession(db, {
-      runId,
-      sourceSessionId: "fresh-sess",
-      sessionPath: "/tmp/fresh.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: Date.now(),
-      contentHash: "h-fresh",
-      plan: {
-        operations: [
-          {
-            op: "create",
-            tempRef: "m2",
-            kind: "fact",
-            observationText: "Uses pnpm",
-            memoryText: "Package manager is pnpm",
-          },
-        ],
-      },
-    });
-    const fresh = listActiveMemories(db)[1]!;
-    assert.equal(
-      fresh.noveltyUntilGeneration,
-      getMemoryActivityGeneration(db) + MEMORY_NOVELTY_GENERATIONS,
-    );
-  });
-});
-
-// ─── Step 4: promote + lifecycle reconciliation ─────────────────────────────
-
-function seedSummaryWithMembers(
-  db: ReturnType<typeof openMemoryDatabaseAtPath>,
-  runId: string,
-  memberTexts: string[],
-): { memoryIds: string[]; summaryId: string } {
-  const operations = memberTexts.map((text, i) => ({
-    op: "create" as const,
-    tempRef: `m${i}`,
-    kind: "fact" as const,
-    observationText: text,
-    memoryText: text,
-  }));
-  commitMemoryDreamSession(db, {
-    runId,
-    sourceSessionId: `seed-${Math.random().toString(36).slice(2)}`,
-    sessionPath: "/tmp/seed.jsonl",
-    cwd: "/tmp",
-    processedMtimeMs: 1,
-    contentHash: `h-${Math.random().toString(36).slice(2)}`,
-    plan: {
-      operations: [
-        ...operations,
-        {
-          op: "summarize",
-          tempRef: "s1",
-          text: "Tooling",
-          memberIds: memberTexts.map((_, i) => `m${i}`),
-        },
-      ],
-    },
-  });
-  const memoryIds = memberTexts.map((_, i) => `M:${i + 1}`);
-  return { memoryIds, summaryId: "S:1" };
-}
-
-test("promote happy path: edge retired and parent rewritten (>= 2 members)", async () => {
-  await withClaimedDb((db, runId) => {
-    const { memoryIds, summaryId } = seedSummaryWithMembers(db, runId, [
-      "Use tabs for indentation",
-      "No emoji in commits",
-      "CI runs on Ubuntu",
-    ]);
-    const before = listMemoryTreeRoots(db);
-    assert.deepEqual(
-      before.map((r) => r.prefixedId),
-      [summaryId],
-    );
-    assert.deepEqual(
-      listMemoryNodeChildren(db, "summary", 1).map((c) => c.prefixedId),
-      memoryIds,
-    );
-
-    commitMemoryDreamSession(db, {
-      runId,
-      sourceSessionId: "promote-1",
-      sessionPath: "/tmp/p.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: 2,
-      contentHash: "h-p1",
-      plan: {
-        operations: [
-          {
-            op: "promote",
-            nodeId: memoryIds[0] as never,
-            summaryId: summaryId as never,
-            expectedSummaryVersionId: 1,
-            newSummaryText: "Tooling",
-          },
-        ],
-      },
-    });
-
-    // The promoted memory is a root again; the parent was rewritten.
-    assert.equal(isMemoryRoot(db, "memory", 1), true);
-    const children = listMemoryNodeChildren(db, "summary", 1);
-    assert.deepEqual(
-      children.map((c) => c.prefixedId),
-      memoryIds.slice(1),
-    );
-    const opened = openMemoryNodeExact(db, summaryId);
-    assert.equal(opened.target.text, "Tooling");
-    assert.equal(opened.target.state, "active");
-    assert.equal(opened.versions?.length ?? 0, 2);
-    const roots = listMemoryTreeRoots(db).map((r) => r.prefixedId);
-    assert.deepEqual(roots, [memoryIds[0], summaryId]);
-  });
-});
-
-test("promote to 1 member retires the parent and resurfaced the orphan", async () => {
-  await withClaimedDb((db, runId) => {
-    const { memoryIds, summaryId } = seedSummaryWithMembers(db, runId, [
-      "Use tabs for indentation",
-      "No emoji in commits",
-    ]);
-    commitMemoryDreamSession(db, {
-      runId,
-      sourceSessionId: "promote-1",
-      sessionPath: "/tmp/p.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: 2,
-      contentHash: "h-p1",
-      plan: {
-        operations: [
-          {
-            op: "promote",
-            nodeId: memoryIds[0] as never,
-            summaryId: summaryId as never,
-            expectedSummaryVersionId: 1,
-          },
-        ],
-      },
-    });
-    assert.equal(isMemoryRoot(db, "memory", 1), true);
-    assert.equal(isMemoryRoot(db, "memory", 2), true, "orphan resurfaced");
-    const opened = openMemoryNodeExact(db, summaryId);
-    assert.equal(opened.target.state, "retired");
-  });
-});
-
-test("promote to 0 members retires the parent", async () => {
-  await withClaimedDb((db, runId) => {
-    const { memoryIds, summaryId } = seedSummaryWithMembers(db, runId, [
-      "Use tabs for indentation",
-    ]);
-    commitMemoryDreamSession(db, {
-      runId,
-      sourceSessionId: "promote-1",
-      sessionPath: "/tmp/p.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: 2,
-      contentHash: "h-p1",
-      plan: {
-        operations: [
-          {
-            op: "promote",
-            nodeId: memoryIds[0] as never,
-            summaryId: summaryId as never,
-            expectedSummaryVersionId: 1,
-          },
-        ],
-      },
-    });
-    assert.equal(isMemoryRoot(db, "memory", 1), true);
-    const opened = openMemoryNodeExact(db, summaryId);
-    assert.equal(opened.target.state, "retired");
-  });
-});
-
-test("promote CAS mismatch, conflicted target, and non-child are rejected", async () => {
-  await withClaimedDb((db, runId) => {
-    const { memoryIds, summaryId } = seedSummaryWithMembers(db, runId, [
-      "Use tabs for indentation",
-      "No emoji in commits",
-    ]);
-    const commit = (op: Record<string, unknown>) =>
-      commitMemoryDreamSession(db, {
-        runId,
-        sourceSessionId: `x-${Math.random().toString(36).slice(2)}`,
-        sessionPath: "/tmp/x.jsonl",
-        cwd: "/tmp",
-        processedMtimeMs: 2,
-        contentHash: `h-${Math.random().toString(36).slice(2)}`,
-        plan: { operations: [op as never] },
-      });
-    assert.throws(
-      () =>
-        commit({
-          op: "promote",
-          nodeId: memoryIds[0],
-          summaryId,
-          expectedSummaryVersionId: 999,
-          newSummaryText: "Tooling",
-        }),
-      /version is stale/,
-    );
-    // Conflicted target: mark M:2 conflicted, then try to promote it.
-    commit({
-      op: "conflict",
-      memoryIds: [memoryIds[1]],
-    });
-    assert.throws(
-      () =>
-        commit({
-          op: "promote",
-          nodeId: memoryIds[1],
-          summaryId,
-          expectedSummaryVersionId: 1,
-        }),
-      /is conflicted/,
-    );
-    // Non-child: M:1 is an active child of S:1, so a promote naming a
-    // different parent must fail.
-    assert.throws(
-      () =>
-        commit({
-          op: "promote",
-          nodeId: memoryIds[0],
-          summaryId: "S:999",
-          expectedSummaryVersionId: 1,
-          newSummaryText: "Tooling",
-        }),
-      /not a child/,
-    );
-  });
-});
-
-test("promote rewrite must not grow; newSummaryText required for >= 2 members", async () => {
-  await withClaimedDb((db, runId) => {
-    const { memoryIds, summaryId } = seedSummaryWithMembers(db, runId, [
-      "Use tabs for indentation",
-      "No emoji in commits",
-      "CI runs on Ubuntu",
-    ]);
-    const commit = (op: Record<string, unknown>) =>
-      commitMemoryDreamSession(db, {
-        runId,
-        sourceSessionId: `x-${Math.random().toString(36).slice(2)}`,
-        sessionPath: "/tmp/x.jsonl",
-        cwd: "/tmp",
-        processedMtimeMs: 2,
-        contentHash: `h-${Math.random().toString(36).slice(2)}`,
-        plan: { operations: [op as never] },
-      });
-    assert.throws(
-      () =>
-        commit({
-          op: "promote",
-          nodeId: memoryIds[0],
-          summaryId,
-          expectedSummaryVersionId: 1,
-        }),
-      /newSummaryText is required/,
-    );
-    assert.throws(
-      () =>
-        commit({
-          op: "promote",
-          nodeId: memoryIds[0],
-          summaryId,
-          expectedSummaryVersionId: 1,
-          newSummaryText:
-            "A much longer tooling overview text that grows the parent",
-        }),
-      /must not grow/,
-    );
-  });
-});
-
-test("supersede of a child retires its edge and resurfaced the ancestor summary", async () => {
-  await withClaimedDb((db, runId) => {
-    const { memoryIds, summaryId } = seedSummaryWithMembers(db, runId, [
-      "Use spaces for indentation",
-      "No emoji in commits",
-    ]);
-    commitMemoryDreamSession(db, {
-      runId,
-      sourceSessionId: "sup-1",
-      sessionPath: "/tmp/s.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: 2,
-      contentHash: "h-sup1",
-      plan: {
-        operations: [
-          {
-            op: "supersede",
-            oldMemoryId: memoryIds[0] as never,
-            newTempRef: "new1",
-            kind: "correction",
-            observationText: "Actually use tabs",
-            memoryText: "Use tabs for indentation",
-          },
-        ],
-      },
-    });
-    // The superseded memory's edge is retired; the parent summary contains an
-    // inactive node and is retired; the remaining child resurfaced as a root.
-    assert.equal(isMemoryRoot(db, "memory", 2), true);
-    const opened = openMemoryNodeExact(db, summaryId);
-    assert.equal(opened.target.state, "retired");
-    const roots = listMemoryTreeRoots(db).map((r) => r.prefixedId);
-    assert.ok(roots.includes("M:2"));
-    assert.ok(roots.includes("M:3"));
-    // The supersedes edge itself is intact (audit).
-    const edges = db
+    const rows = db
       .prepare(
-        `SELECT relation, state FROM graph_edges WHERE relation = 'supersedes'`,
+        `SELECT node_type, node_id, source, pi_session_id FROM citation_events ORDER BY id`,
       )
-      .all() as Array<{ relation: string; state: string }>;
-    assert.equal(edges.length, 1);
+      .all() as Array<{
+      node_type: string;
+      node_id: number;
+      source: string;
+      pi_session_id: string | null;
+    }>;
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0]!.source, "briefing");
+    assert.equal(rows[0]!.pi_session_id, "sess-x");
+    assert.equal(rows[1]!.source, "search");
+    assert.equal(rows[1]!.pi_session_id, null);
   });
 });
 
-test("conflict of a child retires the ancestor summary and resurfaced siblings", async () => {
-  await withClaimedDb((db, runId) => {
-    const { memoryIds, summaryId } = seedSummaryWithMembers(db, runId, [
-      "API is REST",
-      "API is GraphQL",
-      "CI runs on Ubuntu",
-    ]);
-    commitMemoryDreamSession(db, {
-      runId,
-      sourceSessionId: "conf-1",
-      sessionPath: "/tmp/c.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: 2,
-      contentHash: "h-conf1",
-      plan: {
-        operations: [
-          {
-            op: "conflict",
-            memoryIds: [memoryIds[0] as never, memoryIds[1] as never],
-          },
-        ],
-      },
-    });
-    const opened = openMemoryNodeExact(db, summaryId);
-    assert.equal(
-      opened.target.state,
-      "retired",
-      "summary with conflicted members retires",
+test("recall capacity error is persisted and cleared", async () => {
+  await withClaimedDb((db, _runId) => {
+    assert.equal(getMemoryWorkspaceState(db).recallCapacityError, null);
+    setMemoryRecallCapacityError(db, "recall model context too small (32000)");
+    assert.match(
+      getMemoryWorkspaceState(db).recallCapacityError ?? "",
+      /context too small/,
     );
-    const roots = listMemoryTreeRoots(db).map((r) => r.prefixedId);
-    assert.ok(roots.includes("M:3"), "unaffected sibling resurfaced");
-    assert.ok(!roots.includes("M:1") && !roots.includes("M:2"));
+    setMemoryRecallCapacityError(db, null);
+    assert.equal(getMemoryWorkspaceState(db).recallCapacityError, null);
   });
 });
 
-test("forget of a summary resurfaced its active children", async () => {
-  await withClaimedDb((db, runId) => {
-    const { memoryIds, summaryId } = seedSummaryWithMembers(db, runId, [
-      "Use tabs for indentation",
-      "No emoji in commits",
-    ]);
-    retireMemoryNode(db, summaryId);
-    const roots = listMemoryTreeRoots(db).map((r) => r.prefixedId);
-    assert.deepEqual(roots.sort(), memoryIds.sort());
-    const edges = db
-      .prepare(`SELECT state FROM graph_edges WHERE relation = 'contains'`)
-      .all() as Array<{ state: string }>;
-    assert.ok(edges.every((e) => e.state === "retired"));
-  });
-});
-
-test("extend merge that would grow the layer is rejected", async () => {
-  await withClaimedDb((db, runId) => {
-    const { summaryId } = seedSummaryWithMembers(db, runId, [
-      "Use tabs for indentation",
-    ]);
-    commitMemoryDreamSession(db, {
-      runId,
-      sourceSessionId: "ext-1",
-      sessionPath: "/tmp/e.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: 2,
-      contentHash: "h-ext1",
-      plan: {
-        operations: [
-          {
-            op: "create",
-            tempRef: "m2",
-            kind: "fact",
-            observationText: "No emoji in commits",
-            memoryText: "No emoji in commits",
-          },
-        ],
-      },
-    });
-    // Old summary "Tooling" (2 tokens) + new member "No emoji in commits"
-    // (5 tokens) = 7; a longer rewrite that does not stay below it is rejected.
-    assert.throws(
-      () =>
-        commitMemoryDreamSession(db, {
-          runId,
-          sourceSessionId: "ext-2",
-          sessionPath: "/tmp/e2.jsonl",
-          cwd: "/tmp",
-          processedMtimeMs: 3,
-          contentHash: "h-ext2",
-          plan: {
-            operations: [
-              {
-                op: "summarize",
-                summaryId: summaryId as never,
-                expectedVersionId: 1,
-                text: "Tooling plus emoji plus more text that is far too long",
-                memberIds: ["M:2"],
-              },
-            ],
-          },
-        }),
-      /does not compact the top layer/,
+test("embedding degradation is persisted and cleared (semantic-retriever diagnosability)", async () => {
+  await withClaimedDb((db, _runId) => {
+    assert.equal(getMemoryWorkspaceState(db).embeddingDegradedError, null);
+    setMemoryEmbeddingDegradedError(
+      db,
+      "Semantic embedder unavailable: model download failed",
     );
+    assert.match(
+      getMemoryWorkspaceState(db).embeddingDegradedError ?? "",
+      /model download failed/,
+    );
+    // A later successful pass clears the flag (self-healing).
+    setMemoryEmbeddingDegradedError(db, null);
+    assert.equal(getMemoryWorkspaceState(db).embeddingDegradedError, null);
+    // The two diagnostics are independent columns.
+    setMemoryRecallCapacityError(db, "capacity x");
+    setMemoryEmbeddingDegradedError(db, "embedder y");
+    const state = getMemoryWorkspaceState(db);
+    assert.equal(state.recallCapacityError, "capacity x");
+    assert.equal(state.embeddingDegradedError, "embedder y");
+  });
+});
+
+test("two connections: a second reader sees committed writes", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-two-conn-"));
+  const dbPath = path.join(dir, "memory.db");
+  try {
+    const writer = openMemoryDatabaseAtPath(dbPath);
+    const reader = openMemoryDatabaseAtPath(dbPath);
+    try {
+      const claim = acquireMemoryRunClaim(writer, "manual");
+      assert.equal(claim.acquired, true);
+      commitMemoryDreamSession(writer, {
+        runId: claim.runId!,
+        sourceSessionId: "s1",
+        sessionPath: "/tmp/s1.jsonl",
+        cwd: "/tmp",
+        processedMtimeMs: 1,
+        contentHash: "h1",
+        plan: {
+          operations: [
+            {
+              op: "create",
+              tempRef: "m1",
+              kind: "fact",
+              observationText: "Uses pnpm",
+              memoryText: "Package manager is pnpm",
+            },
+          ],
+        },
+      });
+      const seen = (
+        reader.prepare(`SELECT COUNT(*) AS n FROM memories`).get() as {
+          n: number;
+        }
+      ).n;
+      assert.equal(
+        Number(seen),
+        1,
+        "committed write is visible on a second connection",
+      );
+      // Claim ownership is per-database: the reader connection sees the
+      // running claim and cannot acquire a second one.
+      const second = acquireMemoryRunClaim(reader, "auto");
+      assert.equal(second.acquired, false);
+      assert.equal(second.reason, "running");
+    } finally {
+      closeMemoryDatabase(writer);
+      closeMemoryDatabase(reader);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a memory created by one connection is searchable via FTS on another", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-two-conn-fts-"));
+  const dbPath = path.join(dir, "memory.db");
+  try {
+    const writer = openMemoryDatabaseAtPath(dbPath);
+    const reader = openMemoryDatabaseAtPath(dbPath);
+    try {
+      const claim = acquireMemoryRunClaim(writer, "manual");
+      assert.equal(claim.acquired, true);
+      commitMemoryDreamSession(writer, {
+        runId: claim.runId!,
+        sourceSessionId: "s1",
+        sessionPath: "/tmp/s1.jsonl",
+        cwd: "/tmp",
+        processedMtimeMs: 1,
+        contentHash: "h1",
+        plan: {
+          operations: [
+            {
+              op: "create",
+              tempRef: "m1",
+              kind: "fact",
+              observationText: "CI caches the pnpm store",
+              memoryText: "CI caches the pnpm store",
+            },
+          ],
+        },
+      });
+      const hit = reader
+        .prepare(`SELECT rowid FROM memory_fts WHERE memory_fts MATCH '"pnpm"'`)
+        .all() as Array<{ rowid: number }>;
+      assert.deepEqual(
+        hit.map((r) => Number(r.rowid)),
+        [1],
+      );
+    } finally {
+      closeMemoryDatabase(writer);
+      closeMemoryDatabase(reader);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("generation advances only via incrementMemoryActivityGeneration", async () => {
+  await withClaimedDb((db, _runId) => {
+    assert.equal(getMemoryActivityGeneration(db), 0);
+    incrementMemoryActivityGeneration(db);
+    incrementMemoryActivityGeneration(db);
+    assert.equal(getMemoryActivityGeneration(db), 2);
   });
 });

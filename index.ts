@@ -1,32 +1,23 @@
 /**
  * Briefing loader: Escape cancels the synthesis outright (BorderedLoader's
- * onAbort); `a` (answer now) interrupts navigation so the synthesizer forces
- * a finalize from the context gathered so far.
+ * onAbort). There is no answer-now key: with a single synthesis call the
+ * gathered context IS the complete payload, so a partial answer would just
+ * re-issue an identical request. `cancellable: true` is explicit because
+ * Escape-cancel is load-bearing: the deterministic standing-preferences
+ * section is preserved on cancel.
  */
 class MemoryBriefingLoader extends BorderedLoader {
-  constructor(
-    tui: TUI,
-    theme: Theme,
-    message: string,
-    private readonly onAnswerNow: () => void,
-  ) {
-    super(tui, theme, message);
-  }
-
-  override handleInput(data: string): void {
-    if (data === "a" || data === "A") {
-      this.onAnswerNow();
-      return;
-    }
-    super.handleInput(data);
+  constructor(tui: TUI, theme: Theme, message: string, onAbort: () => void) {
+    super(tui, theme, message, { cancellable: true });
+    this.onAbort = onAbort;
   }
 }
 
 /**
  * pi-dream — adaptive workspace memory extension.
  *
- * Parent: first-turn visible briefing, memory_search/memory_open, /memory,
- * agent_settled cadence, detached dreamer launch.
+ * Parent: first-turn visible briefing, memory_search, /memory, agent_settled
+ * cadence, detached dreamer launch.
  * Child (PI_DREAM_CHILD=1): no-op here; child uses memory-dream-entry.ts.
  */
 
@@ -63,9 +54,13 @@ import {
 } from "./parent/memory-briefing.ts";
 import { evaluateMemoryDreamCadence } from "./parent/memory-cadence.ts";
 import { launchMemoryDreamRun } from "./parent/memory-dream-launcher.ts";
-import { registerMemoryAgentTools } from "./parent/memory-tools.ts";
+import {
+  createMemoryDiagnosticSink,
+  registerMemoryAgentTools,
+} from "./parent/memory-tools.ts";
 import { registerMemoryCommand } from "./parent/memory-command.ts";
-import { listMemoryTreeRoots } from "./shared/memory-tree.ts";
+import { listActiveMemories } from "./shared/memory-graph.ts";
+import { getMemoryWorkspaceState } from "./shared/memory-repository.ts";
 import { consumeMemoryRunNotification } from "./parent/memory-session-lifecycle.ts";
 
 interface PinnedMemorySession {
@@ -83,6 +78,9 @@ interface PinnedMemorySession {
 function isMemoryChildProcess(): boolean {
   return process.env[MEMORY_CHILD_ENV] === "1";
 }
+
+/** Workspaces whose startup diagnostic notice was already surfaced this process. */
+const memoryStartupNotified = new Set<string>();
 
 export default function piDreamExtension(pi: ExtensionAPI) {
   if (isMemoryChildProcess()) {
@@ -196,6 +194,32 @@ export default function piDreamExtension(pi: ExtensionAPI) {
         getSessionId: () => ctx.sessionManager.getSessionId(),
       };
 
+      // Surface persisted recall diagnostics once per process so a recall
+      // model too small to be usable, or a semantic retriever silently off
+      // (embedding pass degraded), is diagnosable at startup.
+      if (config.enabled && !memoryStartupNotified.has(workspaceId)) {
+        try {
+          const state = getMemoryWorkspaceState(db);
+          const diagnostics: string[] = [];
+          if (state.recallCapacityError) {
+            diagnostics.push(
+              `recall model capacity: ${state.recallCapacityError}`,
+            );
+          }
+          if (state.embeddingDegradedError) {
+            diagnostics.push(
+              `semantic embeddings degraded: ${state.embeddingDegradedError}`,
+            );
+          }
+          if (diagnostics.length > 0) {
+            memoryStartupNotified.add(workspaceId);
+            ctx.ui.notify(`Memory: ${diagnostics.join("; ")}`, "warning");
+          }
+        } catch {
+          // The notice is best-effort; /memory status always shows the flags.
+        }
+      }
+
       const notice = consumeMemoryRunNotification(db);
       if (notice) {
         ctx.ui.notify(notice.message, notice.level);
@@ -236,10 +260,8 @@ export default function piDreamExtension(pi: ExtensionAPI) {
     if (!pinned.config.enabled) return;
 
     // Shared handling for a settled briefing: surface the message, or record
-    // the audit entry for silent skips (top-layer over budget, synthesizer
-    // failure) and for partial results (synthesizer_partial), which show a
-    // message and still need the interruption audited. Never show raw tree
-    // content.
+    // the audit entry for silent skips (synthesizer failure, provider
+    // capacity). Never show raw memory content.
     const handleBriefingResult = (result: BuildMemoryBriefingResult) => {
       if (!result.ok) {
         return { message: result.notice };
@@ -265,11 +287,13 @@ export default function piDreamExtension(pi: ExtensionAPI) {
         modelRegistry: ctx.modelRegistry as never,
         currentSessionModel: ctx.model as never,
         piSessionId: ctx.sessionManager.getSessionId(),
+        // Production sink for the Phase 2 trigger and synthesis diagnostics.
+        log: createMemoryDiagnosticSink(pi),
       };
 
-      // Empty tree: the briefing resolves instantly without a model call, so
+      // Empty store: the briefing resolves instantly without a model call, so
       // skip the loader instead of flashing it.
-      if (listMemoryTreeRoots(pinned.db).length === 0) {
+      if (listActiveMemories(pinned.db).length === 0) {
         const result = await buildMemorySessionBriefing({
           ...briefingInput,
           signal: createMemoryBriefingSignal(ctx.signal),
@@ -278,23 +302,19 @@ export default function piDreamExtension(pi: ExtensionAPI) {
       }
 
       // Model-backed synthesis can take seconds, so show a loader while it
-      // runs. Escape cancels the briefing outright (nothing is shown); `a`
-      // (answer now) stops navigation and forces a finalize with the context
-      // gathered so far.
+      // runs. Escape cancels the synthesis outright; the deterministic
+      // standing-preferences section was already rendered inside the builder
+      // and is preserved in the result.
       const abort = new AbortController();
-      const answerNow = new AbortController();
       const briefing = buildMemorySessionBriefing({
         ...briefingInput,
         // Pi 0.83 runs before_agent_start before creating the active run, so
         // ctx.signal is normally undefined here. Use its signal when a newer
-        // lifecycle provides one — it also cancels the answer-now finalize.
+        // lifecycle provides one.
         signal: createMemoryBriefingSignal(
           AbortSignal.any(
             ctx.signal ? [abort.signal, ctx.signal] : [abort.signal],
           ),
-        ),
-        finalizeNowSignal: AbortSignal.any(
-          ctx.signal ? [answerNow.signal, ctx.signal] : [answerNow.signal],
         ),
       });
 
@@ -309,12 +329,9 @@ export default function piDreamExtension(pi: ExtensionAPI) {
           const loader = new MemoryBriefingLoader(
             tui,
             theme,
-            // The cancel key is rendered by BorderedLoader's footer via
-            // keyHint (and is user-configurable); only document `a` here.
-            "Recalling your memories… (a = answer now)",
-            () => answerNow.abort(),
+            "Recalling your memories… (Esc to skip)",
+            () => abort.abort(),
           );
-          loader.onAbort = () => abort.abort();
           briefing.then(
             (result) => done({ kind: "result", result }),
             (error) => done({ kind: "error", error }),

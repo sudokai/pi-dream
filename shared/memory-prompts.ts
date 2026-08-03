@@ -10,6 +10,12 @@ export function loadMemoryPromptFile(name: string): string | undefined {
   }
 }
 
-export function loadMemorySynthesizerPrompt(): string | undefined {
-  return loadMemoryPromptFile("memory-synthesizer.md");
+/** System prompt for the first-turn briefing synthesis call. */
+export function loadMemoryBriefingPrompt(): string | undefined {
+  return loadMemoryPromptFile("memory-briefing.md");
+}
+
+/** System prompt for the memory_search synthesis call. */
+export function loadMemorySearchPrompt(): string | undefined {
+  return loadMemoryPromptFile("memory-search.md");
 }

@@ -7,29 +7,22 @@ import {
   closeMemoryDatabase,
   openMemoryDatabaseAtPath,
 } from "../shared/memory-database.ts";
-import { commitMemoryDreamSession } from "../shared/memory-repository.ts";
+import {
+  commitMemoryDreamSession,
+  getMemoryWorkspaceState,
+} from "../shared/memory-repository.ts";
 import {
   acquireMemoryRunClaim,
   listUnreportedMemoryRuns,
 } from "../shared/memory-run-claim.ts";
 import { writeMemoryDreamManifest } from "../shared/memory-session-discovery.ts";
-import { defaultMemoryWorkspaceConfig } from "../shared/memory-config.ts";
-import type { MemoryWorkspaceConfig } from "../shared/memory-config.ts";
+import { finalizeMemoryDreamRun } from "./memory-dream-finalize.ts";
 import {
-  finalizeMemoryDreamRun,
-  findMemoryConsolidationCoverageError,
-} from "./memory-dream-finalize.ts";
-import { persistMemoryConsolidationInspect } from "./memory-dream-tools.ts";
-import { incrementMemoryConsolidationAttempt } from "../shared/memory-consolidation.ts";
-
-const TEST_WORKSPACE = "finalize-test-workspace";
-
-// Small budget so the planner still emits merge candidates under budget
-// gating (the default 8000-token budget never plans merges for tiny trees).
-const OVER_BUDGET_CONFIG: MemoryWorkspaceConfig = {
-  ...defaultMemoryWorkspaceConfig(),
-  briefingTokenBudget: 8,
-};
+  resetMemoryEmbedderForTests,
+  setMemoryEmbedderForTests,
+  type MemoryEmbedFn,
+} from "../shared/memory-embedding.ts";
+import { findMemoryCandidates } from "../shared/memory-retrieval.ts";
 
 function writeDreamManifest(dir: string): string {
   const snapshotPath = path.join(dir, "session.jsonl");
@@ -57,8 +50,6 @@ test("finalizeMemoryDreamRun fails when a manifest session was not checkpointed"
     await finalizeMemoryDreamRun({
       db,
       runId: claim.runId,
-      workspaceId: TEST_WORKSPACE,
-      config: defaultMemoryWorkspaceConfig(),
       manifestPath: writeDreamManifest(dir),
     });
 
@@ -92,8 +83,6 @@ test("finalizeMemoryDreamRun completes only after every manifest checkpoint", as
     await finalizeMemoryDreamRun({
       db,
       runId: claim.runId,
-      workspaceId: TEST_WORKSPACE,
-      config: defaultMemoryWorkspaceConfig(),
       manifestPath,
     });
 
@@ -105,7 +94,7 @@ test("finalizeMemoryDreamRun completes only after every manifest checkpoint", as
   }
 });
 
-test("an empty manifest is a valid dream-only run", async () => {
+test("an empty manifest is a valid run (nothing to mine completes cleanly)", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-finalize-"));
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
@@ -117,8 +106,6 @@ test("an empty manifest is a valid dream-only run", async () => {
     await finalizeMemoryDreamRun({
       db,
       runId: claim.runId,
-      workspaceId: TEST_WORKSPACE,
-      config: defaultMemoryWorkspaceConfig(),
       manifestPath,
     });
     const run = listUnreportedMemoryRuns(db)[0]!;
@@ -129,401 +116,293 @@ test("an empty manifest is a valid dream-only run", async () => {
   }
 });
 
-test("finalize fails loudly when the last inspect batch has outstanding candidates", async () => {
+test("an explicit errorText fails the run without touching checkpoints", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-finalize-"));
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     const claim = acquireMemoryRunClaim(db, "auto");
     assert.ok(claim.runId);
-    const manifestPath = path.join(dir, "manifest.json");
-    writeMemoryDreamManifest(manifestPath, []);
-    // Two cold memories -> a merge candidate in the plan.
-    commitMemoryDreamSession(db, {
-      runId: claim.runId,
-      sourceSessionId: "s1",
-      sessionPath: "/tmp/s1.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: 1,
-      contentHash: "h1",
-      plan: {
-        operations: [
-          {
-            op: "create",
-            tempRef: "m",
-            kind: "fact",
-            observationText: "Use tabs",
-            memoryText: "Use tabs for indentation",
-          },
-          {
-            op: "create",
-            tempRef: "m2",
-            kind: "fact",
-            observationText: "No emoji",
-            memoryText: "No emoji in commits",
-          },
-        ],
-      },
-    });
-    // The dreamer inspected (persisting the batch) but committed nothing.
-    const plan = await planMemoryConsolidationForTest(
-      db,
-      claim.runId,
-      OVER_BUDGET_CONFIG,
-    );
-    persistMemoryConsolidationInspect(
-      {
-        db,
-        runId: claim.runId,
-        workspaceId: TEST_WORKSPACE,
-        manifestPath,
-        cwd: "/tmp",
-        config: OVER_BUDGET_CONFIG,
-      },
-      plan,
-    );
-    const error = await findMemoryConsolidationCoverageError(
-      db,
-      claim.runId,
-      TEST_WORKSPACE,
-      OVER_BUDGET_CONFIG,
-    );
-    assert.match(error ?? "", /outstanding/);
-    assert.match(error ?? "", /merge:memory:1\+memory:2/);
-
-    // At the attempt bound the same outstanding candidate is not a failure.
-    incrementMemoryConsolidationAttempt(db, "merge:memory:1+memory:2", 0);
-    incrementMemoryConsolidationAttempt(db, "merge:memory:1+memory:2", 0);
-    incrementMemoryConsolidationAttempt(db, "merge:memory:1+memory:2", 0);
-    incrementMemoryConsolidationAttempt(db, "merge:memory:1+memory:2", 0);
-    incrementMemoryConsolidationAttempt(db, "merge:memory:1+memory:2", 0);
-    const bound = await findMemoryConsolidationCoverageError(
-      db,
-      claim.runId,
-      TEST_WORKSPACE,
-      OVER_BUDGET_CONFIG,
-    );
-    assert.equal(bound, null);
-  } finally {
-    closeMemoryDatabase(db);
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("a supersede that dissolves a merge candidate completes (dissolution)", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-finalize-"));
-  const db = openMemoryDatabaseAtPath(":memory:");
-  try {
-    const claim = acquireMemoryRunClaim(db, "auto");
-    assert.ok(claim.runId);
-    const manifestPath = path.join(dir, "manifest.json");
-    writeMemoryDreamManifest(manifestPath, []);
-    commitMemoryDreamSession(db, {
-      runId: claim.runId,
-      sourceSessionId: "s1",
-      sessionPath: "/tmp/s1.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: 1,
-      contentHash: "h1",
-      plan: {
-        operations: [
-          {
-            op: "create",
-            tempRef: "m",
-            kind: "fact",
-            observationText: "Use tabs",
-            memoryText: "Use tabs for indentation",
-          },
-          {
-            op: "create",
-            tempRef: "m2",
-            kind: "fact",
-            observationText: "No emoji",
-            memoryText: "No emoji in commits",
-          },
-        ],
-      },
-    });
-    const plan = await planMemoryConsolidationForTest(
-      db,
-      claim.runId,
-      OVER_BUDGET_CONFIG,
-    );
-    persistMemoryConsolidationInspect(
-      {
-        db,
-        runId: claim.runId,
-        workspaceId: TEST_WORKSPACE,
-        manifestPath,
-        cwd: "/tmp",
-        config: OVER_BUDGET_CONFIG,
-      },
-      plan,
-    );
-    // The final commit supersedes one of the merge-eligible roots.
-    commitMemoryDreamSession(db, {
-      runId: claim.runId,
-      sourceSessionId: "s2",
-      sessionPath: "/tmp/s2.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: 2,
-      contentHash: "h2",
-      plan: {
-        operations: [
-          {
-            op: "supersede",
-            oldMemoryId: "M:1",
-            newTempRef: "new1",
-            kind: "correction",
-            observationText: "Use spaces",
-            memoryText: "Use spaces for indentation",
-          },
-        ],
-      },
-    });
-    const error = await findMemoryConsolidationCoverageError(
-      db,
-      claim.runId,
-      TEST_WORKSPACE,
-      OVER_BUDGET_CONFIG,
-    );
-    assert.equal(error, null, "dissolved candidates are not a failure");
-  } finally {
-    closeMemoryDatabase(db);
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-/** Recompute helper matching the child's planner invocation. */
-async function planMemoryConsolidationForTest(
-  db: ReturnType<typeof openMemoryDatabaseAtPath>,
-  runId: string,
-  config: MemoryWorkspaceConfig = defaultMemoryWorkspaceConfig(),
-): Promise<
-  import("../shared/memory-consolidation.ts").PersistedMemoryConsolidationInspect
-> {
-  const plan = await import("../shared/memory-consolidation.ts").then((m) =>
-    m.planMemoryConsolidation(db, {
-      config,
-      embed: async (texts: string[]) =>
-        Promise.resolve(texts.map(() => new Float32Array(4))),
-    }),
-  );
-  return {
-    runId,
-    promotes: plan.promotes.map((p) => ({
-      key: p.key,
-      child: p.childPrefixedId,
-      parent: p.parentPrefixedId,
-      childHeat: p.childHeat,
-      remainingMembersAfter: p.remainingMembersAfter,
-    })),
-    merges: plan.merges.map((m) => ({
-      key: m.key,
-      kind: m.kind,
-      similarity: m.similarity,
-      members: m.members.map((x) => x.prefixedId),
-      baselineTokens: m.baselineTokens,
-      outputCapTokens: m.outputCapTokens,
-      summaryId: m.summaryId,
-    })),
-  };
-}
-
-test("a run whose only unresolved candidate was rejected for compaction completes", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-finalize-"));
-  const db = openMemoryDatabaseAtPath(":memory:");
-  try {
-    const claim = acquireMemoryRunClaim(db, "auto");
-    assert.ok(claim.runId);
-    const manifestPath = path.join(dir, "manifest.json");
-    writeMemoryDreamManifest(manifestPath, []);
-    // Six cold memories -> three merge pairs in the inspect batch.
-    for (let i = 1; i <= 6; i++) {
-      commitMemoryDreamSession(db, {
-        runId: claim.runId,
-        sourceSessionId: `s${i}`,
-        sessionPath: `/tmp/s${i}.jsonl`,
-        cwd: "/tmp",
-        processedMtimeMs: 1,
-        contentHash: `h${i}`,
-        plan: {
-          operations: [
-            {
-              op: "create",
-              tempRef: "m",
-              kind: "fact",
-              observationText: `Fact ${i}`,
-              memoryText: `Fact ${i} about the build`,
-            },
-          ],
-        },
-      });
-    }
-    // Small budget so the batch of three merges leaves the layer over target
-    // and the residual rejection fires (needed to exercise the in-run
-    // rejection recording; the defaults would fit and reject nothing).
-    const config = {
-      ...defaultMemoryWorkspaceConfig(),
-      briefingTokenBudget: 12,
-    };
-    const plan = await planMemoryConsolidationForTest(db, claim.runId, config);
-    persistMemoryConsolidationInspect(
-      {
-        db,
-        runId: claim.runId,
-        workspaceId: TEST_WORKSPACE,
-        manifestPath,
-        cwd: "/tmp",
-        config,
-      },
-      plan,
-    );
-    // The dreamer emits ops for the PLANNED pairs (read from the persisted
-    // inspect batch, so the committed keys are exactly the persisted keys);
-    // one text is at the compaction bar and gets rejected alone (attempts=1),
-    // the other two apply. On pre-fix code this scenario fails finalize with
-    // "outstanding: merge:memory:1+memory:2" — the test only passes with the
-    // per-run rejection tracking in place.
-    assert.equal(plan.merges.length, 3);
-    const planned = plan.merges.map((m) => m.members);
-    assert.deepEqual(planned, [
-      ["M:1", "M:2"],
-      ["M:3", "M:4"],
-      ["M:5", "M:6"],
-    ]);
-    const { commitMemoryDreamOps } =
-      await import("../shared/memory-repository.ts");
-    const result = commitMemoryDreamOps(db, {
-      runId: claim.runId,
-      operations: [
-        {
-          op: "summarize",
-          text: "Fact 1 plus fact 2 builds", // passes strict compaction, fails the half-baseline bar -> rejected
-          memberIds: planned[0]!,
-        },
-        {
-          op: "summarize",
-          text: "Facts 3+4",
-          memberIds: planned[1]!,
-        },
-        {
-          op: "summarize",
-          text: "Facts 5+6",
-          memberIds: planned[2]!,
-        },
-      ],
-      config,
-    });
-    assert.equal(result.rejectedKeys.length, 1, "one candidate rejected");
-    assert.equal(
-      result.rejectedKeys[0]!.key,
-      plan.merges[0]!.key,
-      "the rejected key is one of the persisted planned pairs",
-    );
-    assert.equal(result.coveredKeys.length, 2, "partial progress applied");
-    const { mergeMemoryConsolidationRejections } =
-      await import("./memory-dream-tools.ts");
-    mergeMemoryConsolidationRejections(
-      {
-        db,
-        runId: claim.runId,
-        workspaceId: TEST_WORKSPACE,
-        manifestPath,
-        cwd: "/tmp",
-        config,
-      },
-      result.rejectedKeys.map((r) => r.key),
-    );
-
-    const error = await findMemoryConsolidationCoverageError(
-      db,
-      claim.runId,
-      TEST_WORKSPACE,
-      config,
-    );
-    assert.equal(
-      error,
-      null,
-      "compaction-rejected candidates are a pass state (partial progress)",
-    );
-
-    // And the whole run completes.
     await finalizeMemoryDreamRun({
       db,
       runId: claim.runId,
-      workspaceId: TEST_WORKSPACE,
-      config,
-      manifestPath,
+      manifestPath: writeDreamManifest(dir),
+      errorText: "dreamer crashed mid-run",
     });
     const run = listUnreportedMemoryRuns(db)[0]!;
-    assert.equal(run.status, "completed");
+    assert.equal(run.status, "failed");
+    assert.match(run.errorText ?? "", /dreamer crashed mid-run/);
   } finally {
     closeMemoryDatabase(db);
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("a candidate rejected in a previous run but omitted now still fails loudly", async () => {
+test("finalize removes the run directory on success", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-finalize-"));
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     const claim = acquireMemoryRunClaim(db, "auto");
     assert.ok(claim.runId);
-    const manifestPath = path.join(dir, "manifest.json");
-    writeMemoryDreamManifest(manifestPath, []);
+    const manifestPath = writeDreamManifest(dir);
     commitMemoryDreamSession(db, {
       runId: claim.runId,
-      sourceSessionId: "s1",
-      sessionPath: "/tmp/s1.jsonl",
+      sourceSessionId: "session-1",
+      sessionPath: "/tmp/session-1.jsonl",
       cwd: "/tmp",
-      processedMtimeMs: 1,
-      contentHash: "h1",
+      processedMtimeMs: 100,
+      contentHash: "snapshot-hash-1",
+      plan: { operations: [{ op: "no_op", reason: "x" }] },
+    });
+    const result = await finalizeMemoryDreamRun({
+      db,
+      runId: claim.runId,
+      manifestPath,
+    });
+    assert.equal(result.finalized, true);
+    assert.equal(result.status, "completed");
+    assert.equal(result.runDirRetained, false);
+    assert.equal(fs.existsSync(dir), false, "run dir removed at finalize");
+  } finally {
+    closeMemoryDatabase(db);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("finalize maintains the embeddings projection end-to-end: committed session → rows → semantic candidates", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-finalize-embed-"));
+  const db = openMemoryDatabaseAtPath(":memory:");
+  // Alias embedder: "caching layer" and "abstractions at call sites" share a
+  // canonical topic with no surface words in common (the semantic side the
+  // lexical retriever cannot see).
+  const ALIASES: Record<string, string> = {
+    caching: "caching",
+    layer: "caching",
+    abstractions: "caching",
+    call: "caching",
+    sites: "caching",
+  };
+  const aliasEmbed: MemoryEmbedFn = (texts) =>
+    Promise.resolve(
+      texts.map((t) => {
+        const v = new Float32Array(1);
+        for (const token of t.toLowerCase().split(/[^\p{L}\p{N}]+/u)) {
+          if (ALIASES[token]) v[0] = 1;
+        }
+        const norm =
+          Math.sqrt(Array.from(v).reduce((s, x) => s + x * x, 0)) || 1;
+        v[0] = v[0]! / norm;
+        return v;
+      }),
+    );
+  try {
+    setMemoryEmbedderForTests(aliasEmbed, "test/minilm");
+    const claim = acquireMemoryRunClaim(db, "auto");
+    assert.ok(claim.runId);
+    const manifestPath = writeDreamManifest(dir);
+    // The real ingestion path: a committed session creates the search
+    // document (no embeddings yet — the parent must never embed).
+    const committed = commitMemoryDreamSession(db, {
+      runId: claim.runId,
+      sourceSessionId: "session-1",
+      sessionPath: "/tmp/session-1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 100,
+      contentHash: "snapshot-hash-1",
       plan: {
         operations: [
           {
             op: "create",
-            tempRef: "m",
-            kind: "fact",
-            observationText: "Use tabs",
-            memoryText: "Use tabs for indentation",
-          },
-          {
-            op: "create",
-            tempRef: "m2",
-            kind: "fact",
-            observationText: "No emoji",
-            memoryText: "No emoji in commits",
+            tempRef: "m1",
+            kind: "preference",
+            observationText: "user dislikes premature abstractions",
+            memoryText:
+              "User gets frustrated when abstractions appear before three call sites",
           },
         ],
       },
     });
-    const plan = await planMemoryConsolidationForTest(
+    assert.equal(committed.applied, true);
+    assert.equal(
+      (
+        db.prepare(`SELECT COUNT(*) AS n FROM embeddings`).get() as {
+          n: number;
+        }
+      ).n,
+      0,
+      "ingestion alone never embeds",
+    );
+
+    // The child's finalize runs the embedding pass (the seam production uses).
+    const result = await finalizeMemoryDreamRun({
       db,
-      claim.runId,
-      OVER_BUDGET_CONFIG,
-    );
-    persistMemoryConsolidationInspect(
-      {
-        db,
-        runId: claim.runId,
-        workspaceId: TEST_WORKSPACE,
-        manifestPath,
-        cwd: "/tmp",
-        config: OVER_BUDGET_CONFIG,
-      },
-      plan,
-    );
-    // A previous run rejected the pair (counter 1); this run the dreamer
-    // omits it entirely — the persisted batch carries no in-run rejection.
-    incrementMemoryConsolidationAttempt(db, "merge:memory:1+memory:2", 0);
-    const error = await findMemoryConsolidationCoverageError(
+      runId: claim.runId,
+      manifestPath,
+      embeddingModel: "test/minilm",
+    });
+    assert.equal(result.finalized, true);
+    assert.equal(result.status, "completed");
+    const rows = db
+      .prepare(
+        `SELECT node_id, content_hash FROM embeddings WHERE model_id = 'test/minilm'`,
+      )
+      .all() as Array<{ node_id: number; content_hash: string }>;
+    assert.equal(rows.length, 1, "the committed memory is embedded");
+    assert.equal(Number(rows[0]!.node_id), 1);
+
+    // The semantic retriever now fires in production conditions (no injected
+    // embedder — the shared loader cache serves the fake).
+    const retrieval = await findMemoryCandidates(
       db,
-      claim.runId,
-      TEST_WORKSPACE,
-      OVER_BUDGET_CONFIG,
+      "add a caching layer to the API",
+      { modelId: "test/minilm" },
     );
-    assert.match(error ?? "", /outstanding/);
+    assert.equal(retrieval.semanticDegraded, false);
+    const hit = retrieval.candidates.find((c) => c.nodeId === 1);
+    assert.ok(hit, "semantic-only relevance surfaces through the real path");
+    assert.equal(hit!.lexicalRank, null, "no shared surface words");
+    assert.ok(hit!.semanticRank !== null, "ranked by the semantic retriever");
+
+    // A second finalize is incremental: no new rows, no re-embedding work.
+    const claim2 = acquireMemoryRunClaim(db, "auto");
+    assert.ok(claim2.runId);
+    const manifest2 = path.join(dir, "manifest2.json");
+    writeMemoryDreamManifest(manifest2, []);
+    const second = await finalizeMemoryDreamRun({
+      db,
+      runId: claim2.runId,
+      manifestPath: manifest2,
+      embeddingModel: "test/minilm",
+    });
+    assert.equal(second.status, "completed");
+    const after = (
+      db.prepare(`SELECT COUNT(*) AS n FROM embeddings`).get() as {
+        n: number;
+      }
+    ).n;
+    assert.equal(Number(after), 1, "unchanged content hashes are skipped");
   } finally {
+    resetMemoryEmbedderForTests();
+    closeMemoryDatabase(db);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a degraded embedding pass never fails the run", async () => {
+  const dir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "dream-finalize-degraded-"),
+  );
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    setMemoryEmbedderForTests(null, "test/degraded");
+    const claim = acquireMemoryRunClaim(db, "auto");
+    assert.ok(claim.runId);
+    const manifestPath = writeDreamManifest(dir);
+    // A real memory must exist: an empty store short-circuits the pass
+    // without touching the embedder, which would not exercise the degraded
+    // path at all.
+    commitMemoryDreamSession(db, {
+      runId: claim.runId,
+      sourceSessionId: "session-1",
+      sessionPath: "/tmp/session-1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 100,
+      contentHash: "snapshot-hash-1",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "m1",
+            kind: "fact",
+            observationText: "Build uses pnpm",
+            memoryText: "The build uses pnpm",
+          },
+        ],
+      },
+    });
+    const result = await finalizeMemoryDreamRun({
+      db,
+      runId: claim.runId,
+      manifestPath,
+      embeddingModel: "test/degraded",
+    });
+    assert.equal(
+      result.finalized,
+      true,
+      "an unavailable embedder must not fail the dream",
+    );
+    assert.equal(result.status, "completed");
+    // The degradation is persisted for /memory status and the startup notice
+    // (the run dir and its stderr log are deleted at finalize, so the
+    // workspace_state flag is the only durable surface).
+    assert.match(
+      getMemoryWorkspaceState(db).embeddingDegradedError ?? "",
+      /embedder disabled/,
+      "the persisted detail names the load failure",
+    );
+  } finally {
+    resetMemoryEmbedderForTests();
+    closeMemoryDatabase(db);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a later successful embedding pass clears the persisted degradation", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-finalize-heal-"));
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    // First dream: embedder unavailable → degradation persisted.
+    setMemoryEmbedderForTests(null, "test/heal");
+    const claim = acquireMemoryRunClaim(db, "auto");
+    assert.ok(claim.runId);
+    const manifestPath = writeDreamManifest(dir);
+    commitMemoryDreamSession(db, {
+      runId: claim.runId,
+      sourceSessionId: "session-1",
+      sessionPath: "/tmp/session-1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 100,
+      contentHash: "snapshot-hash-1",
+      plan: {
+        operations: [
+          {
+            op: "create",
+            tempRef: "m1",
+            kind: "fact",
+            observationText: "Build uses pnpm",
+            memoryText: "The build uses pnpm",
+          },
+        ],
+      },
+    });
+    const first = await finalizeMemoryDreamRun({
+      db,
+      runId: claim.runId,
+      manifestPath,
+      embeddingModel: "test/heal",
+    });
+    assert.equal(first.status, "completed");
+    assert.ok(getMemoryWorkspaceState(db).embeddingDegradedError);
+
+    // Second dream: embedder available (cache now serves a fake) → the flag
+    // self-heals exactly like recall_capacity_error.
+    setMemoryEmbedderForTests(
+      async (texts) => texts.map(() => new Float32Array([1])),
+      "test/heal",
+    );
+    const claim2 = acquireMemoryRunClaim(db, "auto");
+    assert.ok(claim2.runId);
+    const manifest2 = path.join(dir, "manifest2.json");
+    writeMemoryDreamManifest(manifest2, []);
+    const second = await finalizeMemoryDreamRun({
+      db,
+      runId: claim2.runId,
+      manifestPath: manifest2,
+      embeddingModel: "test/heal",
+    });
+    assert.equal(second.status, "completed");
+    assert.equal(getMemoryWorkspaceState(db).embeddingDegradedError, null);
+  } finally {
+    resetMemoryEmbedderForTests();
     closeMemoryDatabase(db);
     fs.rmSync(dir, { recursive: true, force: true });
   }

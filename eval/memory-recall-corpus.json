@@ -1,105 +1,92 @@
 {
   "version": 2,
-  "description": "Tree-based memory with synthesizer recall: cap enforcement, merge pairing quality, promote/split correctness, synthesizer navigation/source selection, reheat correctness, failure-skip.",
+  "description": "Offline retrieval-recall corpus: lexical hits, semantic-only relevance, FTS sanitization, greeting skips, and briefing behavior. Review with the retrieval + one-call synthesizer against a configured model.",
   "cases": [
     {
-      "id": "cap-enforced-not-truncated",
-      "query": "What should I know before we start?",
-      "scenario": "top-layer-over-budget",
-      "layers": [
+      "id": "lexical-match",
+      "query": "Do we use tabs for indentation?",
+      "scenario": "retrieval",
+      "memories": [
         { "id": "M:1", "kind": "preference", "text": "Use tabs for indentation" },
-        { "id": "M:2", "kind": "fact", "text": "CI runs on Ubuntu 24.04" },
-        { "id": "S:1", "kind": "summary", "text": "Tooling preferences" }
+        { "id": "M:2", "kind": "fact", "text": "CI runs on Ubuntu 24.04" }
       ],
-      "expect": "fail-closed",
-      "notes": "A top layer exceeding briefingTokenBudget never truncates at read time; the read fails closed with an audit and consolidation must compact."
-    },
-    {
-      "id": "merge-pairing-quality",
-      "query": "What are the tooling preferences?",
-      "scenario": "merge-pairing",
-      "layers": [
-        { "id": "M:1", "kind": "preference", "text": "Use tabs for indentation", "heat": 0.0 },
-        { "id": "M:2", "kind": "preference", "text": "Prefer tabs in every file", "heat": 0.0 },
-        { "id": "M:3", "kind": "fact", "text": "CI runs on Ubuntu", "heat": 0.0 },
-        { "id": "M:4", "kind": "fact", "text": "CI caches pnpm store", "heat": 0.0 }
-      ],
-      "expectPairing": [["M:1", "M:2"], ["M:3", "M:4"]],
-      "notes": "Cold roots pair by semantic nearest-neighbor; similar topics merge together."
-    },
-    {
-      "id": "promote-resurfaces-hot-child",
-      "query": "Do we use emoji in commits?",
-      "scenario": "promote",
-      "layers": [
-        { "id": "S:1", "kind": "summary", "text": "Coding style", "children": [
-          { "id": "M:1", "kind": "preference", "text": "No emoji in commits", "heat": 1.7 },
-          { "id": "M:2", "kind": "preference", "text": "Use tabs", "heat": 0.1 }
-        ] }
-      ],
-      "expectPromoted": ["M:1"],
-      "notes": "A child at or above the hot threshold is promoted back to the top layer; the parent is rewritten or retired."
-    },
-    {
-      "id": "synthesizer-opens-summary",
-      "query": "What exactly are our commit style rules?",
-      "scenario": "synthesizer-navigation",
-      "layers": [
-        { "id": "S:1", "kind": "summary", "text": "Commit style", "children": [
-          { "id": "M:1", "kind": "preference", "text": "No emoji in commits" },
-          { "id": "M:2", "kind": "preference", "text": "Conventional commit prefixes" },
-          { "id": "M:3", "kind": "preference", "text": "Max 72 char subject" }
-        ] }
-      ],
-      "expectAction": "open-then-finalize",
-      "expectSources": ["S:1"],
-      "notes": "The synthesizer opens a summary when its condensation is insufficient and cites what the answer relies on."
-    },
-    {
-      "id": "synthesizer-finalizes-from-layer",
-      "query": "Is there a workspace preference about indentation?",
-      "scenario": "synthesizer-navigation",
-      "layers": [
-        { "id": "M:1", "kind": "preference", "text": "Use tabs for indentation" },
-        { "id": "M:2", "kind": "fact", "text": "CI runs on Ubuntu" }
-      ],
-      "expectAction": "finalize-direct",
       "expectSources": ["M:1"],
-      "notes": "Relevant roots are answered directly from the top layer; unrelated roots are not cited."
+      "notes": "Exact tokens surface via the lexical retriever (FTS5)."
     },
     {
-      "id": "reheat-selection-only",
-      "query": "What is the package manager?",
-      "scenario": "reheat",
-      "layers": [
-        { "id": "M:1", "kind": "fact", "text": "Package manager is pnpm" },
+      "id": "semantic-only-relevance",
+      "query": "add a caching layer to the API",
+      "scenario": "retrieval",
+      "memories": [
+        { "id": "M:1", "kind": "preference", "text": "User gets frustrated when abstractions appear before three call sites" },
         { "id": "M:2", "kind": "fact", "text": "CI runs on Ubuntu" }
       ],
-      "expectSourceEvents": ["M:1"],
-      "expectNoHeatFor": ["display-only roots"],
-      "notes": "Selection credits heat; deterministic display and hit-listing never heat anything."
+      "expectSources": ["M:1"],
+      "notes": "No shared terms: the semantic retriever (MiniLM) must surface the memory and the model must judge it relevant."
     },
     {
-      "id": "synthesizer-failure-skips",
-      "query": "Anything relevant?",
-      "scenario": "synthesizer-failure",
-      "layers": [
-        { "id": "M:1", "kind": "preference", "text": "Use tabs" }
+      "id": "no-match-returns-nothing",
+      "query": "the quick brown fox jumps over the lazy dog",
+      "scenario": "retrieval",
+      "memories": [
+        { "id": "M:1", "kind": "preference", "text": "Use tabs for indentation" },
+        { "id": "M:2", "kind": "fact", "text": "CI caches the pnpm store" }
       ],
-      "expect": "silent-skip-with-audit",
-      "notes": "Synthesizer failure (malformed JSON, timeout, step exhaustion) skips silently with an audit entry; no raw node dump is shown."
+      "expect": "zero-candidates",
+      "notes": "A query matching nothing returns zero candidates, never the least-bad memories."
     },
     {
-      "id": "conflicted-excluded",
-      "query": "What API style do we use?",
-      "scenario": "exclusion",
-      "layers": [
-        { "id": "M:1", "kind": "fact", "text": "API is REST", "state": "conflicted" },
-        { "id": "M:2", "kind": "fact", "text": "API is GraphQL", "state": "conflicted" },
-        { "id": "M:3", "kind": "fact", "text": "CI runs on Ubuntu" }
+      "id": "fts-injection",
+      "query": "tabs - \"NEAR\" AND * pnpm héllo",
+      "scenario": "retrieval",
+      "memories": [
+        { "id": "M:1", "kind": "preference", "text": "Use tabs for indentation" },
+        { "id": "M:2", "kind": "fact", "text": "build uses pnpm" },
+        { "id": "M:3", "kind": "fact", "text": "héllo wörld conventions" }
       ],
-      "expectSources": [],
-      "notes": "Conflicted nodes are excluded from the top layer and from consolidation until resolved."
+      "expect": "candidates",
+      "notes": "FTS syntax characters and non-ASCII must produce candidates, never silently zero."
+    },
+    {
+      "id": "greeting-only-skip",
+      "query": "good morning!",
+      "scenario": "retrieval",
+      "memories": [
+        { "id": "M:1", "kind": "preference", "text": "Use tabs for indentation" }
+      ],
+      "expect": "skipped",
+      "notes": "Greeting-only and trivially short queries skip retrieval entirely."
+    },
+    {
+      "id": "briefing-preferences-only",
+      "query": "zzz nothing matches",
+      "scenario": "briefing",
+      "memories": [
+        { "id": "M:1", "kind": "preference", "text": "Use tabs for indentation" }
+      ],
+      "expect": "no-task-section-preferences-render",
+      "notes": "A no-source first turn renders no task-relevant section but still renders standing preferences."
+    },
+    {
+      "id": "cited-only-revalidation",
+      "query": "what commit style do we use?",
+      "scenario": "synthesis",
+      "memories": [
+        { "id": "M:1", "kind": "preference", "text": "Do not use emoji in commits" },
+        { "id": "M:2", "kind": "fact", "text": "The build uses pnpm" }
+      ],
+      "expect": "uncited-mutation-tolerant",
+      "notes": "Mutating an uncited memory mid-call still produces the briefing; mutating a cited one fails closed with no content and no citation event."
+    },
+    {
+      "id": "task-not-executed",
+      "query": "Review the changes in the last three commits and tell me what needs fixing; also write a test plan.",
+      "scenario": "briefing",
+      "memories": [
+        { "id": "M:1", "kind": "preference", "text": "Do not use emoji in commits" }
+      ],
+      "expect": "cited-context-only",
+      "notes": "The briefing must produce only cited durable context and never echo task-execution language (could not perform, not provided, cannot access, claims about writing or reviewing files)."
     }
   ]
 }

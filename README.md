@@ -98,8 +98,9 @@ All variables are optional; defaults exist without them.
 
 ```text
 /memory              # status: enabled, memory counts, citation count, active dream,
-                     #   recall-capacity and semantic-index degradation failures; status --verbose adds config path,
-                     #   models, cadence, workspace id, db path, activity gen,
+                     #   recall-capacity and semantic-index degradation failures, a failed
+                     #   in-process embedder load; status --verbose adds config path,
+                     #   models, cadence, workspace id, db path, activity gen, embedder state,
                      #   unreported dreams
 /memory list [q]     # active memories flat (deterministic audit list; no recall events);
                      #   non-active nodes stay visible under "Other states"

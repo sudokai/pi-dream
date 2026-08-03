@@ -20,6 +20,7 @@ import {
   openMemoryNodeExact,
   retireMemoryNode,
 } from "../shared/memory-graph.ts";
+import { memoryEmbeddingStatus } from "../shared/memory-embedding.ts";
 import { getMemoryWorkspaceState } from "../shared/memory-repository.ts";
 import {
   activeMemoryRunId,
@@ -169,6 +170,13 @@ function formatStatus(input: {
   if (state.embeddingDegradedError) {
     lines.push(`semantic index:   DEGRADED: ${state.embeddingDegradedError}`);
   }
+  // In-process embedder state (parent process): a failed load is otherwise
+  // invisible — it is not persisted (only the dreamer child persists) and
+  // silently degrades semantic retrieval to lexical-only for this process.
+  const embedder = memoryEmbeddingStatus(input.config.embeddingModel);
+  if (embedder.state === "failed") {
+    lines.push(`embedder:         FAILED (this process): ${embedder.error}`);
+  }
   if (input.verbose) {
     const lastRuns = listUnreportedMemoryRuns(input.db);
     lines.push(
@@ -180,6 +188,7 @@ function formatStatus(input: {
       `workspace id:     ${input.workspaceId}`,
       `database:         ${input.dbPath}`,
       `activity gen:     ${getMemoryActivityGeneration(input.db)}`,
+      `embedder:         ${embedder.state}`,
       `unreported dreams: ${lastRuns.length}`,
     );
   }

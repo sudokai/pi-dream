@@ -17,6 +17,11 @@ import {
 } from "../shared/memory-database.ts";
 import { defaultMemoryWorkspaceConfig } from "../shared/memory-config.ts";
 import {
+  loadMemoryEmbedder,
+  resetMemoryEmbedderForTests,
+  setMemoryEmbedderFactoryForTests,
+} from "../shared/memory-embedding.ts";
+import {
   commitMemoryDreamSession,
   getMemoryWorkspaceState,
   updateMemoryCadenceState,
@@ -401,6 +406,40 @@ test("status surfaces a persisted embedding-pass degradation", () => {
     });
     assert.doesNotMatch(cleared, /semantic index/);
   } finally {
+    closeMemoryDatabase(db);
+  }
+});
+
+test("status surfaces a failed in-process embedder load", async () => {
+  const db = openMemoryDatabaseAtPath(":memory:");
+  const modelId = "test/status-embedder";
+  setMemoryEmbedderFactoryForTests(async () => {
+    throw new Error("model download failed");
+  });
+  try {
+    assert.equal(await loadMemoryEmbedder(modelId), null);
+    const config = {
+      ...defaultMemoryWorkspaceConfig(),
+      embeddingModel: modelId,
+    };
+    const text = buildMemoryStatusText({ workspaceId: "ws-test", db, config });
+    assert.match(
+      text,
+      /embedder:\s+FAILED \(this process\): model download failed/,
+    );
+    const verbose = buildMemoryStatusText({
+      workspaceId: "ws-test",
+      db,
+      config,
+      verbose: true,
+    });
+    assert.match(verbose, /embedder:\s+failed/);
+    // A fresh process (no load attempt) stays quiet in non-verbose status.
+    resetMemoryEmbedderForTests();
+    const fresh = buildMemoryStatusText({ workspaceId: "ws-test", db, config });
+    assert.doesNotMatch(fresh, /embedder:/);
+  } finally {
+    resetMemoryEmbedderForTests();
     closeMemoryDatabase(db);
   }
 });

@@ -91,10 +91,8 @@ function loadRetrievedNode(
   const row = db
     .prepare(
       `SELECT m.id, m.kind, m.state, v.text,
-              (SELECT COUNT(DISTINCT o.source_session_id)
-               FROM memory_observations mo
-               JOIN observations o ON o.id = mo.observation_id
-               WHERE mo.memory_id = m.id) AS recurrence
+              (SELECT COUNT(DISTINCT source_session_id)
+               FROM memory_versions WHERE memory_id = m.id) AS recurrence
        FROM memories m
        JOIN memory_versions v ON v.id = m.current_version_id
        WHERE m.id = ? AND m.state = 'active'`,

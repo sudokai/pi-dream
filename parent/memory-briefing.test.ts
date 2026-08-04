@@ -39,20 +39,19 @@ function seed(
     cwd: "/tmp",
     processedMtimeMs: 1,
     contentHash: "h1",
+    minedMessageOffset: 1,
     plan: {
       operations: [
         {
           op: "create",
-          tempRef: "m1",
           kind: "preference",
-          observationText: "User avoids emoji",
+          evidenceText: "User avoids emoji",
           memoryText: "Do not use emoji in commits",
         },
         {
           op: "create",
-          tempRef: "m2",
           kind: "fact",
-          observationText: "Build uses pnpm",
+          evidenceText: "Build uses pnpm",
           memoryText: "The build uses pnpm",
         },
       ],
@@ -110,13 +109,13 @@ test("success renders task-relevant context then standing preferences, and recor
       cwd: "/tmp",
       processedMtimeMs: 1,
       contentHash: "h2",
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
             op: "create",
-            tempRef: "m3",
             kind: "preference",
-            observationText: "Prefers tabs",
+            evidenceText: "Prefers tabs",
             memoryText: "Prefer tabs over spaces",
           },
         ],
@@ -587,27 +586,25 @@ test("renderMemoryStandingPreferences lists active preferences only, id-ascendin
       cwd: "/tmp",
       processedMtimeMs: 1,
       contentHash: "h1",
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
             op: "create",
-            tempRef: "f1",
             kind: "fact",
-            observationText: "obs",
+            evidenceText: "obs",
             memoryText: "Build uses pnpm",
           },
           {
             op: "create",
-            tempRef: "p1",
             kind: "preference",
-            observationText: "obs",
+            evidenceText: "obs",
             memoryText: "Prefer tabs over spaces",
           },
           {
             op: "create",
-            tempRef: "p2",
             kind: "preference",
-            observationText: "obs",
+            evidenceText: "obs",
             memoryText: "No emoji in commits",
           },
         ],
@@ -663,9 +660,9 @@ test("renderMemoryStandingPreferences caps the deterministic section and notes p
     assert.equal(claim.acquired, true);
     const ops = Array.from({ length: 60 }, (_, i) => ({
       op: "create" as const,
-      tempRef: `p${i}`,
+
       kind: "preference" as const,
-      observationText: `Pref ${i}`,
+      evidenceText: `Pref ${i}`,
       memoryText: `Preference number ${i} ${"y".repeat(370)}`,
     }));
     commitMemoryDreamSession(db, {
@@ -675,6 +672,7 @@ test("renderMemoryStandingPreferences caps the deterministic section and notes p
       cwd: "/tmp",
       processedMtimeMs: 1,
       contentHash: "h1",
+      minedMessageOffset: 1,
       plan: { operations: ops },
     });
     const text = renderMemoryStandingPreferences(db);

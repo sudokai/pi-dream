@@ -176,6 +176,7 @@ test("capped manifests leave older checkpoint-missing sessions eligible", () => 
           cwd: entry.cwd,
           processedMtimeMs: entry.mtimeMs,
           contentHash: entry.contentHash,
+          minedMessageOffset: 1,
           plan: { operations: [{ op: "no_op", reason: "batch checkpoint" }] },
         });
       }
@@ -220,6 +221,7 @@ test("content changes under a preserved mtime are still discovered", () => {
         cwd,
         processedMtimeMs: mtimeMs,
         contentHash: v1Hash,
+        minedMessageOffset: 1,
         plan: { operations: [{ op: "no_op", reason: "checkpoint" }] },
       });
 
@@ -264,6 +266,7 @@ test("content changes under a preserved mtime are still discovered", () => {
         cwd,
         processedMtimeMs: mtimeMs,
         contentHash: manifest[0]!.contentHash,
+        minedMessageOffset: 1,
         plan: { operations: [{ op: "no_op", reason: "recheckpoint" }] },
       });
       assert.equal(hasMemoryDreamEligibleSession(db, cwd, "ws-any"), false);
@@ -290,13 +293,13 @@ test("same snapshot content is never re-mined even when the live mtime advances"
       cwd: "/tmp",
       processedMtimeMs: 1000,
       contentHash: "h1",
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
             op: "create",
-            tempRef: "t",
             kind: "fact",
-            observationText: "X is Y",
+            evidenceText: "X is Y",
             memoryText: "X is Y",
           },
         ],
@@ -313,13 +316,13 @@ test("same snapshot content is never re-mined even when the live mtime advances"
       cwd: "/tmp",
       processedMtimeMs: 2000,
       contentHash: "h1",
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
             op: "create",
-            tempRef: "t",
             kind: "fact",
-            observationText: "X is Y",
+            evidenceText: "X is Y",
             memoryText: "X is Y",
           },
         ],
@@ -335,5 +338,113 @@ test("same snapshot content is never re-mined even when the live mtime advances"
     assert.equal(listActiveMemories(db).length, 1);
   } finally {
     closeMemoryDatabase(db);
+  }
+});
+
+test("manifest entries carry the incremental cursor from the prior checkpoint", () => {
+  withSessionRoot((root) => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "dream-cwd-"));
+    const snapshotDir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-snap-"));
+    const db = openMemoryDatabaseAtPath(":memory:");
+    try {
+      const filePath = writeSessionFile(root, cwd, [
+        JSON.stringify({ type: "session", id: "sess-1", cwd }),
+        JSON.stringify({
+          type: "message",
+          message: { role: "user", content: "first" },
+        }),
+        JSON.stringify({
+          type: "message",
+          message: { role: "user", content: "second" },
+        }),
+      ]);
+      const mtimeMs = 1000;
+      fs.utimesSync(filePath, mtimeMs / 1000, mtimeMs / 1000);
+      const claim = acquireMemoryRunClaim(db, "manual");
+      const v1Hash = createHash("sha256")
+        .update(fs.readFileSync(filePath))
+        .digest("hex");
+      commitMemoryDreamSession(db, {
+        runId: claim.runId!,
+        sourceSessionId: "sess-1",
+        sessionPath: filePath,
+        cwd,
+        processedMtimeMs: mtimeMs,
+        contentHash: v1Hash,
+        minedMessageOffset: 2,
+        plan: { operations: [{ op: "no_op", reason: "checkpoint" }] },
+      });
+
+      // The session grows: a new manifest must resume from the stored
+      // cursor (message 2), never re-mine the already-mined prefix.
+      fs.appendFileSync(
+        filePath,
+        `${JSON.stringify({
+          type: "message",
+          message: { role: "user", content: "third" },
+        })}\n`,
+        "utf8",
+      );
+      fs.utimesSync(filePath, 2000 / 1000, 2000 / 1000);
+      const manifest = buildMemoryDreamManifest(db, cwd, "ws-any", {
+        snapshotDir,
+      });
+      assert.equal(manifest.length, 1);
+      assert.equal(manifest[0]!.minedMessageOffset, 2);
+
+      // The cursor survives the manifest round-trip.
+      const manifestPath = path.join(snapshotDir, "manifest.json");
+      writeMemoryDreamManifest(manifestPath, manifest);
+      assert.equal(
+        readMemoryDreamManifest(manifestPath)[0]!.minedMessageOffset,
+        2,
+      );
+
+      // A fresh store (no checkpoint) starts a first-ever mine at message 0.
+      const db2 = openMemoryDatabaseAtPath(":memory:", {});
+      try {
+        const manifest2 = buildMemoryDreamManifest(db2, cwd, "ws-any", {
+          snapshotDir,
+        });
+        assert.equal(manifest2.length, 1);
+        assert.equal(manifest2[0]!.minedMessageOffset, 0);
+      } finally {
+        closeMemoryDatabase(db2);
+      }
+    } finally {
+      closeMemoryDatabase(db);
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(snapshotDir, { recursive: true, force: true });
+    }
+  });
+});
+
+test("v2 manifests without a cursor default to a full re-mine", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-manifest-v2-"));
+  try {
+    const manifestPath = path.join(dir, "manifest.json");
+    fs.writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        version: 2,
+        sessions: [
+          {
+            sessionId: "sess-1",
+            sessionPath: "/tmp/s1.jsonl",
+            snapshotPath: "/tmp/snap.jsonl",
+            cwd: "/tmp",
+            mtimeMs: 1,
+            contentHash: "h1",
+          },
+        ],
+      }),
+      "utf8",
+    );
+    assert.equal(
+      readMemoryDreamManifest(manifestPath)[0]!.minedMessageOffset,
+      0,
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });

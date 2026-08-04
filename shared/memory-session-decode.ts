@@ -358,7 +358,7 @@ export function loadVerifiedMemorySessionSnapshot(
 /**
  * Tool calls/results produced by dream's own memory tools echo stored memory
  * text back into the transcript. They are not user evidence and must not be
- * mined as observations.
+ * mined as memory content.
  */
 const MEMORY_TOOL_NAMES: ReadonlySet<string> = new Set([
   "memory_search",

@@ -418,25 +418,6 @@ export function listMemoryWorkspaceSessionFiles(
   return [...byPath.values()].sort((a, b) => b.mtimeMs - a.mtimeMs);
 }
 
-/**
- * Max mtime among sessions used for cadence “transcript advanced” checks.
- * Scopes to cwd + worktree session dirs only (cheap on every settle).
- */
-export function maxMemoryWorkspaceSessionMtimeMs(
-  cwd: string,
-  workspaceId: string,
-): number | null {
-  const files = listMemoryWorkspaceSessionFiles(cwd, workspaceId, {
-    includeForeignClones: false,
-  });
-  if (files.length === 0) return null;
-  let max = files[0]!.mtimeMs;
-  for (const f of files) {
-    if (f.mtimeMs > max) max = f.mtimeMs;
-  }
-  return max;
-}
-
 /** Clear process-lifetime caches (tests only). */
 export function clearMemoryWorkspaceIdCaches(): void {
   workspaceIdCache.clear();

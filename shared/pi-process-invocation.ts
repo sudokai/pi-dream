@@ -39,13 +39,16 @@ export function getMemoryPiInvocation(args: string[]): {
   return { command: "pi", args };
 }
 
+/** Task prompt for the detached dreamer child: mine the sessions in the run manifest. */
 export const MEMORY_DREAMER_TASK =
   "Run one workspace memory dream pass for the sessions in the run manifest.";
 
+/** Child tool allowlist passed as `--tools`; must cover every registered dreamer tool. */
 export const MEMORY_DREAMER_CHILD_TOOLS = [
   "memory_list_sessions",
   "memory_read_session",
   "memory_commit_session",
+  "memory_recall",
 ] as const;
 
 export interface BuildMemoryDreamerSpawnInput {

@@ -13,6 +13,7 @@ import {
   formatMemorySessionPage,
   loadVerifiedMemorySessionSnapshot,
 } from "../shared/memory-session-decode.ts";
+import { findMemoryCandidates } from "../shared/memory-retrieval.ts";
 import { commitMemoryDreamSession } from "../shared/memory-repository.ts";
 import type {
   MemoryDreamerOperation,
@@ -46,6 +47,11 @@ export function registerMemoryDreamTools(
   pi: ExtensionAPI,
   ctx: MemoryDreamerChildContext,
 ): void {
+  // Highest visible-message index each session has been read to in this run.
+  // The incremental cursor advances only to where the dreamer actually read,
+  // so an unread tail stays eligible for a later dream and is never lost.
+  const maxReadMessageOffsetBySession = new Map<string, number>();
+
   pi.registerTool({
     name: "memory_list_sessions",
     label: "List dream sessions",
@@ -57,7 +63,7 @@ export function registerMemoryDreamTools(
       const text = sessions
         .map(
           (s, i) =>
-            `${i + 1}. sessionId=${s.sessionId} mtime=${s.mtimeMs} snapshot=${s.snapshotPath}`,
+            `${i + 1}. sessionId=${s.sessionId} minedUntil=${s.minedMessageOffset} mtime=${s.mtimeMs} snapshot=${s.snapshotPath}`,
         )
         .join("\n");
       return {
@@ -98,10 +104,28 @@ export function registerMemoryDreamTools(
         entry.snapshotPath,
         entry.contentHash,
       );
+      const totalMessages = formatMemorySessionPage(decoded, {
+        offset: 0,
+        limit: 1,
+      }).totalMessages;
+      // Incremental mining: without an explicit offset, resume where the
+      // prior checkpoint stopped. A snapshot shorter than the cursor
+      // (rotation or corruption) resets to a full re-mine rather than
+      // reading nothing.
+      let start = params.offset ?? entry.minedMessageOffset;
+      if (start > totalMessages) start = 0;
       const page = formatMemorySessionPage(decoded, {
-        offset: params.offset ?? 0,
+        offset: start,
         limit: params.limit ?? 40,
       });
+      const readTo = page.nextOffset ?? totalMessages;
+      const prior =
+        maxReadMessageOffsetBySession.get(entry.sessionId) ??
+        entry.minedMessageOffset;
+      maxReadMessageOffsetBySession.set(
+        entry.sessionId,
+        Math.max(prior, readTo),
+      );
       const body = page.messages
         .map((m) => `[${m.index}] ${m.role}:\n${m.text}`)
         .join("\n\n");
@@ -113,14 +137,15 @@ export function registerMemoryDreamTools(
         content: [
           {
             type: "text" as const,
-            text: `Session ${params.sessionId} (${page.totalMessages} messages)\n\n${body}${footer}`,
+            text: `Session ${entry.sessionId} (${page.totalMessages} messages, resuming at ${start})\n\n${body}${footer}`,
           },
         ],
         details: {
-          sessionId: params.sessionId,
+          sessionId: entry.sessionId,
           totalMessages: page.totalMessages,
           offset: page.offset,
           nextOffset: page.nextOffset,
+          minedMessageOffset: entry.minedMessageOffset,
           cwd: entry.cwd,
           mtimeMs: entry.mtimeMs,
           sessionPath: entry.sessionPath,
@@ -140,8 +165,7 @@ export function registerMemoryDreamTools(
         description: "Source session id from the manifest",
       }),
       operations: Type.Array(Type.Any(), {
-        description:
-          "Dreamer operations: create, reinforce, revise, supersede, conflict, link, or no_op",
+        description: "Dreamer operations: create, update, forget, or no_op",
       }),
     }),
     async execute(_id, params) {
@@ -152,7 +176,27 @@ export function registerMemoryDreamTools(
       }
       // A commit may be called without a preceding read, so validate the
       // manifest snapshot again before checkpointing its source session.
-      loadVerifiedMemorySessionSnapshot(entry.snapshotPath, entry.contentHash);
+      const decoded = loadVerifiedMemorySessionSnapshot(
+        entry.snapshotPath,
+        entry.contentHash,
+      );
+      const totalMessages = formatMemorySessionPage(decoded, {
+        offset: 0,
+        limit: 1,
+      }).totalMessages;
+      // The incremental cursor advances only to where the dreamer actually
+      // read; an unread tail stays eligible for a later dream. A snapshot
+      // shorter than the prior cursor (rotation or corruption) restarts
+      // from a full re-mine.
+      const base =
+        entry.minedMessageOffset <= totalMessages
+          ? entry.minedMessageOffset
+          : 0;
+      const readTo = maxReadMessageOffsetBySession.get(entry.sessionId) ?? 0;
+      const minedMessageOffset = Math.max(
+        base,
+        Math.min(readTo, totalMessages),
+      );
       const operations = parseOperations(params.operations);
       const plan: MemoryDreamSessionPlan = { operations };
       // Ensure empty plan still checkpoints via explicit no_op
@@ -166,6 +210,7 @@ export function registerMemoryDreamTools(
         cwd: entry.cwd,
         processedMtimeMs: entry.mtimeMs,
         contentHash: entry.contentHash,
+        minedMessageOffset,
         plan,
       });
       return {
@@ -173,7 +218,7 @@ export function registerMemoryDreamTools(
           {
             type: "text" as const,
             text: result.applied
-              ? `Committed session ${entry.sessionId} (${operations.length} op(s)).`
+              ? `Committed session ${entry.sessionId} (${operations.length} op(s), mined through message ${minedMessageOffset}/${totalMessages}).`
               : `Session ${entry.sessionId} already checkpointed (${result.reason}).`,
           },
         ],
@@ -182,6 +227,45 @@ export function registerMemoryDreamTools(
           applied: result.applied,
           reason: result.reason,
           operationCount: operations.length,
+          minedMessageOffset,
+          totalMessages,
+        },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "memory_recall",
+    label: "Recall active memories",
+    description:
+      "Find active memories matching candidate text. Read-only; never records. Call before create so an existing memory can be updated or forgotten instead of duplicated.",
+    parameters: Type.Object({
+      text: Type.String({
+        description: "Candidate text to match against the store",
+      }),
+      limit: Type.Optional(
+        Type.Number({ description: "Max candidates to return (default 10)" }),
+      ),
+    }),
+    async execute(_id, params) {
+      const limit = Math.min(Math.max(1, Math.trunc(params.limit ?? 10)), 50);
+      const result = await findMemoryCandidates(ctx.db, params.text, {
+        maxUnits: limit,
+      });
+      const body = result.candidates.length
+        ? result.candidates
+            .map(
+              (c) =>
+                `- ${c.prefixedId} [${c.kind}] (recurrence ${c.recurrence}): ${c.text}`,
+            )
+            .join("\n")
+        : "No matching active memories.";
+      return {
+        content: [{ type: "text" as const, text: body }],
+        details: {
+          count: result.candidates.length,
+          semanticDegraded: result.semanticDegraded,
+          skipped: result.skipped,
         },
       };
     },

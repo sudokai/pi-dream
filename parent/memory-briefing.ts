@@ -30,7 +30,7 @@ import { setMemoryRecallCapacityError } from "../shared/memory-repository.ts";
 import {
   MEMORY_BRIEFING_CUSTOM_TYPE,
   MEMORY_BRIEFING_MAX_CHARS,
-  parsePrefixedNodeId,
+  parseMemoryNodeId,
 } from "../shared/memory-types.ts";
 import {
   composeMemoryAbortSignal,
@@ -158,7 +158,7 @@ export async function buildMemorySessionBriefing(
   // Every first-turn recall opportunity advances the generation — on success
   // and failure alike. The advance deliberately runs BEFORE model resolution:
   // activityGeneration is audit only (displayed in /memory status, stamped as
-  // creation_generation on new observations and memories) and never a ranking
+  // creation_generation on new versions and memories) and never a ranking
   // input, so a workspace with an unresolvable recall model burning one
   // generation per turn corrupts nothing.
   incrementMemoryActivityGeneration(input.db);
@@ -285,7 +285,7 @@ export async function buildMemorySessionBriefing(
 
   // Record citation events for validated sources only.
   for (const sourceId of result.sources) {
-    const parsed = parsePrefixedNodeId(sourceId);
+    const parsed = parseMemoryNodeId(sourceId);
     if (!parsed.ok || parsed.type !== "memory") continue;
     recordMemoryCitation(input.db, {
       nodeType: "memory",

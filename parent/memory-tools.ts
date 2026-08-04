@@ -29,7 +29,7 @@ import {
 } from "../shared/memory-abort.ts";
 import {
   MEMORY_AUDIT_CUSTOM_TYPE,
-  parsePrefixedNodeId,
+  parseMemoryNodeId,
 } from "../shared/memory-types.ts";
 
 export interface MemoryToolsContext {
@@ -180,7 +180,7 @@ export function registerMemoryAgentTools(
 
       // Record citation events for validated sources only.
       for (const sourceId of result.sources) {
-        const parsed = parsePrefixedNodeId(sourceId);
+        const parsed = parseMemoryNodeId(sourceId);
         if (!parsed.ok || parsed.type !== "memory") continue;
         recordMemoryCitation(db, {
           nodeType: "memory",

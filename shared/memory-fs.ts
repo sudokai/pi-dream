@@ -15,7 +15,9 @@ import {
 } from "node:fs";
 import * as path from "node:path";
 
+/** Restrictive mode for memory data directories (0700). */
 export const MEMORY_DIR_MODE = 0o700;
+/** Restrictive mode for memory data files (0600). */
 export const MEMORY_FILE_MODE = 0o600;
 
 /** Create a directory tree with mode 0700 regardless of umask. */

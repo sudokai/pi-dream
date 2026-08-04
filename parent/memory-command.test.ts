@@ -92,6 +92,20 @@ test("buildMemoryDreamerSpawnArgs is stable and isolated", () => {
   assert.ok(args.includes("--no-session"));
   assert.ok(args.includes("--no-extensions"));
   assert.ok(args.includes(MEMORY_DREAMER_TASK));
+  // The child tool allowlist must cover every registered dreamer tool,
+  // including the read-path recall used before create.
+  const toolsArg = args[args.indexOf("--tools") + 1]!;
+  for (const tool of [
+    "memory_list_sessions",
+    "memory_read_session",
+    "memory_commit_session",
+    "memory_recall",
+  ]) {
+    assert.ok(
+      toolsArg.split(",").includes(tool),
+      `child tools allowlist must include ${tool}`,
+    );
+  }
   assert.equal(env.PI_DREAM_CHILD, "1");
   assert.equal(env.PI_DREAM_RUN_ID, "run-1");
   assert.equal(env.PI_DREAM_WORKSPACE_ID, "abc_widget");
@@ -302,20 +316,19 @@ test("buildMemoryStatusText shows essentials; verbose adds internals", () => {
       cwd: "/tmp",
       processedMtimeMs: 1,
       contentHash: "h1",
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
             op: "create",
-            tempRef: "m",
             kind: "fact",
-            observationText: "Use tabs for indentation",
+            evidenceText: "Use tabs for indentation",
             memoryText: "Use tabs for indentation",
           },
           {
             op: "create",
-            tempRef: "m2",
             kind: "fact",
-            observationText: "No emoji in commits",
+            evidenceText: "No emoji in commits",
             memoryText: "No emoji in commits",
           },
         ],
@@ -326,10 +339,7 @@ test("buildMemoryStatusText shows essentials; verbose adds internals", () => {
       db,
       config: defaultMemoryWorkspaceConfig(),
     });
-    assert.match(
-      text,
-      /memories:\s+2 active \(0 conflicted, 0 superseded, 0 retired\)/,
-    );
+    assert.match(text, /memories:\s+2 active \(0 retired\)/);
     assert.match(text, /citations:\s+0/);
     assert.match(text, /active dream:/);
     assert.doesNotMatch(text, /summaries/);
@@ -456,20 +466,19 @@ test("buildMemoryListText renders memories flat; non-active states stay visible"
       cwd: "/tmp",
       processedMtimeMs: 1,
       contentHash: "h1",
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
             op: "create",
-            tempRef: "m1",
             kind: "fact",
-            observationText: "Use tabs",
+            evidenceText: "Use tabs",
             memoryText: "Use tabs for indentation",
           },
           {
             op: "create",
-            tempRef: "m2",
             kind: "fact",
-            observationText: "No emoji",
+            evidenceText: "No emoji",
             memoryText: "No emoji in commits",
           },
         ],

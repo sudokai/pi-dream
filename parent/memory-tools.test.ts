@@ -41,20 +41,19 @@ function seed(
     cwd: "/tmp",
     processedMtimeMs: 1,
     contentHash: "h1",
+    minedMessageOffset: 1,
     plan: {
       operations: [
         {
           op: "create",
-          tempRef: "m1",
           kind: "preference",
-          observationText: "User avoids emoji",
+          evidenceText: "User avoids emoji",
           memoryText: "Do not use emoji in commits",
         },
         {
           op: "create",
-          tempRef: "m2",
           kind: "fact",
-          observationText: "Build uses pnpm",
+          evidenceText: "Build uses pnpm",
           memoryText: "The build uses pnpm",
         },
       ],

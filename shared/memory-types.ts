@@ -1,34 +1,17 @@
 /**
  * Domain types for adaptive workspace memory.
- * Prefixed node IDs (M:/O:) are the public API surface; internal rows use integers.
+ * Memory ids (`M:<n>`) are the public API surface; internal rows use integers.
  */
 
 /** Stable memory node id as rendered at API boundaries (`M:<n>`). */
 export type MemoryNodeId = `M:${number}`;
 
-/** Immutable observation leaf id as rendered at API boundaries (`O:<n>`). */
-export type ObservationNodeId = `O:${number}`;
-
-/** Any public node id with a type prefix. */
-export type PrefixedNodeId = MemoryNodeId | ObservationNodeId;
-
 /** Lifecycle state for memories. */
-export type MemoryLifecycleState =
-  "active" | "conflicted" | "superseded" | "retired";
+export type MemoryLifecycleState = "active" | "retired";
 
-/** Kind of durable knowledge stored in an observation or memory. */
+/** Kind of durable knowledge stored in a memory. */
 export type MemoryKnowledgeKind =
   "preference" | "fact" | "correction" | "other";
-
-/** Typed graph edge relations between memory nodes. */
-export type MemoryGraphRelation =
-  "related_to" | "supersedes" | "conflicts_with";
-
-/** Relations the dreamer `link` op may create. */
-export type MemoryDreamerLinkRelation = MemoryGraphRelation;
-
-/** Lifecycle state of a graph edge (retired edges are append-only history). */
-export type MemoryGraphEdgeState = "active" | "retired";
 
 /** Where a citation event originated. */
 export type MemoryCitationSource = "briefing" | "search";
@@ -36,7 +19,7 @@ export type MemoryCitationSource = "briefing" | "search";
 /** Node types that participate in search, retrieval, and citation. */
 export type MemorySearchableNodeType = "memory";
 
-/** Maximum characters for one observation or memory body. */
+/** Maximum characters for one memory body or evidence quote. */
 export const MEMORY_MAX_TEXT_CHARS = 400;
 
 /** Hard cap on briefing content (chars; no target length); shared by the synthesized section and the standing-preferences section. */
@@ -120,20 +103,15 @@ export const MEMORY_SESSION_PAGE_DEFAULT = 40;
 /** Maximum page size for dreamer session paging. */
 export const MEMORY_SESSION_PAGE_MAX = 200;
 
-export interface MemoryObservationRow {
-  id: number;
-  kind: MemoryKnowledgeKind;
-  text: string;
-  normalizedText: string;
-  sourceSessionId: string;
-  creationGeneration: number;
-  createdAt: string;
-}
-
 export interface MemoryVersionRow {
   id: number;
   memoryId: number;
+  /** Distilled durable wording (the memory's current text when this is the latest version). */
   text: string;
+  /** Verbatim evidence quote from the source session that produced this version. */
+  evidenceText: string;
+  sourceSessionId: string;
+  creationGeneration: number;
   previousVersionId: number | null;
   createdAt: string;
 }
@@ -148,19 +126,12 @@ export interface MemoryRow {
   updatedAt: string;
   /** Current version text (projection). */
   text: string;
-  /** Derived: distinct source sessions via observations. */
+  /** Derived: distinct source sessions that produced a version of this memory. */
   recurrence: number;
-}
-
-export interface GraphEdgeRow {
-  id: number;
-  relation: MemoryGraphRelation;
-  fromType: MemorySearchableNodeType;
-  fromId: number;
-  toType: MemorySearchableNodeType;
-  toId: number;
-  state: MemoryGraphEdgeState;
-  createdAt: string;
+  /** Session that retired the memory via forget, or null. */
+  retiredBySessionId: string | null;
+  /** Verbatim evidence of the retirement statement, or null. */
+  retiredEvidenceText: string | null;
 }
 
 export interface CitationEventRow {
@@ -178,23 +149,14 @@ export interface SourceSessionRow {
   cwd: string;
   processedMtimeMs: number;
   contentHash: string | null;
+  /** Number of visible session messages already mined; incremental mining resumes here. */
+  minedMessageOffset: number;
   completedAt: string;
 }
 
 export type DreamRunStatus = "claimed" | "running" | "completed" | "failed";
 
 export type DreamRunTrigger = "auto" | "manual";
-
-export interface DreamRunRow {
-  id: string;
-  trigger: DreamRunTrigger;
-  model: string | null;
-  status: DreamRunStatus;
-  startedAt: string;
-  finishedAt: string | null;
-  errorText: string | null;
-  reportedToParent: number;
-}
 
 export interface WorkspaceStateRow {
   activityGeneration: number;
@@ -211,42 +173,24 @@ export interface WorkspaceStateRow {
 export type MemoryDreamerOperation =
   | {
       op: "create";
-      tempRef: string;
       kind: MemoryKnowledgeKind;
-      observationText: string;
+      /** Verbatim evidence quote from the session. */
+      evidenceText: string;
       memoryText: string;
     }
   | {
-      op: "reinforce";
+      op: "update";
       memoryId: MemoryNodeId;
-      observationText: string;
+      /** Verbatim evidence quote from the session. */
+      evidenceText: string;
+      /** New wording; appends a version in place. Omit to record a restatement (recurrence) without changing the text. */
+      memoryText?: string;
     }
   | {
-      op: "revise";
+      op: "forget";
       memoryId: MemoryNodeId;
-      observationText: string;
-      memoryText: string;
-      expectedVersionId: number;
-    }
-  | {
-      op: "supersede";
-      oldMemoryId: MemoryNodeId;
-      newTempRef: string;
-      kind: MemoryKnowledgeKind;
-      observationText: string;
-      memoryText: string;
-    }
-  | {
-      op: "conflict";
-      memoryIds: MemoryNodeId[];
-      observationText?: string;
-    }
-  | {
-      op: "link";
-      relation: MemoryDreamerLinkRelation;
-      /** Prefixed M: ids or in-commit temp refs. */
-      fromId: string;
-      toId: string;
+      /** Verbatim evidence of the negating statement; kept for audit. */
+      evidenceText: string;
     }
   | { op: "no_op"; reason?: string };
 
@@ -261,32 +205,36 @@ export interface MemoryDreamCommitInput {
   cwd: string;
   processedMtimeMs: number;
   contentHash: string | null;
+  /** Visible-message count of the snapshot mined by this commit (advances the incremental cursor). */
+  minedMessageOffset: number;
   plan: MemoryDreamSessionPlan;
 }
 
-/** Parse a public prefixed node id into type + integer. */
-export function parsePrefixedNodeId(
+/** Parse a public memory node id into type + integer. Observation ids are retired. */
+export function parseMemoryNodeId(
   raw: string,
 ):
   | { ok: true; type: "memory"; id: number; prefixed: MemoryNodeId }
-  | { ok: true; type: "observation"; id: number; prefixed: ObservationNodeId }
   | { ok: false; error: string } {
   const trimmed = raw.trim();
-  const match = /^(M|O):(\d+)$/.exec(trimmed);
+  const match = /^M:(\d+)$/.exec(trimmed);
   if (!match) {
+    if (/^O:/.test(trimmed)) {
+      return {
+        ok: false,
+        error: `Observation ids are retired; expected M:<n>, got "${raw}"`,
+      };
+    }
     return {
       ok: false,
-      error: `Invalid memory node id "${raw}"; expected M:<n> or O:<n>`,
+      error: `Invalid memory node id "${raw}"; expected M:<n>`,
     };
   }
-  const id = Number(match[2]);
+  const id = Number(match[1]);
   if (!Number.isInteger(id) || id <= 0) {
     return { ok: false, error: `Invalid memory node id number in "${raw}"` };
   }
-  if (match[1] === "M") {
-    return { ok: true, type: "memory", id, prefixed: `M:${id}` };
-  }
-  return { ok: true, type: "observation", id, prefixed: `O:${id}` };
+  return { ok: true, type: "memory", id, prefixed: `M:${id}` };
 }
 
 /** Format an integer memory id as `M:<n>`. */
@@ -294,26 +242,26 @@ export function formatMemoryNodeId(id: number): MemoryNodeId {
   return `M:${id}`;
 }
 
-/** Format an integer observation id as `O:<n>`. */
-export function formatObservationNodeId(id: number): ObservationNodeId {
-  return `O:${id}`;
-}
-
-/** Normalize observation text for uniqueness within a source session. */
-export function normalizeObservationText(text: string): string {
+/**
+ * Normalize one-line memory body text for uniqueness comparisons: trim,
+ * collapse whitespace, lowercase. The active-memory dedupe backstop keys on
+ * it (two active memories can never share normalized body text).
+ */
+export function normalizeMemoryBodyText(text: string): string {
   return text.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
-/** Validate one-line atomic observation/memory text shape. */
+/** Validate one-line atomic memory/evidence text shape. */
 export function validateMemoryBodyText(
   text: string,
   maxChars: number = MEMORY_MAX_TEXT_CHARS,
+  subject: string = "Memory text",
 ): string | null {
   const trimmed = text.trim();
-  if (!trimmed) return "Memory text must be non-empty";
-  if (trimmed.includes("\n")) return "Memory text must be a single line";
+  if (!trimmed) return `${subject} must be non-empty`;
+  if (trimmed.includes("\n")) return `${subject} must be a single line`;
   if (trimmed.length > maxChars) {
-    return `Memory text exceeds ${maxChars} characters`;
+    return `${subject} exceeds ${maxChars} characters`;
   }
   return null;
 }

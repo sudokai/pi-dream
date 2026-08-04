@@ -21,7 +21,7 @@ import {
   MEMORY_BRIEFING_MAX_CHARS,
   MEMORY_SYNTHESIS_FRAMING_TOKENS,
   MEMORY_SYNTHESIS_OUTPUT_RESERVE_TOKENS,
-  parsePrefixedNodeId,
+  parseMemoryNodeId,
   type MemoryNodeId,
 } from "./memory-types.ts";
 import { completeMemoryModelCall } from "./memory-completion.ts";
@@ -152,7 +152,7 @@ function validateSynthesisResponse(
     if (typeof raw !== "string") {
       return { ok: false, error: '"sources" entries must be id strings' };
     }
-    const parsedId = parsePrefixedNodeId(raw);
+    const parsedId = parseMemoryNodeId(raw);
     if (!parsedId.ok || parsedId.type !== "memory") {
       return { ok: false, error: `invalid source id ${raw}` };
     }
@@ -214,7 +214,7 @@ function revalidateCitedMemories(
 ): string | null {
   const payloadById = new Map(payload.units.map((u) => [u.nodeId, u] as const));
   for (const prefixed of sources) {
-    const parsed = parsePrefixedNodeId(prefixed);
+    const parsed = parseMemoryNodeId(prefixed);
     if (!parsed.ok || parsed.type !== "memory") {
       return `source ${prefixed} is not a memory id`;
     }

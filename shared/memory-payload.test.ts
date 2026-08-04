@@ -13,6 +13,7 @@ import { findMemoryCandidates } from "./memory-retrieval.ts";
 import {
   MEMORY_SYNTHESIS_INPUT_CHARS,
   MEMORY_SYNTHESIS_INPUT_MAX_UNITS,
+  normalizeMemoryBodyText,
 } from "./memory-types.ts";
 
 function candidate(
@@ -147,11 +148,14 @@ test("a store seeded with 2,000 active memories yields a bounded, unsplit payloa
     // Seed 2,000 active memories directly (fast; the repository path is
     // covered elsewhere) with every projection row maintained.
     const insertMemory = db.prepare(
-      `INSERT INTO memories (kind, state, current_version_id, creation_generation)
-       VALUES ('fact', 'active', NULL, 0)`,
+      `INSERT INTO memories
+         (kind, state, current_version_id, normalized_text, creation_generation)
+       VALUES ('fact', 'active', NULL, ?, 0)`,
     );
     const insertVersion = db.prepare(
-      `INSERT INTO memory_versions (memory_id, text) VALUES (?, ?)`,
+      `INSERT INTO memory_versions
+         (memory_id, text, evidence_text, source_session_id, creation_generation)
+       VALUES (?, ?, ?, ?, 0)`,
     );
     const insertDoc = db.prepare(
       `INSERT INTO search_documents (node_type, node_id, text, kind, state, updated_at)
@@ -164,9 +168,11 @@ test("a store seeded with 2,000 active memories yields a bounded, unsplit payloa
     try {
       for (let i = 1; i <= 2000; i++) {
         const text = `shared topic memory number ${i} ${i % 2 === 0 ? "prefer" : "avoid"} pattern ${i % 100}`;
-        const mem = insertMemory.run();
+        // The v6 shape requires the normalized-text projection; the
+        // partial unique index rejects two active memories sharing it.
+        const mem = insertMemory.run(normalizeMemoryBodyText(text));
         const id = Number(mem.lastInsertRowid);
-        const ver = insertVersion.run(id, text);
+        const ver = insertVersion.run(id, text, text, "seed-session");
         db.prepare(
           `UPDATE memories SET current_version_id = ? WHERE id = ?`,
         ).run(Number(ver.lastInsertRowid), id);

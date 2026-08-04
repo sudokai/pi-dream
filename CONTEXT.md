@@ -4,13 +4,9 @@ Workspace-scoped **adaptive memory** for pi. Dream extracts durable user prefere
 
 ## Core terms
 
-**Observation**: An immutable extracted assertion — a concise user preference or workspace fact produced by the dreamer, plus only the source-session identity and timestamps needed for recurrence and idempotency. Observations never store transcript excerpts or sequence ranges. Prefixed API id: `O:<id>`.
+**Memory**: A stable node — a durable user preference or workspace fact — whose current text is a rebuildable projection of append-only **memory versions**. Every memory is a single renderable unit capped at 400 characters, so payload accounting never splits a text mid-way. Prefixed API id: `M:<id>`. One real preference or fact = one memory; updates refine the wording in place, never a new node.
 
-**Memory**: A stable synthesized node built from one or more observations. Current text is a rebuildable projection of append-only **memory versions**. Every memory is a single renderable unit capped at 400 characters, so payload accounting never splits a text mid-way. Prefixed API id: `M:<id>`.
-
-**Memory version**: An immutable text revision of a memory, linked to its predecessor. Ordinary supersession and forget never delete versions.
-
-**Graph edge**: A typed lateral link between memories. Relation types: `related_to`, `supersedes`, `conflicts_with`. Edges carry a lifecycle state (`active`/`retired`): retiring an edge keeps the row for audit but removes it from live reads.
+**Memory version**: An immutable event row in a memory's complete life: one per `create` or `update`, each carrying the distilled wording, the verbatim **evidence quote**, the source session, and a link to its predecessor. Nothing is ever deleted or rewritten; retirement is recorded on the memory row, not as a version.
 
 **Retrieval**: The recall layer whose only job is recall — never precision. Query candidates come from FTS5 over active memory text (lexical) fused with MiniLM cosine (semantic) via **Reciprocal Rank Fusion** (`Σ 1/(K + rank)`). The only exclusion is the semantic **cosine floor**; anything a retriever surfaces stays surfaced, and retrieval never writes or records.
 
@@ -22,9 +18,9 @@ Workspace-scoped **adaptive memory** for pi. Dream extracts durable user prefere
 
 **Citation event**: An observability record that a memory was cited as a source in a synthesized answer (`source` `briefing` or `search`). There is no heat score, no decay, no novelty, and no ranking input derived from citations; `activity_generation` is an audit-only session counter and never enters ranking.
 
-**Recurrence**: The count of distinct source-session observations linked to a memory (`COUNT(DISTINCT source_session_id)` through `memory_observations`). Never a separately mutated counter.
+**Recurrence**: The count of distinct source sessions that produced a version of a memory (`COUNT(DISTINCT source_session_id)` over `memory_versions`). Never a separately mutated counter.
 
-**Ingestion**: The phase of a dream that reads source sessions and extracts observations and memories (the dreamer "mines" sessions). At run end the dreamer also maintains the **embeddings projection** (incremental; unchanged content hashes are skipped) — the projection pass runs only in the child: the parent's interactive first turn never runs it (the parent loads the embedder for query embedding only when the vector index is non-empty), and the pass never fails the run (an unavailable embedder degrades semantic retrieval to lexical-only, and the degradation is persisted for `/memory status` and the startup notice, clearing on the next successful pass). The dreamer has no other surface: there are no summaries to write, no consolidation pass, and no labels.
+**Ingestion**: The phase of a dream that reads source sessions and extracts memories (the dreamer "mines" sessions). Mining is incremental: each session resumes at the mined-message cursor stored in its checkpoint, so an already-mined prefix is never re-read and never re-extracted. Before creating, the dreamer recalls the store with `memory_recall` (read-only retrieval; no citation events) so a restated preference updates the existing memory; a `create` whose normalized text exactly matches an active memory is additionally auto-merged into a restatement version at commit, so duplicate memory nodes cannot occur. At run end the dreamer also maintains the **embeddings projection** (incremental; unchanged content hashes are skipped) — the projection pass runs only in the child: the parent's interactive first turn never runs it (the parent loads the embedder for query embedding only when the vector index is non-empty), and the pass never fails the run (an unavailable embedder degrades semantic retrieval to lexical-only, and the degradation is persisted for `/memory status` and the startup notice, clearing on the next successful pass). The dreamer has no other surface: there are no summaries to write, no consolidation pass, and no labels.
 
 **Dream**: A unit of background work: a detached run that ingests eligible workspace sessions. Executed by the **dreamer**; tracked in SQLite for single-flight claims and parent notifications, and surfaced to the user as a run (`run <id>`). The product is named after this unit of work; "a dream" is always one run.
 
@@ -32,28 +28,26 @@ Workspace-scoped **adaptive memory** for pi. Dream extracts durable user prefere
 
 **Workspace id**: Stable memory scope: `sha256(canonical_source)[:12]_safeName`, resolved from canonical git origin → git common directory → real cwd. Clones and linked worktrees that share an origin share one memory store.
 
-**Source session**: A pi JSONL transcript whose header cwd resolves to the workspace id. Checkpoints store processed mtime/content hash so unchanged sessions are not re-mined.
+**Source session**: A pi JSONL transcript whose header cwd resolves to the workspace id. Checkpoints store processed mtime/content hash (unchanged sessions are never re-mined) plus the mined-message cursor, so a grown session resumes incrementally from where the previous dream stopped.
 
-**Activity generation**: Monotonic workspace counter advanced once per first-turn recall opportunity (before model resolution, on success and failure alike; a pre-aborted attempt does not advance). Audit only — displayed in `/memory status` and stamped as `creation_generation` on new observations and memories; never a ranking input.
+**Activity generation**: Monotonic workspace counter advanced once per first-turn recall opportunity (before model resolution, on success and failure alike; a pre-aborted attempt does not advance). Audit only — displayed in `/memory status` and stamped as `creation_generation` on new versions and memories; never a ranking input.
 
 ## Lifecycle states
 
 Memory `state`:
 
 - `active` — eligible for retrieval
-- `conflicted` — ambiguous contradiction; excluded from retrieval until resolved
-- `superseded` — replaced by a newer memory; excluded; history retained
-- `retired` — soft-forgotten via `/memory forget`; excluded; provenance retained
+- `retired` — soft-forgotten via `forget` or `/memory forget`; excluded; provenance retained
 
-When a memory becomes conflicted, superseded, or retired, it is removed from the derived search projections (FTS row, search document, embedding) in the same transaction; observations, versions, and edges are preserved.
+When a memory is retired, it is removed from the derived search projections (FTS row, search document, embedding) in the same transaction; versions and evidence are preserved. Nothing is ever physically deleted.
 
 ## Dreamer operations
 
-The detached dreamer submits only structured ops: `create`, `reinforce`, `revise`, `supersede`, `conflict`, `link`, or `no_op`. Code validates references and text shape, then commits observations, versions, edges, search projections, and the source-session checkpoint in one atomic transaction.
+The detached dreamer submits only structured ops: `create`, `update`, `forget`, or `no_op`. Code validates references and text shape, then commits versions, search projections, and the source-session checkpoint in one atomic transaction. `create` is dedupe-guarded: identical normalized body text against an active memory routes to a restatement version of that memory (the partial unique index on active memory text enforces the invariant at the schema level). `update` appends a version in place — a restatement (same wording, new evidence, recurrence grows) or a refinement (new wording; the old wording stays in the version chain) — and `forget` retires a memory, recording the negating evidence on the memory row and preserving every version for audit.
 
 ## Retired vocabulary
 
-The following terms are retired and must not be reintroduced: **Summary** (and `S:` ids), **Tree / top layer / tree root / containment** (`contains` edges), **Consolidation pass** (merging into summaries), **Promote / resurfacing**, **Heat / hot threshold / novelty**, **Recall events** (now citation events), and **memory_open** (agent tool). Compaction of large corpora returns in Phase 2 as **clustering** (a derived, disposable projection) — never as maintained tree state.
+The following terms are retired and must not be reintroduced: **Summary** (and `S:` ids), **Tree / top layer / tree root / containment** (`contains` edges), **Consolidation pass** (merging into summaries), **Promote / resurfacing**, **Heat / hot threshold / novelty**, **Recall events** (now citation events), **memory_open** (agent tool), **Observation** (and `O:` ids; evidence now lives on each memory version), and **Graph edge** (supersession is in-place now; the version chain records history). Compaction of large corpora returns in Phase 2 as **clustering** (a derived, disposable projection) — never as maintained tree state.
 
 ## Out of vocabulary
 

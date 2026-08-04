@@ -180,13 +180,6 @@ export function listUnreportedMemoryRuns(db: DatabaseSync): Array<{
   }));
 }
 
-/** Mark a run as reported to the parent UI. */
-export function markMemoryRunReported(db: DatabaseSync, runId: string): void {
-  db.prepare(`UPDATE dream_runs SET reported_to_parent = 1 WHERE id = ?`).run(
-    runId,
-  );
-}
-
 /** Atomically claim one unreported terminal run for parent notification. */
 export function consumeOneUnreportedMemoryRun(
   db: DatabaseSync,

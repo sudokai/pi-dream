@@ -36,6 +36,7 @@ function writeDreamManifest(dir: string): string {
       cwd: "/tmp",
       mtimeMs: 100,
       contentHash: "snapshot-hash-1",
+      minedMessageOffset: 1,
     },
   ]);
   return manifestPath;
@@ -76,6 +77,7 @@ test("finalizeMemoryDreamRun completes only after every manifest checkpoint", as
       cwd: "/tmp",
       processedMtimeMs: 100,
       contentHash: "snapshot-hash-1",
+      minedMessageOffset: 1,
       plan: { operations: [{ op: "no_op", reason: "nothing durable" }] },
     });
     assert.equal(committed.applied, true);
@@ -151,6 +153,7 @@ test("finalize removes the run directory on success", async () => {
       cwd: "/tmp",
       processedMtimeMs: 100,
       contentHash: "snapshot-hash-1",
+      minedMessageOffset: 1,
       plan: { operations: [{ op: "no_op", reason: "x" }] },
     });
     const result = await finalizeMemoryDreamRun({
@@ -208,13 +211,13 @@ test("finalize maintains the embeddings projection end-to-end: committed session
       cwd: "/tmp",
       processedMtimeMs: 100,
       contentHash: "snapshot-hash-1",
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
             op: "create",
-            tempRef: "m1",
             kind: "preference",
-            observationText: "user dislikes premature abstractions",
+            evidenceText: "user dislikes premature abstractions",
             memoryText:
               "User gets frustrated when abstractions appear before three call sites",
           },
@@ -307,13 +310,13 @@ test("a degraded embedding pass never fails the run", async () => {
       cwd: "/tmp",
       processedMtimeMs: 100,
       contentHash: "snapshot-hash-1",
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
             op: "create",
-            tempRef: "m1",
             kind: "fact",
-            observationText: "Build uses pnpm",
+            evidenceText: "Build uses pnpm",
             memoryText: "The build uses pnpm",
           },
         ],
@@ -362,13 +365,13 @@ test("a later successful embedding pass clears the persisted degradation", async
       cwd: "/tmp",
       processedMtimeMs: 100,
       contentHash: "snapshot-hash-1",
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
             op: "create",
-            tempRef: "m1",
             kind: "fact",
-            observationText: "Build uses pnpm",
+            evidenceText: "Build uses pnpm",
             memoryText: "The build uses pnpm",
           },
         ],

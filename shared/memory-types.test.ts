@@ -2,27 +2,34 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import {
   formatMemoryNodeId,
-  normalizeObservationText,
-  parsePrefixedNodeId,
+  normalizeMemoryBodyText,
+  parseMemoryNodeId,
   validateMemoryBodyText,
 } from "./memory-types.ts";
 
-test("parsePrefixedNodeId accepts M and O only", () => {
-  assert.deepEqual(parsePrefixedNodeId("M:12"), {
+test("parseMemoryNodeId accepts M only; O and S ids are retired", () => {
+  assert.deepEqual(parseMemoryNodeId("M:12"), {
     ok: true,
     type: "memory",
     id: 12,
     prefixed: "M:12",
   });
-  assert.equal(parsePrefixedNodeId("O:1").ok, true);
-  assert.equal(parsePrefixedNodeId("S:3").ok, false, "S: ids are retired");
-  assert.equal(parsePrefixedNodeId("X:1").ok, false);
-  assert.equal(parsePrefixedNodeId("M:0").ok, false);
+  assert.match(
+    parseMemoryNodeId("O:1").ok === false
+      ? (parseMemoryNodeId("O:1") as { error: string }).error
+      : "",
+    /retired/,
+    "O: ids are retired",
+  );
+  assert.equal(parseMemoryNodeId("S:3").ok, false, "S: ids are retired");
+  assert.equal(parseMemoryNodeId("X:1").ok, false);
+  assert.equal(parseMemoryNodeId("M:0").ok, false);
 });
 
-test("formatMemoryNodeId and normalizeObservationText", () => {
+test("formatMemoryNodeId and normalizeMemoryBodyText", () => {
   assert.equal(formatMemoryNodeId(7), "M:7");
-  assert.equal(normalizeObservationText("  Prefer   tabs  "), "prefer tabs");
+  assert.equal(normalizeMemoryBodyText("  Prefer   tabs  "), "prefer tabs");
+  assert.equal(normalizeMemoryBodyText("Use\n  spaces"), "use spaces");
 });
 
 test("validateMemoryBodyText rejects multiline and empty", () => {

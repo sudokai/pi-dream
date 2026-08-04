@@ -14,7 +14,6 @@ import * as path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
   listMemoryWorkspaceSessionFiles,
-  maxMemoryWorkspaceSessionMtimeMs,
   readMemorySessionHeader,
   type MemorySessionFileInfo,
 } from "./memory-workspace-id.ts";
@@ -22,11 +21,7 @@ import { getSourceSessionCheckpoint } from "./memory-repository.ts";
 import { deriveMemorySessionFallbackId } from "./memory-session-decode.ts";
 import type { SourceSessionRow } from "./memory-types.ts";
 
-export {
-  listMemoryWorkspaceSessionFiles,
-  maxMemoryWorkspaceSessionMtimeMs,
-  type MemorySessionFileInfo,
-};
+export { listMemoryWorkspaceSessionFiles, type MemorySessionFileInfo };
 
 export interface MemoryDreamManifestEntry {
   sessionId: string;
@@ -38,6 +33,8 @@ export interface MemoryDreamManifestEntry {
   mtimeMs: number;
   /** sha256 of the snapshot bytes at discovery time. */
   contentHash: string;
+  /** Visible messages already mined from this session; the dreamer resumes reading here. */
+  minedMessageOffset: number;
 }
 
 /** Copy a session file into the run dir as an immutable snapshot. */
@@ -133,6 +130,9 @@ export function buildMemoryDreamManifest(
       cwd: file.cwd,
       mtimeMs: file.mtimeMs,
       contentHash: snap.contentHash,
+      // Incremental mining resumes from the prior checkpoint's cursor; a
+      // first-ever mine (or a wiped store) starts at message 0.
+      minedMessageOffset: checkpoint?.minedMessageOffset ?? 0,
     });
   }
   return eligible;
@@ -176,7 +176,7 @@ export function writeMemoryDreamManifest(
   fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
   fs.writeFileSync(
     manifestPath,
-    `${JSON.stringify({ version: 2, sessions: entries }, null, 2)}\n`,
+    `${JSON.stringify({ version: 3, sessions: entries }, null, 2)}\n`,
     "utf-8",
   );
 }
@@ -203,5 +203,10 @@ export function readMemoryDreamManifest(
       );
     }
   }
-  return parsed.sessions as MemoryDreamManifestEntry[];
+  // v2 manifests predate the incremental cursor; missing offsets mean a
+  // full re-mine (start at message 0), which is the safe default.
+  return parsed.sessions.map((s) => ({
+    ...s,
+    minedMessageOffset: s.minedMessageOffset ?? 0,
+  })) as MemoryDreamManifestEntry[];
 }

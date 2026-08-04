@@ -20,6 +20,7 @@ import {
   openMemoryNodeExact,
   retireMemoryNode,
 } from "../shared/memory-graph.ts";
+import { formatMemoryNodeId } from "../shared/memory-types.ts";
 import { memoryEmbeddingStatus } from "../shared/memory-embedding.ts";
 import { getMemoryWorkspaceState } from "../shared/memory-repository.ts";
 import {
@@ -35,9 +36,11 @@ import { formatSessionModelId } from "../shared/memory-model.ts";
 import { launchMemoryDreamRun } from "./memory-dream-launcher.ts";
 import type { MemoryModelRegistryLike } from "../shared/memory-model.ts";
 
+/** Usage line shown in /memory command errors and help. */
 export const MEMORY_COMMAND_USAGE =
   "Usage: /memory [status [--verbose]|list [query]|open <id> [cursor=<n>]|dream|pause|resume|forget <id>]";
 
+/** Completion choices for /memory subcommands. */
 export const MEMORY_COMMAND_ARG_CHOICES = [
   "status",
   "list",
@@ -160,7 +163,7 @@ function formatStatus(input: {
     "Memory status",
     "─────────────",
     `enabled:          ${input.config.enabled ? "yes" : "no (paused)"}`,
-    `memories:         ${counts.active} active (${counts.conflicted} conflicted, ${counts.superseded} superseded, ${counts.retired} retired)`,
+    `memories:         ${counts.active} active (${counts.retired} retired)`,
     `citations:        ${Number(citations)}`,
     `active dream:     ${activeRun ?? "none"}`,
   ];
@@ -195,18 +198,6 @@ function formatStatus(input: {
   return lines.join("\n");
 }
 
-function memoryRecurrence(db: DatabaseSync, memoryId: number): number {
-  const row = db
-    .prepare(
-      `SELECT COUNT(DISTINCT o.source_session_id) AS n
-       FROM memory_observations mo
-       JOIN observations o ON o.id = mo.observation_id
-       WHERE mo.memory_id = ?`,
-    )
-    .get(memoryId) as { n: number } | undefined;
-  return row ? Number(row.n) : 0;
-}
-
 function formatList(db: DatabaseSync, query: string): string {
   const q = query.trim().toLowerCase();
   const lines: string[] = ["# Memory list", ""];
@@ -219,9 +210,7 @@ function formatList(db: DatabaseSync, query: string): string {
     const id = `M:${m.id}`;
     if (!match(m.text, id)) continue;
     anyActive = true;
-    lines.push(
-      `- **${id}** [${m.kind}] (r=${memoryRecurrence(db, m.id)}): ${m.text}`,
-    );
+    lines.push(`- **${id}** [${m.kind}] (r=${m.recurrence}): ${m.text}`);
   }
   if (!anyActive && !q) lines.push("(empty)");
 
@@ -314,27 +303,28 @@ export function registerMemoryCommand(
           const result = openMemoryNodeExact(db, parsed.id, {
             cursor: parsed.cursor,
           });
+          const t = result.target;
           const lines = [
-            `# ${result.target.prefixedId}`,
-            `type: ${result.target.nodeType}`,
-            result.target.state ? `state: ${result.target.state}` : "",
-            `text: ${result.target.text}`,
+            `# ${formatMemoryNodeId(t.id)}`,
+            `state: ${t.state}`,
+            `text: ${t.text}`,
+            t.retiredBySessionId
+              ? `retired by session: ${t.retiredBySessionId}`
+              : "",
+            t.retiredEvidenceText
+              ? `retired evidence: ${t.retiredEvidenceText}`
+              : "",
             "",
-            ...result.children.map((c) => `child ${c.prefixedId}: ${c.text}`),
-            ...result.lateral.map(
-              (l) => `link ${l.relation} ${l.direction} ${l.prefixedId}`,
+            "## Version history",
+            ...result.versions.map(
+              (v) =>
+                `- v${v.id} (${v.createdAt}, session ${v.sourceSessionId}): ${v.text} [evidence: ${v.evidenceText}]`,
             ),
           ].filter(Boolean);
-          if (result.versions && result.versions.length > 1) {
-            lines.push("", "## Version history");
-            for (const v of result.versions) {
-              lines.push(`- v${v.id} (${v.createdAt}): ${v.text}`);
-            }
-          }
           if (result.continuationCursor) {
             lines.push(
               "",
-              `More children available: /memory open ${parsed.id} cursor=${result.continuationCursor}`,
+              `More versions available: /memory open ${parsed.id} cursor=${result.continuationCursor}`,
             );
           }
           const text = lines.join("\n");

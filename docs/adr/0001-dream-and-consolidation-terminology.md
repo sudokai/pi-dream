@@ -2,7 +2,7 @@
 
 pi-dream's vocabulary originally described the detached background run as a "learning run" and the merge/promote phase as "maintenance" — generic engineer-speak that surfaced in notifications, `/memory`, status, and docs. We renamed to the sleep metaphor that is the product's identity: the background run is a **dream** (executed by the **dreamer** child), its session-mining phase is **ingestion**, and the merge/promote phase is **consolidation**. The run id survives only as an id handle (`run 123`), `/memory learn` became `/memory dream`, and "learns" was purged from user-facing prose (product descriptions now say "extracts").
 
-**Status**: accepted; the consolidation phase it named is retired by [0002](./0002-retrieval-fed-recall.md). "Dream" and "dreamer" remain the load-bearing names for the background run and its detached process; "consolidation" no longer names any phase in the codebase and must not be reintroduced for compaction (see 0002 for the replacement vocabulary: clustering, compaction, collapse — Phase 2).
+**Status**: accepted; the consolidation phase it named is retired by [0002](./0002-retrieval-fed-recall.md), and the observation/edge layers are retired by [0003](./0003-ingestion-context-incremental-mining-and-dedupe.md). "Dream" and "dreamer" remain the load-bearing names for the background run and its detached process; "consolidation" no longer names any phase in the codebase and must not be reintroduced for compaction (see 0002 for the replacement vocabulary: clustering, compaction, collapse — Phase 2).
 
 **Considered options**:
 

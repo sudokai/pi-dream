@@ -92,13 +92,14 @@ function createMemory(
     cwd: "/tmp",
     processedMtimeMs: 1,
     contentHash: `h-${sessionId}`,
+    minedMessageOffset: 1,
     plan: {
       operations: [
         {
           op: "create",
-          tempRef: `t${sessionId}`,
+
           kind,
-          observationText: text,
+          evidenceText: text,
           memoryText: text,
         },
       ],

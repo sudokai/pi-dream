@@ -16,6 +16,7 @@ import {
   writeMemorySecureFileAtomic,
 } from "./memory-fs.ts";
 
+/** Valid pi thinking levels for dream and recall models. */
 export const MEMORY_THINKING_LEVELS = [
   "off",
   "minimal",

@@ -6,8 +6,8 @@ import type { DatabaseSync } from "node:sqlite";
 import {
   formatMemoryNodeId,
   MEMORY_MAX_TEXT_CHARS,
-  normalizeObservationText,
-  parsePrefixedNodeId,
+  normalizeMemoryBodyText,
+  parseMemoryNodeId,
   validateMemoryBodyText,
   type MemoryDreamCommitInput,
   type MemoryDreamerOperation,
@@ -113,7 +113,8 @@ export function getSourceSessionCheckpoint(
 ): SourceSessionRow | null {
   const r = db
     .prepare(
-      `SELECT session_id, session_path, cwd, processed_mtime_ms, content_hash, completed_at
+      `SELECT session_id, session_path, cwd, processed_mtime_ms, content_hash,
+              mined_message_offset, completed_at
        FROM source_sessions WHERE session_id = ?`,
     )
     .get(sessionId) as Record<string, unknown> | undefined;
@@ -127,19 +128,17 @@ export function getSourceSessionCheckpoint(
       r.content_hash === null || r.content_hash === undefined
         ? null
         : String(r.content_hash),
+    minedMessageOffset: Number(r.mined_message_offset),
     completedAt: String(r.completed_at),
   };
 }
 
-function assertActiveOrKnownMemory(
-  db: DatabaseSync,
-  memoryId: number,
-  allowStates: string[] = ["active", "conflicted"],
-): void {
+/** Every mutating op targets an active memory; retired memories are audit-only. */
+function assertActiveMemory(db: DatabaseSync, memoryId: number): void {
   const row = getMemoryById(db, memoryId);
   if (!row)
     throw new Error(`Memory not found: ${formatMemoryNodeId(memoryId)}`);
-  if (!allowStates.includes(row.state)) {
+  if (row.state !== "active") {
     throw new Error(
       `Memory ${formatMemoryNodeId(memoryId)} is ${row.state}; operation not allowed`,
     );
@@ -147,62 +146,67 @@ function assertActiveOrKnownMemory(
 }
 
 /**
- * Insert an observation, or reuse the existing row for the same
- * (source session, normalized text). Returns the observation id
- * (inserted or pre-existing) — never null.
+ * Append one immutable version row to a memory: the distilled wording, the
+ * verbatim evidence quote, and the source session that produced it. The
+ * version chain is the complete append-only life of a memory — nothing is
+ * ever deleted or rewritten.
  */
-function insertObservation(
+function insertMemoryVersion(
   db: DatabaseSync,
   input: {
-    kind: MemoryKnowledgeKind;
+    memoryId: number;
     text: string;
+    evidenceText: string;
     sourceSessionId: string;
     creationGeneration: number;
+    previousVersionId: number | null;
   },
 ): number {
   const err = validateMemoryBodyText(input.text, MEMORY_MAX_TEXT_CHARS);
   if (err) throw new Error(err);
-  const normalized = normalizeObservationText(input.text);
-  try {
-    const result = db
-      .prepare(
-        `INSERT INTO observations
-           (kind, text, normalized_text, source_session_id, creation_generation)
-         VALUES (?, ?, ?, ?, ?)`,
-      )
-      .run(
-        input.kind,
-        input.text.trim(),
-        normalized,
-        input.sourceSessionId,
-        input.creationGeneration,
-      );
-    return Number(result.lastInsertRowid);
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (msg.includes("UNIQUE") || msg.includes("unique")) {
-      // Same normalized observation from this session — idempotent dedupe:
-      // reuse the existing row so callers always link a real observation.
-      const existing = db
-        .prepare(
-          `SELECT id FROM observations
-           WHERE source_session_id = ? AND normalized_text = ?`,
-        )
-        .get(input.sourceSessionId, normalized) as { id: number } | undefined;
-      if (existing) return existing.id;
-    }
-    throw e;
-  }
+  const evidenceErr = validateMemoryBodyText(
+    input.evidenceText,
+    MEMORY_MAX_TEXT_CHARS,
+    "Evidence text",
+  );
+  if (evidenceErr) throw new Error(evidenceErr);
+  const result = db
+    .prepare(
+      `INSERT INTO memory_versions
+         (memory_id, text, evidence_text, source_session_id,
+          creation_generation, previous_version_id)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      input.memoryId,
+      input.text.trim(),
+      input.evidenceText.trim(),
+      input.sourceSessionId,
+      input.creationGeneration,
+      input.previousVersionId,
+    );
+  return Number(result.lastInsertRowid);
 }
 
-function linkObservation(
+/**
+ * Active memory whose normalized body text matches exactly, or null.
+ * The dedupe backstop for `create`: identical wording already stored must
+ * append a restatement version to the existing memory, never spawn a
+ * near-duplicate node. The partial unique index
+ * idx_memories_active_normalized_text enforces the invariant at the schema
+ * level; this lookup routes the evidence onto the existing node so
+ * recurrence stays correct by construction.
+ */
+function findActiveMemoryByNormalizedText(
   db: DatabaseSync,
-  memoryId: number,
-  observationId: number,
-): void {
-  db.prepare(
-    `INSERT OR IGNORE INTO memory_observations (memory_id, observation_id) VALUES (?, ?)`,
-  ).run(memoryId, observationId);
+  normalized: string,
+): number | null {
+  const row = db
+    .prepare(
+      `SELECT id FROM memories WHERE state = 'active' AND normalized_text = ?`,
+    )
+    .get(normalized) as { id: number } | undefined;
+  return row ? Number(row.id) : null;
 }
 
 function createMemoryWithVersion(
@@ -210,26 +214,31 @@ function createMemoryWithVersion(
   input: {
     kind: MemoryKnowledgeKind;
     text: string;
+    evidenceText: string;
+    sourceSessionId: string;
     creationGeneration: number;
   },
 ): number {
-  const err = validateMemoryBodyText(input.text, MEMORY_MAX_TEXT_CHARS);
-  if (err) throw new Error(err);
   const memResult = db
     .prepare(
       `INSERT INTO memories
-         (kind, state, current_version_id, creation_generation)
-       VALUES (?, 'active', NULL, ?)`,
+         (kind, state, current_version_id, normalized_text, creation_generation)
+       VALUES (?, 'active', NULL, ?, ?)`,
     )
-    .run(input.kind, input.creationGeneration);
+    .run(
+      input.kind,
+      normalizeMemoryBodyText(input.text),
+      input.creationGeneration,
+    );
   const memoryId = Number(memResult.lastInsertRowid);
-  const verResult = db
-    .prepare(
-      `INSERT INTO memory_versions (memory_id, text, previous_version_id)
-       VALUES (?, ?, NULL)`,
-    )
-    .run(memoryId, input.text.trim());
-  const versionId = Number(verResult.lastInsertRowid);
+  const versionId = insertMemoryVersion(db, {
+    memoryId,
+    text: input.text,
+    evidenceText: input.evidenceText,
+    sourceSessionId: input.sourceSessionId,
+    creationGeneration: input.creationGeneration,
+    previousVersionId: null,
+  });
   db.prepare(
     `UPDATE memories SET current_version_id = ?, updated_at = datetime('now') WHERE id = ?`,
   ).run(versionId, memoryId);
@@ -243,101 +252,56 @@ function createMemoryWithVersion(
   return memoryId;
 }
 
-function reviseMemoryText(
+/**
+ * Append a version in place (identity kept): a restatement (same wording,
+ * new evidence) or a refined wording (new text), always with the verbatim
+ * evidence quote and source session. The run claim serializes writers, so
+ * the commit resolves the current version inside the transaction. Refreshes
+ * the normalized-text projection and the search projections; a changed text
+ * invalidates stale embeddings for the next projection pass.
+ */
+function appendMemoryVersion(
   db: DatabaseSync,
-  memoryId: number,
-  text: string,
-  expectedVersionId: number,
+  input: {
+    memoryId: number;
+    text: string;
+    evidenceText: string;
+    sourceSessionId: string;
+    creationGeneration: number;
+  },
 ): void {
-  const err = validateMemoryBodyText(text, MEMORY_MAX_TEXT_CHARS);
+  const err = validateMemoryBodyText(input.text, MEMORY_MAX_TEXT_CHARS);
   if (err) throw new Error(err);
-  const mem = getMemoryById(db, memoryId);
+  const mem = getMemoryById(db, input.memoryId);
   if (!mem)
-    throw new Error(`Memory not found: ${formatMemoryNodeId(memoryId)}`);
-  if (!Number.isSafeInteger(expectedVersionId) || expectedVersionId <= 0) {
-    throw new Error(
-      `Memory ${formatMemoryNodeId(memoryId)} revision requires a positive expectedVersionId`,
-    );
-  }
-  if (mem.currentVersionId !== expectedVersionId) {
-    throw new Error(
-      `Memory ${formatMemoryNodeId(memoryId)} version is stale (expected ${expectedVersionId}, have ${mem.currentVersionId})`,
-    );
-  }
-  const verResult = db
-    .prepare(
-      `INSERT INTO memory_versions (memory_id, text, previous_version_id)
-       VALUES (?, ?, ?)`,
-    )
-    .run(memoryId, text.trim(), mem.currentVersionId);
-  const versionId = Number(verResult.lastInsertRowid);
-  const updated = db
-    .prepare(
-      `UPDATE memories
-       SET current_version_id = ?, updated_at = datetime('now')
-       WHERE id = ? AND current_version_id = ?`,
-    )
-    .run(versionId, memoryId, expectedVersionId);
-  if (Number(updated.changes) !== 1) {
-    throw new Error(
-      `Memory ${formatMemoryNodeId(memoryId)} changed while its revision was committing`,
-    );
-  }
+    throw new Error(`Memory not found: ${formatMemoryNodeId(input.memoryId)}`);
+  const versionId = insertMemoryVersion(db, {
+    memoryId: input.memoryId,
+    text: input.text,
+    evidenceText: input.evidenceText,
+    sourceSessionId: input.sourceSessionId,
+    creationGeneration: input.creationGeneration,
+    previousVersionId: mem.currentVersionId,
+  });
+  db.prepare(
+    `UPDATE memories
+     SET current_version_id = ?, normalized_text = ?, updated_at = datetime('now')
+     WHERE id = ?`,
+  ).run(versionId, normalizeMemoryBodyText(input.text), input.memoryId);
   if (mem.state === "active") {
     upsertMemorySearchDocument(db, {
       nodeType: "memory",
-      nodeId: memoryId,
-      text: text.trim(),
+      nodeId: input.memoryId,
+      text: input.text.trim(),
       kind: mem.kind,
       state: mem.state,
     });
     // A changed text invalidates the stale embedding (all models); the next
     // embedding pass re-embeds from the fresh search_documents row. Identical
     // text keeps the row (the content hash still matches).
-    if (mem.text !== text.trim()) {
-      deleteMemoryEmbeddings(db, "memory", memoryId);
+    if (mem.text !== input.text.trim()) {
+      deleteMemoryEmbeddings(db, "memory", input.memoryId);
     }
-  }
-}
-
-function assertGraphEdgeEndpointsExist(
-  db: DatabaseSync,
-  fromId: number,
-  toId: number,
-): void {
-  if (!getMemoryById(db, fromId)) {
-    throw new Error(
-      `Graph edge from memory not found: ${formatMemoryNodeId(fromId)}`,
-    );
-  }
-  if (!getMemoryById(db, toId)) {
-    throw new Error(
-      `Graph edge to memory not found: ${formatMemoryNodeId(toId)}`,
-    );
-  }
-}
-
-function insertEdge(
-  db: DatabaseSync,
-  relation: string,
-  fromId: number,
-  toId: number,
-): void {
-  if (fromId === toId) {
-    throw new Error(`Graph edge cannot link a node to itself: M:${fromId}`);
-  }
-  assertGraphEdgeEndpointsExist(db, fromId, toId);
-  try {
-    db.prepare(
-      `INSERT INTO graph_edges (relation, from_type, from_id, to_type, to_id)
-       VALUES (?, 'memory', ?, 'memory', ?)`,
-    ).run(relation, fromId, toId);
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (msg.includes("UNIQUE") || msg.includes("unique")) {
-      return; // idempotent link
-    }
-    throw e;
   }
 }
 
@@ -347,7 +311,6 @@ function applyOperation(
   ctx: {
     sourceSessionId: string;
     generation: number;
-    tempRefs: Map<string, number>;
   },
 ): void {
   switch (op.op) {
@@ -355,177 +318,79 @@ function applyOperation(
       return;
 
     case "create": {
-      if (!op.tempRef.trim())
-        throw new Error("create tempRef must be non-empty");
-      if (ctx.tempRefs.has(op.tempRef)) {
-        throw new Error(`Duplicate create tempRef: ${op.tempRef}`);
+      // Active-memory dedupe backstop: a create whose normalized body text
+      // already exists as an active memory appends a restatement version to
+      // that memory (evidence + recurrence) instead of spawning a
+      // near-duplicate node. The partial unique index enforces the invariant
+      // at the schema level even if this lookup ever misses.
+      const existingId = findActiveMemoryByNormalizedText(
+        db,
+        normalizeMemoryBodyText(op.memoryText),
+      );
+      if (existingId !== null) {
+        appendMemoryVersion(db, {
+          memoryId: existingId,
+          text: getMemoryById(db, existingId)!.text,
+          evidenceText: op.evidenceText,
+          sourceSessionId: ctx.sourceSessionId,
+          creationGeneration: ctx.generation,
+        });
+        return;
       }
-      const obsId = insertObservation(db, {
-        kind: op.kind,
-        text: op.observationText,
-        sourceSessionId: ctx.sourceSessionId,
-        creationGeneration: ctx.generation,
-      });
-      const memoryId = createMemoryWithVersion(db, {
-        kind: op.kind,
-        text: op.memoryText,
-        creationGeneration: ctx.generation,
-      });
-      linkObservation(db, memoryId, obsId);
-      ctx.tempRefs.set(op.tempRef, memoryId);
-      return;
-    }
-
-    case "reinforce": {
-      const parsed = parsePrefixedNodeId(op.memoryId);
-      if (!parsed.ok || parsed.type !== "memory") {
-        throw new Error(`reinforce requires memory id, got ${op.memoryId}`);
-      }
-      assertActiveOrKnownMemory(db, parsed.id);
-      const mem = getMemoryById(db, parsed.id)!;
-      const obsId = insertObservation(db, {
-        kind: mem.kind,
-        text: op.observationText,
-        sourceSessionId: ctx.sourceSessionId,
-        creationGeneration: ctx.generation,
-      });
-      linkObservation(db, parsed.id, obsId);
-      return;
-    }
-
-    case "revise": {
-      const parsed = parsePrefixedNodeId(op.memoryId);
-      if (!parsed.ok || parsed.type !== "memory") {
-        throw new Error(`revise requires memory id, got ${op.memoryId}`);
-      }
-      assertActiveOrKnownMemory(db, parsed.id);
-      const mem = getMemoryById(db, parsed.id)!;
-      const obsId = insertObservation(db, {
-        kind: mem.kind,
-        text: op.observationText,
-        sourceSessionId: ctx.sourceSessionId,
-        creationGeneration: ctx.generation,
-      });
-      linkObservation(db, parsed.id, obsId);
-      if (
-        !Number.isSafeInteger(op.expectedVersionId) ||
-        op.expectedVersionId <= 0
-      ) {
-        throw new Error(
-          `revise on ${op.memoryId} requires a positive expectedVersionId`,
-        );
-      }
-      reviseMemoryText(db, parsed.id, op.memoryText, op.expectedVersionId);
-      return;
-    }
-
-    case "supersede": {
-      const old = parsePrefixedNodeId(op.oldMemoryId);
-      if (!old.ok || old.type !== "memory") {
-        throw new Error(`supersede requires memory id, got ${op.oldMemoryId}`);
-      }
-      assertActiveOrKnownMemory(db, old.id, ["active", "conflicted"]);
-      if (!op.newTempRef.trim())
-        throw new Error("supersede newTempRef must be non-empty");
-      const obsId = insertObservation(db, {
-        kind: op.kind,
-        text: op.observationText,
-        sourceSessionId: ctx.sourceSessionId,
-        creationGeneration: ctx.generation,
-      });
-      const newId = createMemoryWithVersion(db, {
+      createMemoryWithVersion(db, {
         kind: op.kind,
         text: op.memoryText,
+        evidenceText: op.evidenceText,
+        sourceSessionId: ctx.sourceSessionId,
         creationGeneration: ctx.generation,
       });
-      linkObservation(db, newId, obsId);
+      return;
+    }
+
+    case "update": {
+      const parsed = parseMemoryNodeId(op.memoryId);
+      if (!parsed.ok) {
+        throw new Error(`update requires memory id, got ${op.memoryId}`);
+      }
+      assertActiveMemory(db, parsed.id);
+      const mem = getMemoryById(db, parsed.id)!;
+      // No memoryText = restatement: the evidence records a new session's
+      // support while the wording stays put (recurrence grows). With
+      // memoryText, a new version carries the refined wording in place
+      // (identity kept; the old wording stays in the version chain).
+      appendMemoryVersion(db, {
+        memoryId: parsed.id,
+        text: op.memoryText ?? mem.text,
+        evidenceText: op.evidenceText,
+        sourceSessionId: ctx.sourceSessionId,
+        creationGeneration: ctx.generation,
+      });
+      return;
+    }
+
+    case "forget": {
+      const parsed = parseMemoryNodeId(op.memoryId);
+      if (!parsed.ok) {
+        throw new Error(`forget requires memory id, got ${op.memoryId}`);
+      }
+      assertActiveMemory(db, parsed.id);
+      // The negating evidence is recorded on the memory row: audit keeps who
+      // retired it and the verbatim statement. Retirement is retrieval
+      // exclusion only — versions, evidence, and the row itself are
+      // preserved; only the search projections are dropped.
+      const evidenceErr = validateMemoryBodyText(
+        op.evidenceText,
+        MEMORY_MAX_TEXT_CHARS,
+        "Evidence text",
+      );
+      if (evidenceErr) throw new Error(evidenceErr);
       db.prepare(
-        `UPDATE memories SET state = 'superseded', updated_at = datetime('now') WHERE id = ?`,
-      ).run(old.id);
-      deleteMemorySearchDocument(db, "memory", old.id);
-      insertEdge(db, "supersedes", newId, old.id);
-      ctx.tempRefs.set(op.newTempRef, newId);
-      return;
-    }
-
-    case "conflict": {
-      if (!op.memoryIds.length)
-        throw new Error("conflict requires at least one memory id");
-      for (const mid of op.memoryIds) {
-        const parsed = parsePrefixedNodeId(mid);
-        if (!parsed.ok || parsed.type !== "memory") {
-          throw new Error(`conflict requires memory id, got ${mid}`);
-        }
-        assertActiveOrKnownMemory(db, parsed.id, ["active", "conflicted"]);
-        db.prepare(
-          `UPDATE memories SET state = 'conflicted', updated_at = datetime('now') WHERE id = ?`,
-        ).run(parsed.id);
-        deleteMemorySearchDocument(db, "memory", parsed.id);
-      }
-      // Pairwise conflicts_with edges
-      for (let i = 0; i < op.memoryIds.length; i++) {
-        for (let j = i + 1; j < op.memoryIds.length; j++) {
-          const a = parsePrefixedNodeId(op.memoryIds[i]!) as {
-            ok: true;
-            type: "memory";
-            id: number;
-          };
-          const b = parsePrefixedNodeId(op.memoryIds[j]!) as {
-            ok: true;
-            type: "memory";
-            id: number;
-          };
-          insertEdge(db, "conflicts_with", a.id, b.id);
-        }
-      }
-      if (op.observationText) {
-        // Attach observation to first memory if provided
-        const first = parsePrefixedNodeId(op.memoryIds[0]!) as {
-          ok: true;
-          type: "memory";
-          id: number;
-        };
-        const mem = getMemoryById(db, first.id);
-        if (mem) {
-          const obsId = insertObservation(db, {
-            kind: mem.kind,
-            text: op.observationText,
-            sourceSessionId: ctx.sourceSessionId,
-            creationGeneration: ctx.generation,
-          });
-          linkObservation(db, first.id, obsId);
-        }
-      }
-      return;
-    }
-
-    case "link": {
-      let fromId: number;
-      let toId: number;
-
-      if (ctx.tempRefs.has(op.fromId)) {
-        fromId = ctx.tempRefs.get(op.fromId)!;
-      } else {
-        const from = parsePrefixedNodeId(op.fromId);
-        if (!from.ok || from.type !== "memory") {
-          throw new Error(
-            `link fromId must be M:<n> or a temp ref: ${op.fromId}`,
-          );
-        }
-        fromId = from.id;
-      }
-
-      if (ctx.tempRefs.has(op.toId)) {
-        toId = ctx.tempRefs.get(op.toId)!;
-      } else {
-        const to = parsePrefixedNodeId(op.toId);
-        if (!to.ok || to.type !== "memory") {
-          throw new Error(`link toId must be M:<n> or a temp ref: ${op.toId}`);
-        }
-        toId = to.id;
-      }
-
-      insertEdge(db, op.relation, fromId, toId);
+        `UPDATE memories
+         SET state = 'retired', retired_by_session_id = ?,
+             retired_evidence_text = ?, updated_at = datetime('now')
+         WHERE id = ?`,
+      ).run(ctx.sourceSessionId, op.evidenceText.trim(), parsed.id);
+      deleteMemorySearchDocument(db, "memory", parsed.id);
       return;
     }
 
@@ -594,25 +459,24 @@ export function commitMemoryDreamSession(
       }
     }
 
-    const tempRefs = new Map<string, number>();
-
     for (const op of operations) {
       applyOperation(db, op, {
         sourceSessionId: input.sourceSessionId,
         generation,
-        tempRefs,
       });
     }
 
     db.prepare(
       `INSERT INTO source_sessions
-         (session_id, session_path, cwd, processed_mtime_ms, content_hash, completed_at)
-       VALUES (?, ?, ?, ?, ?, datetime('now'))
+         (session_id, session_path, cwd, processed_mtime_ms, content_hash,
+          mined_message_offset, completed_at)
+       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(session_id) DO UPDATE SET
          session_path = excluded.session_path,
          cwd = excluded.cwd,
          processed_mtime_ms = excluded.processed_mtime_ms,
          content_hash = excluded.content_hash,
+         mined_message_offset = excluded.mined_message_offset,
          completed_at = datetime('now')`,
     ).run(
       input.sourceSessionId,
@@ -620,6 +484,7 @@ export function commitMemoryDreamSession(
       normalizeMemoryCwd(input.cwd),
       input.processedMtimeMs,
       input.contentHash,
+      input.minedMessageOffset,
     );
 
     db.exec("COMMIT");

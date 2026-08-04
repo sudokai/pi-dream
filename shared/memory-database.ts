@@ -14,13 +14,15 @@ import {
 import { ensureMemorySecureDir } from "./memory-fs.ts";
 
 /**
- * Schema version. Bumped from 4 to 5 when `workspace_state` gained
- * `embedding_degraded_error`: user_version uniquely determines shape, and
- * the wipe-on-bump policy means a store from the previous build must not
- * open against the new shape. No v4 store exists in the wild (all real
- * stores were v3 before the retrieval redesign), so the bump is free.
+ * Schema version. user_version uniquely determines shape: the wipe-on-bump
+ * policy discards any older store and the dreamer re-mines from transcripts.
+ * v6 shape: `source_sessions.mined_message_offset` (the incremental mining
+ * cursor), `memories.normalized_text` with a partial unique index over
+ * active rows (one active memory per wording), retirement evidence on the
+ * memories row, and the memory-version chain as the complete life of a
+ * memory (distilled wording + verbatim evidence + source session per event).
  */
-export const MEMORY_SCHEMA_VERSION = 5;
+export const MEMORY_SCHEMA_VERSION = 6;
 
 const SCHEMA_SQL = `
 CREATE TABLE workspace_state (
@@ -40,6 +42,8 @@ CREATE TABLE source_sessions (
   cwd TEXT NOT NULL,
   processed_mtime_ms INTEGER NOT NULL,
   content_hash TEXT,
+  -- Incremental mining cursor: number of visible session messages already mined.
+  mined_message_offset INTEGER NOT NULL DEFAULT 0,
   completed_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -54,56 +58,36 @@ CREATE TABLE dream_runs (
   reported_to_parent INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE TABLE observations (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  kind TEXT NOT NULL CHECK (kind IN ('preference', 'fact', 'correction', 'other')),
-  text TEXT NOT NULL,
-  normalized_text TEXT NOT NULL,
-  source_session_id TEXT NOT NULL,
-  creation_generation INTEGER NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE (source_session_id, normalized_text)
-);
-
 CREATE TABLE memories (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   kind TEXT NOT NULL CHECK (kind IN ('preference', 'fact', 'correction', 'other')),
-  state TEXT NOT NULL CHECK (state IN ('active', 'conflicted', 'superseded', 'retired')),
+  state TEXT NOT NULL CHECK (state IN ('active', 'retired')),
   current_version_id INTEGER,
+  -- Normalized current-version text; denormalized projection maintained
+  -- alongside current_version_id so active-memory dedupe has a unique target.
+  normalized_text TEXT NOT NULL DEFAULT '',
   creation_generation INTEGER NOT NULL,
+  -- Forget audit: which session retired the memory and the verbatim statement.
+  retired_by_session_id TEXT,
+  retired_evidence_text TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- The version chain is the complete, append-only life of a memory: one row
+-- per event (create or update), each carrying the distilled wording, the
+-- verbatim evidence quote, and the source session that produced it. Nothing
+-- is ever deleted; retirement is recorded on the memories row instead.
 CREATE TABLE memory_versions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   memory_id INTEGER NOT NULL REFERENCES memories(id),
   text TEXT NOT NULL,
+  evidence_text TEXT NOT NULL,
+  source_session_id TEXT NOT NULL,
+  creation_generation INTEGER NOT NULL,
   previous_version_id INTEGER REFERENCES memory_versions(id),
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-
-CREATE TABLE memory_observations (
-  memory_id INTEGER NOT NULL REFERENCES memories(id),
-  observation_id INTEGER NOT NULL REFERENCES observations(id),
-  PRIMARY KEY (memory_id, observation_id)
-);
-
-CREATE TABLE graph_edges (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  relation TEXT NOT NULL CHECK (relation IN ('related_to', 'supersedes', 'conflicts_with')),
-  from_type TEXT NOT NULL CHECK (from_type IN ('memory')),
-  from_id INTEGER NOT NULL,
-  to_type TEXT NOT NULL CHECK (to_type IN ('memory')),
-  to_id INTEGER NOT NULL,
-  state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'retired')),
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
--- Only active rows must be unique: append-only retired history never blocks a
--- new active edge (retire -> re-link the same pair later).
-CREATE UNIQUE INDEX idx_graph_edges_active_unique ON graph_edges
-  (relation, from_type, from_id, to_type, to_id) WHERE state = 'active';
 
 CREATE TABLE citation_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -140,10 +124,11 @@ CREATE TABLE embeddings (
 );
 
 CREATE INDEX idx_memories_state ON memories(state);
-CREATE INDEX idx_observations_source ON observations(source_session_id);
-CREATE INDEX idx_memory_observations_obs ON memory_observations(observation_id);
-CREATE INDEX idx_graph_from ON graph_edges(from_type, from_id);
-CREATE INDEX idx_graph_to ON graph_edges(to_type, to_id);
+-- Hard invariant: no two active memories share normalized body text. Retired
+-- rows are excluded so a slot is freed when a memory is forgotten.
+CREATE UNIQUE INDEX idx_memories_active_normalized_text ON memories(normalized_text)
+  WHERE state = 'active';
+CREATE INDEX idx_memory_versions_memory ON memory_versions(memory_id, id);
 CREATE INDEX idx_citation_node ON citation_events(node_type, node_id, created_at);
 CREATE INDEX idx_dream_runs_status ON dream_runs(status, reported_to_parent);
 `;
@@ -180,11 +165,8 @@ const REQUIRED_TABLES = [
   "workspace_state",
   "source_sessions",
   "dream_runs",
-  "observations",
   "memories",
   "memory_versions",
-  "memory_observations",
-  "graph_edges",
   "citation_events",
   "search_documents",
   "memory_fts",

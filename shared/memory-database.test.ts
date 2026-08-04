@@ -10,20 +10,7 @@ import {
   openMemoryDatabaseAtPath,
   upsertMemorySearchDocument,
 } from "./memory-database.ts";
-import { retireGraphEdge } from "./memory-graph.ts";
 import { getMemoryWorkspaceState } from "./memory-repository.ts";
-
-function insertEdgeForTest(
-  db: ReturnType<typeof openMemoryDatabaseAtPath>,
-  relation: string,
-  fromId: number,
-  toId: number,
-): void {
-  db.prepare(
-    `INSERT INTO graph_edges (relation, from_type, from_id, to_type, to_id)
-     VALUES (?, 'memory', ?, 'memory', ?)`,
-  ).run(relation, fromId, toId);
-}
 
 test("openMemoryDatabaseAtPath migrates fresh schema", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-db-"));
@@ -44,26 +31,18 @@ test("openMemoryDatabaseAtPath migrates fresh schema", () => {
   }
 });
 
-test("schema v5: no summaries, no containment, no recall_events; FTS5 present", () => {
+test("schema v6: no observations, no edges, no summaries; FTS5 and dedupe index present", () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
-    const edges = db
-      .prepare(`SELECT sql FROM sqlite_master WHERE name = 'graph_edges'`)
-      .get() as { sql: string };
-    assert.match(edges.sql, /state TEXT NOT NULL DEFAULT 'active'/);
-    assert.match(
-      edges.sql,
-      /relation IN \('related_to', 'supersedes', 'conflicts_with'\)/,
-      "contains is no longer a relation",
-    );
-    assert.doesNotMatch(edges.sql, /'summary'/, "summary node type is gone");
-    const index = db
+    const dedupeIndex = db
       .prepare(
-        `SELECT sql FROM sqlite_master WHERE name = 'idx_graph_edges_active_unique'`,
+        `SELECT sql FROM sqlite_master WHERE name = 'idx_memories_active_normalized_text'`,
       )
       .get() as { sql: string };
-    assert.ok(index.sql.includes("WHERE state = 'active'"));
-
+    assert.ok(
+      dedupeIndex.sql.includes("WHERE state = 'active'"),
+      "active-memory normalized-text uniqueness is a partial index",
+    );
     const fts = db
       .prepare(
         `SELECT COUNT(*) AS n FROM sqlite_master WHERE name LIKE 'memory_fts%'`,
@@ -75,13 +54,16 @@ test("schema v5: no summaries, no containment, no recall_events; FTS5 present", 
       "summary_versions",
       "consolidation_attempts",
       "recall_events",
+      "observations",
+      "memory_observations",
+      "graph_edges",
     ]) {
       const n = (
         db
           .prepare(`SELECT COUNT(*) AS n FROM sqlite_master WHERE name = ?`)
           .get(retired) as { n: number }
       ).n;
-      assert.equal(Number(n), 0, `${retired} must not exist in v5`);
+      assert.equal(Number(n), 0, `${retired} must not exist in v6`);
     }
     const citations = (
       db
@@ -91,24 +73,6 @@ test("schema v5: no summaries, no containment, no recall_events; FTS5 present", 
         .get() as { n: number }
     ).n;
     assert.equal(Number(citations), 1, "citation_events exists");
-  } finally {
-    closeMemoryDatabase(db);
-  }
-});
-
-test("retire-then-relink the same pair succeeds (partial unique index)", () => {
-  const db = openMemoryDatabaseAtPath(":memory:");
-  try {
-    insertEdgeForTest(db, "related_to", 1, 2);
-    retireGraphEdge(db, "related_to", "memory", 1, "memory", 2);
-    insertEdgeForTest(db, "related_to", 1, 2);
-    const rows = db.prepare(`SELECT state FROM graph_edges`).all() as Array<{
-      state: string;
-    }>;
-    assert.equal(rows.length, 2);
-    assert.deepEqual(rows.map((r) => r.state).sort(), ["active", "retired"]);
-    // Duplicate active edge is still rejected.
-    assert.throws(() => insertEdgeForTest(db, "related_to", 1, 2));
   } finally {
     closeMemoryDatabase(db);
   }

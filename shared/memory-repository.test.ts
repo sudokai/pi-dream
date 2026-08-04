@@ -20,10 +20,9 @@ import {
   getMemoryById,
   incrementMemoryActivityGeneration,
   listActiveMemories,
-  listObservationsForMemory,
+  listMemoryVersions,
   openMemoryNodeExact,
   recordMemoryCitation,
-  retireMemoryNode,
 } from "./memory-graph.ts";
 
 async function withClaimedDb(
@@ -49,7 +48,7 @@ function ftsRowids(db: ReturnType<typeof openMemoryDatabaseAtPath>): number[] {
   return rows.map((r) => Number(r.rowid));
 }
 
-test("commitMemoryDreamSession create + reinforce is idempotent per session", async () => {
+test("commitMemoryDreamSession create + update is idempotent per session", async () => {
   await withClaimedDb((db, runId) => {
     const r1 = commitMemoryDreamSession(db, {
       runId,
@@ -58,13 +57,13 @@ test("commitMemoryDreamSession create + reinforce is idempotent per session", as
       cwd: "/tmp/proj",
       processedMtimeMs: 1000,
       contentHash: "h1",
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
             op: "create",
-            tempRef: "tmp:1",
             kind: "preference",
-            observationText: "User prefers TypeScript strict mode",
+            evidenceText: "User prefers TypeScript strict mode",
             memoryText: "Prefer TypeScript strict mode",
           },
         ],
@@ -85,13 +84,13 @@ test("commitMemoryDreamSession create + reinforce is idempotent per session", as
       cwd: "/tmp/proj",
       processedMtimeMs: 1000,
       contentHash: "h1",
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
             op: "create",
-            tempRef: "tmp:1",
             kind: "preference",
-            observationText: "User prefers TypeScript strict mode",
+            evidenceText: "User prefers TypeScript strict mode",
             memoryText: "Prefer TypeScript strict mode",
           },
         ],
@@ -99,7 +98,7 @@ test("commitMemoryDreamSession create + reinforce is idempotent per session", as
     });
     assert.equal(r2.applied, false);
 
-    // New session reinforces
+    // New session restates the preference: evidence + recurrence, same node.
     const r3 = commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "sess-2",
@@ -107,12 +106,13 @@ test("commitMemoryDreamSession create + reinforce is idempotent per session", as
       cwd: "/tmp/proj",
       processedMtimeMs: 2000,
       contentHash: "h2",
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
-            op: "reinforce",
+            op: "update",
             memoryId: `M:${memories[0]!.id}`,
-            observationText: "Again prefers TypeScript strict mode",
+            evidenceText: "Again prefers TypeScript strict mode",
           },
         ],
       },
@@ -120,11 +120,11 @@ test("commitMemoryDreamSession create + reinforce is idempotent per session", as
     assert.equal(r3.applied, true);
     const updated = getMemoryById(db, memories[0]!.id)!;
     assert.equal(updated.recurrence, 2);
-    assert.equal(listObservationsForMemory(db, updated.id).length, 2);
+    assert.equal(listMemoryVersions(db, updated.id).length, 2);
   });
 });
 
-test("duplicate observation creates keep support: no orphan active memories", async () => {
+test("duplicate evidence creates keep support: no orphan active memories", async () => {
   await withClaimedDb((db, runId) => {
     const r = commitMemoryDreamSession(db, {
       runId,
@@ -133,20 +133,19 @@ test("duplicate observation creates keep support: no orphan active memories", as
       cwd: "/tmp",
       processedMtimeMs: 1,
       contentHash: "h1",
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
             op: "create",
-            tempRef: "a",
             kind: "preference",
-            observationText: "User likes tabs",
+            evidenceText: "User likes tabs",
             memoryText: "Prefer tabs",
           },
           {
             op: "create",
-            tempRef: "b",
             kind: "preference",
-            observationText: "user likes tabs",
+            evidenceText: "user likes tabs",
             memoryText: "Prefer tabs too",
           },
         ],
@@ -158,17 +157,19 @@ test("duplicate observation creates keep support: no orphan active memories", as
     // Every memory must carry support (recurrence >= 1) and provenance.
     for (const m of memories) {
       assert.ok(m.recurrence >= 1, `M:${m.id} must not be an orphan`);
-      assert.ok(listObservationsForMemory(db, m.id).length >= 1);
+      assert.ok(listMemoryVersions(db, m.id).length >= 1);
     }
-    // Both duplicate-backed creates share the single deduped observation row.
-    const obsA = listObservationsForMemory(db, memories[0]!.id);
-    const obsB = listObservationsForMemory(db, memories[1]!.id);
-    assert.equal(obsA.length, 1);
-    assert.equal(obsA[0]!.id, obsB[0]!.id);
+    // Each memory records its own evidence version with the source session.
+    const versionsA = listMemoryVersions(db, memories[0]!.id);
+    const versionsB = listMemoryVersions(db, memories[1]!.id);
+    assert.equal(versionsA.length, 1);
+    assert.equal(versionsA[0]!.sourceSessionId, "s1");
+    assert.ok(versionsA[0]!.evidenceText.length > 0);
+    assert.equal(versionsB.length, 1);
   });
 });
 
-test("supersede excludes old memory from active search and projections", async () => {
+test("update keeps identity: old wording stays in the version chain, projections refresh", async () => {
   await withClaimedDb((db, runId) => {
     commitMemoryDreamSession(db, {
       runId,
@@ -177,19 +178,19 @@ test("supersede excludes old memory from active search and projections", async (
       cwd: "/tmp",
       processedMtimeMs: 1,
       contentHash: null,
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
             op: "create",
-            tempRef: "tmp:old",
             kind: "preference",
-            observationText: "Use spaces",
+            evidenceText: "Use spaces",
             memoryText: "Use spaces for indentation",
           },
         ],
       },
     });
-    const old = listActiveMemories(db)[0]!;
+    const mem = listActiveMemories(db)[0]!;
     commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s2",
@@ -197,45 +198,42 @@ test("supersede excludes old memory from active search and projections", async (
       cwd: "/tmp",
       processedMtimeMs: 2,
       contentHash: null,
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
-            op: "supersede",
-            oldMemoryId: `M:${old.id}`,
-            newTempRef: "tmp:new",
-            kind: "correction",
-            observationText: "Actually use tabs",
+            op: "update",
+            memoryId: `M:${mem.id}`,
+            evidenceText: "Actually use tabs",
             memoryText: "Use tabs for indentation",
           },
         ],
       },
     });
     const active = listActiveMemories(db);
-    assert.equal(active.length, 1);
+    assert.equal(active.length, 1, "update keeps one stable memory node");
+    assert.equal(active[0]!.id, mem.id, "identity is kept");
     assert.match(active[0]!.text, /tabs/i);
-    const oldRow = getMemoryById(db, old.id)!;
-    assert.equal(oldRow.state, "superseded");
-    // The superseded memory is gone from FTS, search_documents, embeddings.
-    assert.deepEqual(ftsRowids(db), [active[0]!.id]);
+    // The old wording is not in any retrieval projection, only in the chain.
+    assert.deepEqual(ftsRowids(db), [mem.id]);
     const docs = db
       .prepare(`SELECT COUNT(*) AS n FROM search_documents`)
       .get() as { n: number };
     assert.equal(Number(docs.n), 1);
-    // The supersedes edge is intact (audit).
-    const edges = db
-      .prepare(
-        `SELECT relation, state FROM graph_edges WHERE relation = 'supersedes'`,
-      )
-      .all() as Array<{ relation: string; state: string }>;
-    assert.equal(edges.length, 1);
-    // open still shows history
-    const opened = openMemoryNodeExact(db, `M:${old.id}`);
-    assert.equal(opened.target.state, "superseded");
-    assert.ok((opened.versions?.length ?? 0) >= 1);
+    // The version chain preserves both wordings with their evidence.
+    const versions = listMemoryVersions(db, mem.id);
+    assert.equal(versions.length, 2);
+    assert.equal(versions[0]!.text, "Use tabs for indentation");
+    assert.equal(versions[1]!.text, "Use spaces for indentation");
+    assert.equal(versions[0]!.sourceSessionId, "s2");
+    // open still shows the full history
+    const opened = openMemoryNodeExact(db, `M:${mem.id}`);
+    assert.equal(opened.target.state, "active");
+    assert.equal(opened.versions.length, 2);
   });
 });
 
-test("revise keeps identity, CAS-guards, and refreshes projections", async () => {
+test("update with memoryText appends a version in place and refreshes projections", async () => {
   await withClaimedDb((db, runId) => {
     commitMemoryDreamSession(db, {
       runId,
@@ -244,58 +242,34 @@ test("revise keeps identity, CAS-guards, and refreshes projections", async () =>
       cwd: "/tmp",
       processedMtimeMs: 1,
       contentHash: "h1",
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
             op: "create",
-            tempRef: "m1",
             kind: "fact",
-            observationText: "Build uses pnpm",
+            evidenceText: "Build uses pnpm",
             memoryText: "The build uses pnpm",
           },
         ],
       },
     });
     const m = listActiveMemories(db)[0]!;
-    // Stale CAS fails closed.
-    assert.throws(
-      () =>
-        commitMemoryDreamSession(db, {
-          runId,
-          sourceSessionId: "s2",
-          sessionPath: "/tmp/s2.jsonl",
-          cwd: "/tmp",
-          processedMtimeMs: 2,
-          contentHash: "h2",
-          plan: {
-            operations: [
-              {
-                op: "revise",
-                memoryId: `M:${m.id}`,
-                observationText: "Build uses pnpm",
-                memoryText: "The build uses pnpm and pnpm-lock.yaml",
-                expectedVersionId: 999,
-              },
-            ],
-          },
-        }),
-      /version is stale/,
-    );
     const applied = commitMemoryDreamSession(db, {
       runId,
-      sourceSessionId: "s3",
-      sessionPath: "/tmp/s3.jsonl",
+      sourceSessionId: "s2",
+      sessionPath: "/tmp/s2.jsonl",
       cwd: "/tmp",
-      processedMtimeMs: 3,
-      contentHash: "h3",
+      processedMtimeMs: 2,
+      contentHash: "h2",
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
-            op: "revise",
+            op: "update",
             memoryId: `M:${m.id}`,
-            observationText: "Build uses pnpm",
+            evidenceText: "Build uses pnpm",
             memoryText: "The build uses pnpm and pnpm-lock.yaml",
-            expectedVersionId: m.currentVersionId,
           },
         ],
       },
@@ -322,7 +296,7 @@ test("revise keeps identity, CAS-guards, and refreshes projections", async () =>
   });
 });
 
-test("revise invalidates the embeddings row only when the text changes", async () => {
+test("update text change invalidates the embeddings row only when the text changes", async () => {
   await withClaimedDb((db, runId) => {
     commitMemoryDreamSession(db, {
       runId,
@@ -331,13 +305,13 @@ test("revise invalidates the embeddings row only when the text changes", async (
       cwd: "/tmp",
       processedMtimeMs: 1,
       contentHash: "h1",
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
             op: "create",
-            tempRef: "m1",
             kind: "fact",
-            observationText: "Build uses pnpm",
+            evidenceText: "Build uses pnpm",
             memoryText: "The build uses pnpm",
           },
         ],
@@ -350,7 +324,7 @@ test("revise invalidates the embeddings row only when the text changes", async (
        VALUES ('memory', ?, 'test/m', 'hash-1', ?, datetime('now'))`,
     ).run(m.id, Buffer.from(new Float32Array([1, 0]).buffer));
 
-    // A revise that keeps the text identical must preserve the embedding
+    // An update that keeps the text identical must preserve the embedding
     // (the content hash still matches the search document).
     const sameText = commitMemoryDreamSession(db, {
       runId,
@@ -359,14 +333,14 @@ test("revise invalidates the embeddings row only when the text changes", async (
       cwd: "/tmp",
       processedMtimeMs: 2,
       contentHash: "h2",
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
-            op: "revise",
+            op: "update",
             memoryId: `M:${m.id}`,
-            observationText: "Build uses pnpm",
+            evidenceText: "Build uses pnpm",
             memoryText: "The build uses pnpm",
-            expectedVersionId: m.currentVersionId,
           },
         ],
       },
@@ -384,7 +358,6 @@ test("revise invalidates the embeddings row only when the text changes", async (
 
     // A text change invalidates the stale embedding (all models); the next
     // embedding pass re-embeds from the fresh search_documents row.
-    const current = getMemoryById(db, m.id)!;
     const changed = commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s3",
@@ -392,14 +365,14 @@ test("revise invalidates the embeddings row only when the text changes", async (
       cwd: "/tmp",
       processedMtimeMs: 3,
       contentHash: "h3",
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
-            op: "revise",
+            op: "update",
             memoryId: `M:${m.id}`,
-            observationText: "Build uses pnpm",
+            evidenceText: "Build uses pnpm",
             memoryText: "The build uses pnpm and pnpm-lock.yaml",
-            expectedVersionId: current.currentVersionId,
           },
         ],
       },
@@ -417,7 +390,7 @@ test("revise invalidates the embeddings row only when the text changes", async (
   });
 });
 
-test("conflict marks both memories conflicted and removes them from projections", async () => {
+test("update and forget reject non-active targets", async () => {
   await withClaimedDb((db, runId) => {
     commitMemoryDreamSession(db, {
       runId,
@@ -426,26 +399,19 @@ test("conflict marks both memories conflicted and removes them from projections"
       cwd: "/tmp",
       processedMtimeMs: 1,
       contentHash: null,
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
             op: "create",
-            tempRef: "a",
             kind: "fact",
-            observationText: "API is REST",
+            evidenceText: "API is REST",
             memoryText: "API style is REST",
-          },
-          {
-            op: "create",
-            tempRef: "b",
-            kind: "fact",
-            observationText: "API is GraphQL",
-            memoryText: "API style is GraphQL",
           },
         ],
       },
     });
-    const [m1, m2] = listActiveMemories(db);
+    const m1 = listActiveMemories(db)[0]!;
     commitMemoryDreamSession(db, {
       runId,
       sourceSessionId: "s2",
@@ -453,156 +419,68 @@ test("conflict marks both memories conflicted and removes them from projections"
       cwd: "/tmp",
       processedMtimeMs: 2,
       contentHash: null,
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
-            op: "conflict",
-            memoryIds: [`M:${m1!.id}`, `M:${m2!.id}`],
+            op: "forget",
+            memoryId: `M:${m1.id}`,
+            evidenceText: "API moved to GraphQL",
           },
         ],
       },
     });
+    assert.equal(getMemoryById(db, m1.id)!.state, "retired");
     assert.equal(listActiveMemories(db).length, 0);
-    assert.equal(getMemoryById(db, m1!.id)!.state, "conflicted");
-    assert.equal(getMemoryById(db, m2!.id)!.state, "conflicted");
-    assert.deepEqual(ftsRowids(db), [], "conflicted memories leave FTS");
-    const docs = db
-      .prepare(`SELECT COUNT(*) AS n FROM search_documents`)
-      .get() as { n: number };
-    assert.equal(Number(docs.n), 0);
-    const conflicts = db
-      .prepare(
-        `SELECT relation FROM graph_edges WHERE relation = 'conflicts_with'`,
-      )
-      .all() as Array<{ relation: string }>;
-    assert.equal(conflicts.length, 1);
-  });
-});
-
-test("link with the retired contains relation is rejected", async () => {
-  await withClaimedDb((db, runId) => {
-    commitMemoryDreamSession(db, {
-      runId,
-      sourceSessionId: "s1",
-      sessionPath: "/tmp/s1.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: 1,
-      contentHash: "h1",
-      plan: {
-        operations: [
-          {
-            op: "create",
-            tempRef: "m1",
-            kind: "fact",
-            observationText: "Uses pnpm",
-            memoryText: "Package manager is pnpm",
-          },
-          {
-            op: "create",
-            tempRef: "m2",
-            kind: "fact",
-            observationText: "Uses bun",
-            memoryText: "Package manager is bun",
-          },
-        ],
-      },
-    });
+    // Updating or forgetting a retired memory is a category error.
     assert.throws(
       () =>
         commitMemoryDreamSession(db, {
           runId,
-          sourceSessionId: "s2",
-          sessionPath: "/tmp/s2.jsonl",
+          sourceSessionId: "s3",
+          sessionPath: "/tmp/s3.jsonl",
           cwd: "/tmp",
-          processedMtimeMs: 2,
-          contentHash: "h2",
+          processedMtimeMs: 3,
+          contentHash: null,
+          minedMessageOffset: 1,
           plan: {
             operations: [
               {
-                op: "link",
-                relation: "contains" as never,
-                fromId: "M:1",
-                toId: "M:2",
+                op: "update",
+                memoryId: `M:${m1.id}`,
+                evidenceText: "API is REST again",
               },
             ],
           },
         }),
-      /CHECK/i,
+      /retired/,
     );
-  });
-});
-
-test("lateral link relations are accepted and idempotent", async () => {
-  await withClaimedDb((db, runId) => {
-    commitMemoryDreamSession(db, {
-      runId,
-      sourceSessionId: "s1",
-      sessionPath: "/tmp/s1.jsonl",
-      cwd: "/tmp",
-      processedMtimeMs: 1,
-      contentHash: "h1",
-      plan: {
-        operations: [
-          {
-            op: "create",
-            tempRef: "m1",
-            kind: "fact",
-            observationText: "Uses pnpm",
-            memoryText: "Package manager is pnpm",
-          },
-          {
-            op: "create",
-            tempRef: "m2",
-            kind: "fact",
-            observationText: "Uses bun",
-            memoryText: "Package manager is bun",
-          },
-          {
-            op: "link",
-            relation: "related_to",
-            fromId: "m1",
-            toId: "m2",
-          },
-          {
-            op: "link",
-            relation: "related_to",
-            fromId: "M:1",
-            toId: "M:2",
-          },
-        ],
-      },
-    });
-    const edges = db
-      .prepare(`SELECT relation, state FROM graph_edges`)
-      .all() as Array<{ relation: string; state: string }>;
-    assert.equal(edges.length, 1, "duplicate active link is idempotent");
-    // Self-link is rejected.
     assert.throws(
       () =>
         commitMemoryDreamSession(db, {
           runId,
-          sourceSessionId: "s2",
-          sessionPath: "/tmp/s2.jsonl",
+          sourceSessionId: "s4",
+          sessionPath: "/tmp/s4.jsonl",
           cwd: "/tmp",
-          processedMtimeMs: 2,
-          contentHash: "h2",
+          processedMtimeMs: 4,
+          contentHash: null,
+          minedMessageOffset: 1,
           plan: {
             operations: [
               {
-                op: "link",
-                relation: "related_to",
-                fromId: "M:1",
-                toId: "M:1",
+                op: "forget",
+                memoryId: `M:${m1.id}`,
+                evidenceText: "drop it",
               },
             ],
           },
         }),
-      /cannot link a node to itself/,
+      /retired/,
     );
   });
 });
 
-test("forget soft-retires and preserves observations", async () => {
+test("forget op soft-retires and preserves the negating evidence", async () => {
   await withClaimedDb((db, runId) => {
     commitMemoryDreamSession(db, {
       runId,
@@ -611,25 +489,46 @@ test("forget soft-retires and preserves observations", async () => {
       cwd: "/tmp",
       processedMtimeMs: 1,
       contentHash: null,
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
             op: "create",
-            tempRef: "m1",
             kind: "preference",
-            observationText: "No emoji",
+            evidenceText: "No emoji",
             memoryText: "Do not use emoji in commits",
           },
         ],
       },
     });
     const m = listActiveMemories(db)[0]!;
-    retireMemoryNode(db, `M:${m.id}`);
+    commitMemoryDreamSession(db, {
+      runId,
+      sourceSessionId: "s2",
+      sessionPath: "/tmp/s2.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 2,
+      contentHash: null,
+      minedMessageOffset: 1,
+      plan: {
+        operations: [
+          {
+            op: "forget",
+            memoryId: `M:${m.id}`,
+            evidenceText: "Emoji are fine actually",
+          },
+        ],
+      },
+    });
     assert.equal(getMemoryById(db, m.id)!.state, "retired");
     assert.equal(listActiveMemories(db).length, 0);
-    assert.ok(listObservationsForMemory(db, m.id).length >= 1);
-    assert.equal(getSourceSessionCheckpoint(db, "s1")?.sessionId, "s1");
     assert.deepEqual(ftsRowids(db), [], "retired memory leaves FTS");
+    // The negating evidence is recorded on the memory row: audit records why
+    // it was retired, and the version chain is untouched.
+    const row = getMemoryById(db, m.id)!;
+    assert.equal(row.retiredBySessionId, "s2");
+    assert.equal(row.retiredEvidenceText, "Emoji are fine actually");
+    assert.equal(listMemoryVersions(db, m.id).length, 1, "versions preserved");
   });
 });
 
@@ -655,13 +554,13 @@ test("changed content with a preserved mtime is reprocessed, not skipped", async
       cwd: "/tmp",
       processedMtimeMs: 1000,
       contentHash: "hash-v1",
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
             op: "create",
-            tempRef: "t",
             kind: "fact",
-            observationText: "X is 1",
+            evidenceText: "X is 1",
             memoryText: "X is 1",
           },
         ],
@@ -678,13 +577,13 @@ test("changed content with a preserved mtime is reprocessed, not skipped", async
       cwd: "/tmp",
       processedMtimeMs: 1000,
       contentHash: "hash-v2",
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
             op: "create",
-            tempRef: "t",
             kind: "fact",
-            observationText: "X is 2",
+            evidenceText: "X is 2",
             memoryText: "X is 2",
           },
         ],
@@ -701,6 +600,7 @@ test("changed content with a preserved mtime is reprocessed, not skipped", async
       cwd: "/tmp",
       processedMtimeMs: 900,
       contentHash: "hash-v2",
+      minedMessageOffset: 1,
       plan: { operations: [] },
     });
     assert.equal(r3.applied, false);
@@ -714,6 +614,7 @@ test("changed content with a preserved mtime is reprocessed, not skipped", async
       cwd: "/tmp",
       processedMtimeMs: 500,
       contentHash: null,
+      minedMessageOffset: 1,
       plan: { operations: [{ op: "no_op", reason: "seed" }] },
     });
     assert.equal(legacy.applied, true);
@@ -724,6 +625,7 @@ test("changed content with a preserved mtime is reprocessed, not skipped", async
       cwd: "/tmp",
       processedMtimeMs: 400,
       contentHash: null,
+      minedMessageOffset: 1,
       plan: { operations: [{ op: "no_op", reason: "again" }] },
     });
     assert.equal(r4.applied, false);
@@ -740,13 +642,13 @@ test("citation events are recorded and observability-only", async () => {
       cwd: "/tmp",
       processedMtimeMs: 1,
       contentHash: "h1",
+      minedMessageOffset: 1,
       plan: {
         operations: [
           {
             op: "create",
-            tempRef: "m1",
             kind: "fact",
-            observationText: "Uses pnpm",
+            evidenceText: "Uses pnpm",
             memoryText: "Package manager is pnpm",
           },
         ],
@@ -834,13 +736,13 @@ test("two connections: a second reader sees committed writes", () => {
         cwd: "/tmp",
         processedMtimeMs: 1,
         contentHash: "h1",
+        minedMessageOffset: 1,
         plan: {
           operations: [
             {
               op: "create",
-              tempRef: "m1",
               kind: "fact",
-              observationText: "Uses pnpm",
+              evidenceText: "Uses pnpm",
               memoryText: "Package manager is pnpm",
             },
           ],
@@ -886,13 +788,13 @@ test("a memory created by one connection is searchable via FTS on another", () =
         cwd: "/tmp",
         processedMtimeMs: 1,
         contentHash: "h1",
+        minedMessageOffset: 1,
         plan: {
           operations: [
             {
               op: "create",
-              tempRef: "m1",
               kind: "fact",
-              observationText: "CI caches the pnpm store",
+              evidenceText: "CI caches the pnpm store",
               memoryText: "CI caches the pnpm store",
             },
           ],
@@ -920,5 +822,215 @@ test("generation advances only via incrementMemoryActivityGeneration", async () 
     incrementMemoryActivityGeneration(db);
     incrementMemoryActivityGeneration(db);
     assert.equal(getMemoryActivityGeneration(db), 2);
+  });
+});
+
+test("create auto-merges into an existing active memory with identical normalized text", async () => {
+  await withClaimedDb((db, runId) => {
+    commitMemoryDreamSession(db, {
+      runId,
+      sourceSessionId: "s1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1,
+      contentHash: "h1",
+      minedMessageOffset: 1,
+      plan: {
+        operations: [
+          {
+            op: "create",
+            kind: "preference",
+            evidenceText: "I prefer tabs",
+            memoryText: "Prefer tabs over spaces",
+          },
+        ],
+      },
+    });
+    const first = listActiveMemories(db)[0]!;
+    assert.equal(first.text, "Prefer tabs over spaces");
+
+    // A later session restates the same preference with drifted case and
+    // spacing: the normalized text collides, so the create must append a
+    // restatement version to the existing memory instead of a new node.
+    commitMemoryDreamSession(db, {
+      runId,
+      sourceSessionId: "s2",
+      sessionPath: "/tmp/s2.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 2,
+      contentHash: "h2",
+      minedMessageOffset: 1,
+      plan: {
+        operations: [
+          {
+            op: "create",
+            kind: "preference",
+            evidenceText: "Tabs, please",
+            memoryText: "  Prefer   TABS over spaces ",
+          },
+        ],
+      },
+    });
+
+    const active = listActiveMemories(db);
+    assert.equal(active.length, 1, "no near-duplicate memory node is created");
+    assert.equal(active[0]!.id, first.id);
+    assert.equal(
+      active[0]!.recurrence,
+      2,
+      "recurrence counts the two sessions",
+    );
+    assert.equal(
+      listMemoryVersions(db, first.id).length,
+      2,
+      "both sessions' evidence lands on the existing memory",
+    );
+  });
+});
+
+test("two creates with identical text in one commit collapse to one memory", async () => {
+  await withClaimedDb((db, runId) => {
+    commitMemoryDreamSession(db, {
+      runId,
+      sourceSessionId: "s1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1,
+      contentHash: "h1",
+      minedMessageOffset: 1,
+      plan: {
+        operations: [
+          {
+            op: "create",
+            kind: "fact",
+            evidenceText: "Build uses pnpm",
+            memoryText: "The build uses pnpm",
+          },
+          {
+            op: "create",
+            kind: "fact",
+            evidenceText: "CI uses pnpm",
+            memoryText: "THE BUILD USES Pnpm",
+          },
+        ],
+      },
+    });
+    const active = listActiveMemories(db);
+    assert.equal(active.length, 1);
+    assert.equal(active[0]!.recurrence, 1, "one session, one counted source");
+    assert.equal(listMemoryVersions(db, active[0]!.id).length, 2);
+  });
+});
+
+test("update into another active memory's normalized text fails closed", async () => {
+  await withClaimedDb((db, runId) => {
+    commitMemoryDreamSession(db, {
+      runId,
+      sourceSessionId: "s1",
+      sessionPath: "/tmp/s1.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1,
+      contentHash: "h1",
+      minedMessageOffset: 1,
+      plan: {
+        operations: [
+          {
+            op: "create",
+            kind: "preference",
+            evidenceText: "Use tabs",
+            memoryText: "Use tabs for indentation",
+          },
+        ],
+      },
+    });
+    const tabs = listActiveMemories(db)[0]!;
+    commitMemoryDreamSession(db, {
+      runId,
+      sourceSessionId: "s2",
+      sessionPath: "/tmp/s2.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 2,
+      contentHash: "h2",
+      minedMessageOffset: 1,
+      plan: {
+        operations: [
+          {
+            op: "create",
+            kind: "preference",
+            evidenceText: "Use spaces",
+            memoryText: "Use spaces for indentation",
+          },
+        ],
+      },
+    });
+
+    // Reinforcing the tabs memory into the spaces memory's text collides
+    // with an active memory and must fail the commit loudly, not merge
+    // silently.
+    assert.throws(
+      () =>
+        commitMemoryDreamSession(db, {
+          runId,
+          sourceSessionId: "s3",
+          sessionPath: "/tmp/s3.jsonl",
+          cwd: "/tmp",
+          processedMtimeMs: 3,
+          contentHash: "h3",
+          minedMessageOffset: 1,
+          plan: {
+            operations: [
+              {
+                op: "update",
+                memoryId: `M:${tabs.id}`,
+                evidenceText: "Actually spaces",
+                memoryText: "Use spaces for indentation",
+              },
+            ],
+          },
+        }),
+      /UNIQUE/,
+    );
+    const active = listActiveMemories(db);
+    assert.equal(active.length, 2);
+    const tabsAfter = listActiveMemories(db).find((m) => m.id === tabs.id)!;
+    assert.equal(tabsAfter.text, "Use tabs for indentation");
+  });
+});
+
+test("commit advances the incremental cursor; a same-hash replay leaves it untouched", async () => {
+  await withClaimedDb((db, runId) => {
+    commitMemoryDreamSession(db, {
+      runId,
+      sourceSessionId: "sess-grow",
+      sessionPath: "/tmp/sess-grow.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1000,
+      contentHash: "h1",
+      minedMessageOffset: 7,
+      plan: { operations: [{ op: "no_op", reason: "checkpoint" }] },
+    });
+    assert.equal(
+      getSourceSessionCheckpoint(db, "sess-grow")!.minedMessageOffset,
+      7,
+    );
+
+    // Same bytes replayed later (identical content hash) is a no-op that
+    // must not move the cursor, even if the caller claims a bigger offset.
+    const replay = commitMemoryDreamSession(db, {
+      runId,
+      sourceSessionId: "sess-grow",
+      sessionPath: "/tmp/sess-grow.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 2000,
+      contentHash: "h1",
+      minedMessageOffset: 99,
+      plan: { operations: [{ op: "no_op", reason: "replay" }] },
+    });
+    assert.equal(replay.applied, false);
+    assert.equal(replay.reason, "already checkpointed");
+    assert.equal(
+      getSourceSessionCheckpoint(db, "sess-grow")!.minedMessageOffset,
+      7,
+    );
   });
 });

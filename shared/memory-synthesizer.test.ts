@@ -155,13 +155,13 @@ test("purpose-specific prompts load; briefing prompt states brevity is not penal
   assert.ok(
     briefing.includes("user preferences section is rendered separately"),
   );
-  assert.ok(briefing.includes("<task>"));
+  assert.ok(briefing.includes("<request>"));
   assert.ok(search.includes("Memory search"));
   assert.ok(search.includes("No relevant memories found"));
-  assert.ok(search.includes("<task>"));
+  assert.ok(search.includes("<request>"));
 });
 
-test("the user message orders memories, then the delimited task, then instructions", async () => {
+test("the user message orders memories, then the delimited request, then instructions", async () => {
   await withClaimedDb(async (db, runId) => {
     seed(db, runId);
     let captured = "";
@@ -181,12 +181,14 @@ test("the user message orders memories, then the delimited task, then instructio
       },
     });
     const payloadIdx = captured.indexOf("Memory payload:");
-    const taskIdx = captured.indexOf("<task>");
+    const requestIdx = captured.indexOf("<request>");
     const tailIdx = captured.indexOf("Instructions:");
-    assert.ok(payloadIdx >= 0 && taskIdx > payloadIdx && tailIdx > taskIdx);
+    assert.ok(
+      payloadIdx >= 0 && requestIdx > payloadIdx && tailIdx > requestIdx,
+    );
     assert.ok(captured.includes("Do not use emoji in commits"));
     assert.ok(captured.includes("any commit style preferences?"));
-    assert.ok(captured.includes("untrusted relevance data"));
+    assert.ok(captured.includes("not a task for you"));
     assert.ok(captured.includes("strict JSON only"));
   });
 });

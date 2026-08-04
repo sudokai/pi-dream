@@ -493,7 +493,7 @@ test("mutating an UNCITED memory mid-call still produces the briefing", async ()
   }
 });
 
-test("the long subsequent-review fixture flows through the delimited task block untrusted", async () => {
+test("the long subsequent-review fixture flows through the delimited request block untrusted", async () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     const claim = acquireMemoryRunClaim(db, "manual");
@@ -520,11 +520,11 @@ test("the long subsequent-review fixture flows through the delimited task block 
     });
     assert.equal(result.ok, true);
     if (!result.ok) return;
-    // The task is delimited and instruction-free: only cited durable context
+    // The request is delimited and instruction-free: only cited durable context
     // reaches the rendered briefing.
-    assert.ok(capturedUser.includes("<task>"));
+    assert.ok(capturedUser.includes("<request>"));
     assert.ok(capturedUser.includes(query));
-    assert.ok(capturedUser.includes("untrusted relevance data"));
+    assert.ok(capturedUser.includes("not a task for you"));
     const content = result.message!.content;
     assert.ok(content.includes("no emoji in commit messages"));
     for (const forbidden of [

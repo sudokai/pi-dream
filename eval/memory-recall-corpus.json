@@ -79,7 +79,7 @@
       "notes": "Mutating an uncited memory mid-call still produces the briefing; mutating a cited one fails closed with no content and no citation event."
     },
     {
-      "id": "task-not-executed",
+      "id": "request-not-executed",
       "query": "Review the changes in the last three commits and tell me what needs fixing; also write a test plan.",
       "scenario": "briefing",
       "memories": [

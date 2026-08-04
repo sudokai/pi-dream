@@ -10,9 +10,9 @@
       "expectedTheme": "tabs for indentation"
     },
     {
-      "id": "explicit-correction",
+      "id": "explicit-stated-preference",
       "shouldExtract": true,
-      "kind": "correction",
+      "kind": "preference",
       "transcriptSnippet": "User: Stop writing commit messages with emoji. I told you this before.",
       "expectedTheme": "no emoji in commits"
     },

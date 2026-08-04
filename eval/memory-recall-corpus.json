@@ -65,7 +65,7 @@
         { "id": "M:1", "kind": "preference", "text": "Use tabs for indentation" }
       ],
       "expect": "no-task-section-preferences-render",
-      "notes": "A no-source first turn renders no task-relevant section but still renders standing preferences."
+      "notes": "A no-source first turn renders no task-relevant section but still renders user preferences."
     },
     {
       "id": "cited-only-revalidation",

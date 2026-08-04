@@ -4,7 +4,7 @@ import {
   buildMemorySessionBriefing,
   createMemoryBriefingSignal,
   renderMemoryBriefingMessage,
-  renderMemoryStandingPreferences,
+  renderMemoryUserPreferences,
 } from "./memory-briefing.ts";
 import {
   closeMemoryDatabase,
@@ -95,13 +95,13 @@ function citationCount(
   );
 }
 
-test("success renders task-relevant context then standing preferences, and records citations", async () => {
+test("success renders task-relevant context then user preferences, and records citations", async () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     const claim = acquireMemoryRunClaim(db, "manual");
     assert.equal(claim.acquired, true);
     seed(db, claim.runId!);
-    // A third memory adds a standing preference beyond the task-relevant one.
+    // A third memory adds a user preference beyond the task-relevant one.
     commitMemoryDreamSession(db, {
       runId: claim.runId!,
       sourceSessionId: "s2",
@@ -146,8 +146,8 @@ test("success renders task-relevant context then standing preferences, and recor
     assert.ok(content.includes("No emoji in commits."));
     assert.ok(
       content.indexOf("## Context relevant to this session") <
-        content.indexOf("## Standing preferences"),
-      "task-relevant context comes before standing preferences",
+        content.indexOf("## User preferences"),
+      "task-relevant context comes before user preferences",
     );
     assert.ok(content.includes("Do not use emoji in commits"));
     assert.ok(content.includes("Prefer tabs over spaces"));
@@ -190,7 +190,7 @@ test("the deterministic preference section renders ahead of the call and survive
     if (!result.ok) return;
     assert.ok(result.message, "cancel must not leave the turn empty");
     assert.ok(
-      result.message!.content.includes("## Standing preferences"),
+      result.message!.content.includes("## User preferences"),
       "the preference section is preserved on cancel",
     );
     assert.ok(
@@ -220,7 +220,7 @@ test("synthesizer failure renders preferences only, with an audit and no citatio
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.ok(result.message, "preferences still render on failure");
-    assert.ok(result.message!.content.includes("## Standing preferences"));
+    assert.ok(result.message!.content.includes("## User preferences"));
     assert.equal(result.message!.details.status, "synthesizer_failed");
     assert.equal(result.audit?.status, "synthesizer_failed");
     assert.equal(citationCount(db), 0, "no citations on failure");
@@ -245,7 +245,7 @@ test("a no-source first turn renders no task-relevant section but does render pr
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.ok(result.message, "preferences render on a no-source turn");
-    assert.ok(result.message!.content.includes("## Standing preferences"));
+    assert.ok(result.message!.content.includes("## User preferences"));
     assert.ok(
       !result.message!.content.includes("## Context relevant to this session"),
     );
@@ -375,7 +375,7 @@ test("provider context insufficiency fails closed, persists for status, and neve
     if (!result.ok) return;
     assert.equal(calls, 0, "no truncation: the model is never called");
     assert.ok(
-      result.message!.content.includes("## Standing preferences"),
+      result.message!.content.includes("## User preferences"),
       "preferences still render",
     );
     assert.equal(result.audit?.status, "provider_context_insufficient");
@@ -450,7 +450,7 @@ test("mutating a CITED memory mid-call yields no content, no citations, and pref
       !result.message!.content.includes("No emoji in commits."),
       "no partial answer is emitted",
     );
-    assert.ok(result.message!.content.includes("## Standing preferences"));
+    assert.ok(result.message!.content.includes("## User preferences"));
     assert.equal(result.message!.details.status, "synthesizer_failed");
     assert.equal(citationCount(db), 0, "no citation event on stale sources");
   } finally {
@@ -574,7 +574,7 @@ test("a briefing over three memories is materially shorter than the output cap",
   }
 });
 
-test("renderMemoryStandingPreferences lists active preferences only, id-ascending", () => {
+test("renderMemoryUserPreferences lists active preferences only, id-ascending", () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     const claim = acquireMemoryRunClaim(db, "manual");
@@ -611,7 +611,7 @@ test("renderMemoryStandingPreferences lists active preferences only, id-ascendin
       },
     });
     // Both preferences render id-ascending; facts never do.
-    const text = renderMemoryStandingPreferences(db);
+    const text = renderMemoryUserPreferences(db);
     assert.ok(text.includes("- M:2 (preference): Prefer tabs over spaces"));
     assert.ok(text.includes("- M:3 (preference): No emoji in commits"));
     assert.ok(!text.includes("Build uses pnpm"), "facts are not preferences");
@@ -621,7 +621,7 @@ test("renderMemoryStandingPreferences lists active preferences only, id-ascendin
     );
     // One preference retired: it must not render.
     db.prepare(`UPDATE memories SET state = 'retired' WHERE id = 3`).run();
-    const afterRetire = renderMemoryStandingPreferences(db);
+    const afterRetire = renderMemoryUserPreferences(db);
     assert.ok(!afterRetire.includes("- M:3 (preference)"));
     assert.ok(afterRetire.includes("- M:2 (preference)"));
   } finally {
@@ -636,7 +636,7 @@ test("renderMemoryBriefingMessage orders context before preferences and adds the
   );
   assert.ok(
     content.indexOf("## Context relevant to this session") <
-      content.indexOf("## Standing preferences"),
+      content.indexOf("## User preferences"),
   );
   assert.ok(
     content
@@ -650,10 +650,10 @@ test("renderMemoryBriefingMessage orders context before preferences and adds the
     null,
   );
   assert.ok(!noAnswer.includes("## Context relevant to this session"));
-  assert.ok(noAnswer.includes("## Standing preferences"));
+  assert.ok(noAnswer.includes("## User preferences"));
 });
 
-test("renderMemoryStandingPreferences caps the deterministic section and notes partialness", () => {
+test("renderMemoryUserPreferences caps the deterministic section and notes partialness", () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     const claim = acquireMemoryRunClaim(db, "manual");
@@ -675,7 +675,7 @@ test("renderMemoryStandingPreferences caps the deterministic section and notes p
       minedMessageOffset: 1,
       plan: { operations: ops },
     });
-    const text = renderMemoryStandingPreferences(db);
+    const text = renderMemoryUserPreferences(db);
     assert.ok(
       text.length <= MEMORY_BRIEFING_MAX_CHARS + 64,
       "the deterministic section stays bounded",

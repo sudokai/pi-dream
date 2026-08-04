@@ -16,12 +16,12 @@ Requires **Node 24+** (native `node:sqlite`).
 
 ## What it does
 
-| Surface            | Behavior                                                                                                                                                                                       |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| First turn         | Retrieval (FTS5 + MiniLM, RRF-fused) feeds one synthesis call → task-relevant context + a deterministic standing-preferences section, rendered as a visible `pi-dream-briefing` custom message |
-| `memory_search`    | Same retrieval + one-call synthesizer: a grounded answer with sources; records citations for cited sources only                                                                                |
-| `/memory`          | `status`, `list [query]`, `open <id>`, `dream`, `pause`, `resume`, `forget <id>`; `list` and `open` also append a visible `pi-dream-audit` entry                                               |
-| Automatic dreaming | After ≥10 settled turns, ≥120 minutes, and advanced transcripts → detached `--no-session` dreamer mines eligible sessions                                                                      |
+| Surface            | Behavior                                                                                                                                                                                   |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| First turn         | Retrieval (FTS5 + MiniLM, RRF-fused) feeds one synthesis call → task-relevant context + a deterministic user-preferences section, rendered as a visible `pi-dream-briefing` custom message |
+| `memory_search`    | Same retrieval + one-call synthesizer: a grounded answer with sources; records citations for cited sources only                                                                            |
+| `/memory`          | `status`, `list [query]`, `open <id>`, `dream`, `pause`, `resume`, `forget <id>`; `list` and `open` also append a visible `pi-dream-audit` entry                                           |
+| Automatic dreaming | After ≥10 settled turns, ≥120 minutes, and advanced transcripts → detached `--no-session` dreamer mines eligible sessions                                                                  |
 
 **Never** edits `AGENTS.md`, injects hidden system-prompt memory, or physically deletes history on forget (soft retirement only).
 
@@ -32,7 +32,7 @@ Requires **Node 24+** (native `node:sqlite`).
 - **An empty vector index never blocks the first turn on a MiniLM download.** Query embedding loads the embedder on the interactive first turn only when the vector index is non-empty; an unavailable embedder degrades to lexical-only retrieval.
 - **The payload is bounded by whole units.** Memories accumulate in fused-rank order until the next unit would exceed the input budget (40,000 chars) or the unit cap (150) — never split mid-text. When the retrieved set exceeds the budget, the payload truncates by fused rank and logs the Phase 2 trigger with the observed char count.
 - **Exactly one synthesis call does relevance.** The model judges relevance, categorizes, and writes prose over the payload, returning strict JSON (`{"content","sources"}`) with one parse retry, then fail-closed. Cited memories are revalidated after the call: an uncited memory changing mid-call is fine; a cited one changing produces no content and no citation event. Prompt ordering is memories-first, delimited-task-second, instructions-last: the task is untrusted relevance data the briefing must never execute.
-- **The briefing is two sections.** Task-relevant context first (only when sources exist), then standing preferences — rendered deterministically ahead of the model call and preserved on cancel or synthesis failure. Output is capped at 20,000 chars with no target length: brevity is not penalized, irrelevant memories are omitted entirely.
+- **The briefing is two sections.** Task-relevant context first (only when sources exist), then user preferences — rendered deterministically ahead of the model call and preserved on cancel or synthesis failure. Output is capped at 20,000 chars with no target length: brevity is not penalized, irrelevant memories are omitted entirely.
 - **Fail-closed everywhere.** Synthesizer failures skip the task-relevant section with an audit entry (preferences still render); `memory_search` surfaces named tool errors; a recall model whose declared context cannot hold the complete request plus the output reserve fails closed **without truncating the payload**, and the condition is reported by `/memory status` and once at startup. A legacy store (old schema) is wiped and re-mined from transcripts.
 
 ## Data layout
@@ -80,7 +80,7 @@ All fields are optional except `version` and `enabled`; missing optional fields 
 
 **Removed keys**: `briefingTokenBudget`, `hotHeatThreshold`, `synthesizerContextBudget`, `synthesizerAnswerBudget`, `noveltyBoost`, `noveltyGenerations`, `heatDecay`, and the earlier `hybridPoolSize`, `rrfK`, `semanticFloor`, `coldHeatThreshold`, `consolidationMergeBound`, and `synthesizerMaxSteps` no longer exist. A `config.json` containing them (or any other unknown key) fails closed — memory is disabled for the workspace until the file is repaired. Budgets are fixed constants now (payload 40,000 chars / 150 units; briefing 20,000 chars), not configuration.
 
-**Slow recall models**: the briefing has no time cap — the loader stays up until synthesis completes or you press Escape (the standing-preferences section is still shown; the attempt is audited; no citations are recorded). On slow or high-thinking session models, set `recallModel` and `recallThinking` (e.g. `"off"`) per workspace so the first turn isn't delayed by a heavyweight recall model. A recall model whose declared context window cannot hold the complete request plus the output reserve fails closed (no truncated payload); `/memory status` shows the condition.
+**Slow recall models**: the briefing has no time cap — the loader stays up until synthesis completes or you press Escape (the user-preferences section is still shown; the attempt is audited; no citations are recorded). On slow or high-thinking session models, set `recallModel` and `recallThinking` (e.g. `"off"`) per workspace so the first turn isn't delayed by a heavyweight recall model. A recall model whose declared context window cannot hold the complete request plus the output reserve fails closed (no truncated payload); `/memory status` shows the condition.
 
 ## Environment variables
 

@@ -21,5 +21,5 @@ The dreamer previously mined in a vacuum: it re-read a growing session's full tr
 ## Consequences
 
 - Schema v6 wipes and re-mines (per the established wipe-on-bump policy); the re-mine is itself incremental and sets cursors.
-- Non-proliferation ("one real preference/fact = one active memory node") is enforced by schema for exact duplicates and by the read-path for paraphrased restatements.
+- Non-proliferation ("one real user preference/workspace fact = one active memory node") is enforced by schema for exact duplicates and by the read-path for paraphrased restatements.
 - Near-duplicates that still arise (paraphrased restatements the model misses) are bounded and auditable; recurrence never inflates.

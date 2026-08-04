@@ -3,7 +3,7 @@
  * onAbort). With a single synthesis call the gathered context is the complete
  * payload, so a partial answer would just re-issue an identical request and
  * there is no partial-answer path. `cancellable: true` is explicit because
- * Escape-cancel is load-bearing: the deterministic standing-preferences
+ * Escape-cancel is load-bearing: the deterministic user-preferences
  * section is preserved on cancel.
  */
 class MemoryBriefingLoader extends BorderedLoader {
@@ -303,7 +303,7 @@ export default function piDreamExtension(pi: ExtensionAPI) {
 
       // Model-backed synthesis can take seconds, so show a loader while it
       // runs. Escape cancels the synthesis outright; the deterministic
-      // standing-preferences section was already rendered inside the builder
+      // user-preferences section was already rendered inside the builder
       // and is preserved in the result.
       const abort = new AbortController();
       const briefing = buildMemorySessionBriefing({

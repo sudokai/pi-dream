@@ -4,7 +4,7 @@ Workspace-scoped **adaptive memory** for pi. Dream extracts durable user prefere
 
 ## Core terms
 
-**Memory**: A stable node — a durable user preference or workspace fact — whose current text is a rebuildable projection of append-only **memory versions**. Every memory is a single renderable unit capped at 400 characters, so payload accounting never splits a text mid-way. Prefixed API id: `M:<id>`. One real preference or fact = one memory; updates refine the wording in place, never a new node.
+**Memory**: A stable node — a durable user preference or workspace fact — whose current text is a rebuildable projection of append-only **memory versions**. Every memory is a single renderable unit capped at 400 characters, so payload accounting never splits a text mid-way. Prefixed API id: `M:<id>`. Each memory carries one of two kinds — `preference` (user preference) or `fact` (workspace fact; the internal spelling). One real user preference or workspace fact = one memory; updates refine the wording in place, never a new node.
 
 **Memory version**: An immutable event row in a memory's complete life: one per `create` or `update`, each carrying the distilled wording, the verbatim **evidence quote**, the source session, and a link to its predecessor. Nothing is ever deleted or rewritten; retirement is recorded on the memory row, not as a version.
 
@@ -14,7 +14,7 @@ Workspace-scoped **adaptive memory** for pi. Dream extracts durable user prefere
 
 **Synthesizer**: Exactly one model call serving both the first-turn briefing and `memory_search`. The LLM performs relevance judgment, selection, categorization, and prose over the payload; the model returns strict JSON (`{"content", "sources"}`) with one parse retry, then fails closed. Cited memories are revalidated against the store after the call (an uncited memory changing mid-call is fine; a cited one changing fails closed with no content and no citation event). Provider-context insufficiency fails closed without truncating the payload and is reported by `/memory status`.
 
-**Briefing**: The visible first-turn custom message (`customType: "pi-dream-briefing"`, `display: true`) containing the synthesized task-relevant context followed by a deterministic **standing-preferences** section (active preference memories, id-ascending) that is rendered before the model call and preserved on cancel or synthesis failure. Never hidden system-prompt content; never a raw dump of stored nodes.
+**Briefing**: The visible first-turn custom message (`customType: "pi-dream-briefing"`, `display: true`) containing the synthesized task-relevant context followed by a deterministic **user-preferences** section (active preference memories, id-ascending) that is rendered before the model call and preserved on cancel or synthesis failure. Never hidden system-prompt content; never a raw dump of stored nodes.
 
 **Citation event**: An observability record that a memory was cited as a source in a synthesized answer (`source` `briefing` or `search`). There is no heat score, no decay, no novelty, and no ranking input derived from citations; `activity_generation` is an audit-only session counter and never enters ranking.
 
@@ -47,7 +47,7 @@ The detached dreamer submits only structured ops: `create`, `update`, `forget`, 
 
 ## Retired vocabulary
 
-The following terms are retired and must not be reintroduced: **Summary** (and `S:` ids), **Tree / top layer / tree root / containment** (`contains` edges), **Consolidation pass** (merging into summaries), **Promote / resurfacing**, **Heat / hot threshold / novelty**, **Recall events** (now citation events), **memory_open** (agent tool), **Observation** (and `O:` ids; evidence now lives on each memory version), and **Graph edge** (supersession is in-place now; the version chain records history). Compaction of large corpora returns in Phase 2 as **clustering** (a derived, disposable projection) — never as maintained tree state.
+The following terms are retired and must not be reintroduced: **Summary** (and `S:` ids), **Tree / top layer / tree root / containment** (`contains` edges), **Consolidation pass** (merging into summaries), **Promote / resurfacing**, **Heat / hot threshold / novelty**, **Recall events** (now citation events), **Standing preferences** (now user preferences), **memory_open** (agent tool), **Observation** (and `O:` ids; evidence now lives on each memory version), and **Graph edge** (supersession is in-place now; the version chain records history). Compaction of large corpora returns in Phase 2 as **clustering** (a derived, disposable projection) — never as maintained tree state.
 
 ## Out of vocabulary
 

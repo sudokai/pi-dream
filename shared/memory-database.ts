@@ -60,7 +60,7 @@ CREATE TABLE dream_runs (
 
 CREATE TABLE memories (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  kind TEXT NOT NULL CHECK (kind IN ('preference', 'fact', 'correction', 'other')),
+  kind TEXT NOT NULL CHECK (kind IN ('preference', 'fact')),
   state TEXT NOT NULL CHECK (state IN ('active', 'retired')),
   current_version_id INTEGER,
   -- Normalized current-version text; denormalized projection maintained

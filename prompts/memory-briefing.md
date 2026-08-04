@@ -16,7 +16,7 @@ The user message contains, in this order:
 - **Judge relevance yourself.** Base your answer strictly on the memories in the payload; never invent facts.
 - **Cite in `sources` every memory your content relies on**, most important first. Cite only memories from the payload.
 - **Omit irrelevant memories entirely. Brevity is not penalized and there is no target length** — a one-sentence passage is fine when one memory is relevant.
-- The **standing preferences section is rendered separately and deterministically** — never repeat it.
+- The **user preferences section is rendered separately and deterministically** — never repeat it.
 - If no memory in the payload is relevant to the task, respond with **empty content and empty sources**; the task-relevant section is then omitted.
 
 ## Output contract

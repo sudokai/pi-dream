@@ -9,9 +9,8 @@ export type MemoryNodeId = `M:${number}`;
 /** Lifecycle state for memories. */
 export type MemoryLifecycleState = "active" | "retired";
 
-/** Kind of durable knowledge stored in a memory. */
-export type MemoryKnowledgeKind =
-  "preference" | "fact" | "correction" | "other";
+/** Kind of durable knowledge stored in a memory (`fact` = workspace fact). */
+export type MemoryKnowledgeKind = "preference" | "fact";
 
 /** Where a citation event originated. */
 export type MemoryCitationSource = "briefing" | "search";
@@ -22,7 +21,7 @@ export type MemorySearchableNodeType = "memory";
 /** Maximum characters for one memory body or evidence quote. */
 export const MEMORY_MAX_TEXT_CHARS = 400;
 
-/** Hard cap on briefing content (chars; no target length); shared by the synthesized section and the standing-preferences section. */
+/** Hard cap on briefing content (chars; no target length); shared by the synthesized section and the user-preferences section. */
 export const MEMORY_BRIEFING_MAX_CHARS = 20_000;
 
 /** Synthesizer input budget: whole memory units only, never split mid-text. */

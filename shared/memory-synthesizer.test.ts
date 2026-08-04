@@ -153,7 +153,7 @@ test("purpose-specific prompts load; briefing prompt states brevity is not penal
   assert.ok(briefing.includes("memory briefer"));
   assert.ok(briefing.includes("Brevity is not penalized"));
   assert.ok(
-    briefing.includes("standing preferences section is rendered separately"),
+    briefing.includes("user preferences section is rendered separately"),
   );
   assert.ok(briefing.includes("<task>"));
   assert.ok(search.includes("Memory search"));

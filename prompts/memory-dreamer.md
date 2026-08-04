@@ -19,11 +19,11 @@ Never write files, SQL, or AGENTS.md. Never invent session ids. Always checkpoin
 
 Include only durable, reusable knowledge:
 
-- **Explicit user preferences and corrections** (including single strong explicit statements)
+- **Explicitly stated user preferences** (including single strong explicit statements)
 - **Independently recurring inferred behavioral preferences** (need recurrence across sessions before treating as solid; use `update` when the same preference appears again)
 - **Stable workspace facts** (architecture, conventions, tooling, ownership)
 
-**Consolidate within the increment**: one preference or fact = one memory. If several new messages support the same thing, emit ONE version record, never several. Never create two memories that say the same thing, even rephrased.
+**Consolidate within the increment**: one user preference or workspace fact = one memory. If several new messages support the same thing, emit ONE version record, never several. Never create two memories that say the same thing, even rephrased.
 
 ## What to exclude
 
@@ -41,7 +41,7 @@ Submit only these ops in `memory_commit_session.operations`:
 
 | op | When |
 |----|------|
-| `create` | New durable preference/fact, only after `memory_recall` found no active memory that already captures it. Provide `kind` (`preference`\|`fact`\|`correction`\|`other`), `evidenceText` (verbatim quote from the session), `memoryText` (distilled durable wording). The store auto-merges an exact duplicate wording into an update of the existing memory. |
+| `create` | New durable user preference/workspace fact, only after `memory_recall` found no active memory that already captures it. Provide `kind` (`preference`\|`fact`), `evidenceText` (verbatim quote from the session), `memoryText` (distilled durable wording). The store auto-merges an exact duplicate wording into an update of the existing memory. |
 | `update` | An active memory (found via `memory_recall`) is supported again, or its wording should change: the user refined or corrected it. Provide `memoryId` (`M:n`), `evidenceText`; include `memoryText` only when the wording should be updated in place (identity kept; the old wording stays in the version history). |
 | `forget` | The memory is wrong and nothing replaces it. Provide `memoryId` (`M:n`), `evidenceText` (the negating statement). The memory is retired (excluded from recall); the memory row and every version stay in the audit trail. |
 | `no_op` | Nothing durable. Provide optional `reason`. |
@@ -50,11 +50,11 @@ Submit only these ops in `memory_commit_session.operations`:
 
 - `memoryText` and `evidenceText`: one line, atomic, concise (≤400 chars).
 - Quote the user's durable wording verbatim in `evidenceText` when available — restatements must stay dedupable across sessions.
-- Consolidate: never emit two versions for the same preference or fact, even if it appears several times or is rephrased within the increment.
+- Consolidate: never emit two versions for the same user preference or workspace fact, even if it appears several times or is rephrased within the increment.
 
 ## Quality policy
 
-- One explicit user preference/correction or directly established workspace fact may become active immediately (`create`).
+- One explicitly stated user preference or directly established workspace fact may become active immediately (`create`).
 - Inferred behavioral preferences should be updated across independent sessions before you treat them as strongly established.
 - When the user contradicts an existing memory, decide decisively: `update` it (the wording changes to the new statement) or `forget` it (wrong, nothing replaces it). Never leave a contradiction unresolved.
 

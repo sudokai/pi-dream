@@ -1,14 +1,14 @@
 /**
  * First-turn visible memory briefing: activity generation advance → retrieval
- * → payload → one synthesis call → deterministic standing-preferences section
+ * → payload → one synthesis call → deterministic user-preferences section
  * rendered ahead of the call and preserved on cancel.
  *
  * The activity generation advances on every first-turn recall opportunity
  * (after the abort guard, before model resolution) whether synthesis succeeds
  * or fails; only a pre-aborted attempt does not advance. The deterministic
- * preference section is rendered before the model call and survives a cancel
- * or a synthesis failure, so the first turn never leaves the user empty when
- * standing preferences exist.
+ * user-preferences section is rendered before the model call and survives a
+ * cancel or a synthesis failure, so the first turn never leaves the user
+ * empty when user preferences exist.
  */
 
 import type { DatabaseSync } from "node:sqlite";
@@ -89,7 +89,7 @@ export type BuildMemoryBriefingResult =
     };
 
 /**
- * Render the deterministic standing-preferences section: active preference
+ * Render the deterministic user-preferences section: active preference
  * memories, id-ascending, whole units, capped at MEMORY_BRIEFING_MAX_CHARS
  * (the same ceiling as the synthesized section). This section is the
  * deterministic fallback shown on cancel/failure and on every no-source first
@@ -98,7 +98,7 @@ export type BuildMemoryBriefingResult =
  * agent knows the list is partial. Rendered before the model call and
  * preserved on cancel or synthesis failure.
  */
-export function renderMemoryStandingPreferences(db: DatabaseSync): string {
+export function renderMemoryUserPreferences(db: DatabaseSync): string {
   const preferences = listActiveMemories(db).filter(
     (m) => m.kind === "preference",
   );
@@ -123,18 +123,18 @@ export function renderMemoryStandingPreferences(db: DatabaseSync): string {
 
 /**
  * Render the visible briefing message: task-relevant section first (when the
- * synthesis produced one), then the standing preferences section.
+ * synthesis produced one), then the user preferences section.
  */
 export function renderMemoryBriefingMessage(
-  standingPreferences: string,
+  userPreferences: string,
   answer: string | null,
 ): string {
   const sections: string[] = [];
   if (answer !== null && answer.trim()) {
     sections.push(`## Context relevant to this session\n\n${answer.trim()}`);
   }
-  if (standingPreferences.trim()) {
-    sections.push(`## Standing preferences\n\n${standingPreferences.trim()}`);
+  if (userPreferences.trim()) {
+    sections.push(`## User preferences\n\n${userPreferences.trim()}`);
   }
   sections.push(
     "`memory_search` — ask a question in your own words; the synthesizer answers from workspace memory.",
@@ -144,10 +144,10 @@ export function renderMemoryBriefingMessage(
 
 /**
  * Run the first-turn recall pipeline once: advance the activity generation,
- * render the deterministic standing preferences, retrieve candidates, build
+ * render the deterministic user preferences, retrieve candidates, build
  * the bounded payload, and make exactly one synthesis call. Validated sources
  * are recorded as citation events (source `briefing`). Failures preserve the
- * standing-preferences section and record no citations.
+ * user-preferences section and record no citations.
  */
 export async function buildMemorySessionBriefing(
   input: BuildMemoryBriefingInput,
@@ -174,13 +174,13 @@ export async function buildMemorySessionBriefing(
   if (!resolved.ok) {
     // The deterministic section is the only non-model path to durable
     // context; render it even when the recall model cannot be resolved.
-    const standing = renderMemoryStandingPreferences(input.db);
+    const userPreferences = renderMemoryUserPreferences(input.db);
     return {
       ok: true,
-      message: standing
+      message: userPreferences
         ? {
             customType: MEMORY_BRIEFING_CUSTOM_TYPE,
-            content: renderMemoryBriefingMessage(standing, null),
+            content: renderMemoryBriefingMessage(userPreferences, null),
             display: true,
             details: { status: "no_recall_model", error: resolved.error },
           }
@@ -189,7 +189,7 @@ export async function buildMemorySessionBriefing(
     };
   }
 
-  const standing = renderMemoryStandingPreferences(input.db);
+  const userPreferences = renderMemoryUserPreferences(input.db);
   if (listActiveMemories(input.db).length === 0) {
     return { ok: true, message: null, audit: null };
   }
@@ -201,10 +201,10 @@ export async function buildMemorySessionBriefing(
     extra: Record<string, unknown> = {},
   ): BuildMemoryBriefingResult => ({
     ok: true,
-    message: standing
+    message: userPreferences
       ? {
           customType: MEMORY_BRIEFING_CUSTOM_TYPE,
-          content: renderMemoryBriefingMessage(standing, null),
+          content: renderMemoryBriefingMessage(userPreferences, null),
           display: true,
           details: { status, error, ...extra },
         }
@@ -221,13 +221,13 @@ export async function buildMemorySessionBriefing(
   });
   if (payload.units.length === 0) {
     // No memory above the relevance floor: no task-relevant section, but the
-    // standing preferences still render. No model call, no citations.
+    // user preferences still render. No model call, no citations.
     return {
       ok: true,
-      message: standing
+      message: userPreferences
         ? {
             customType: MEMORY_BRIEFING_CUSTOM_TYPE,
-            content: renderMemoryBriefingMessage(standing, null),
+            content: renderMemoryBriefingMessage(userPreferences, null),
             display: true,
             details: { status: "no_relevant_memories" },
           }
@@ -261,10 +261,10 @@ export async function buildMemorySessionBriefing(
     if (result.error === "aborted") {
       return {
         ok: true,
-        message: standing
+        message: userPreferences
           ? {
               customType: MEMORY_BRIEFING_CUSTOM_TYPE,
-              content: renderMemoryBriefingMessage(standing, null),
+              content: renderMemoryBriefingMessage(userPreferences, null),
               display: true,
               details: { status: "aborted" },
             }
@@ -299,7 +299,7 @@ export async function buildMemorySessionBriefing(
     ok: true,
     message: {
       customType: MEMORY_BRIEFING_CUSTOM_TYPE,
-      content: renderMemoryBriefingMessage(standing, result.content),
+      content: renderMemoryBriefingMessage(userPreferences, result.content),
       display: true,
       details: {
         status: "ok",

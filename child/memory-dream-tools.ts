@@ -2,6 +2,8 @@
  * Internal tools for the detached memory dreamer child: ingestion only.
  */
 
+import * as fs from "node:fs";
+import * as path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -41,6 +43,28 @@ function parseOperations(raw: unknown): MemoryDreamerOperation[] {
 }
 
 /**
+ * Best-effort append-only trace of dreamer tool calls, written to
+ * `<runDir>/trace.jsonl`. The run dir is retained on failure, so this trace is
+ * what makes a failed dream diagnosable: it shows which sessions were listed,
+ * read, and committed — and, by absence, which were skipped. Never throws; a
+ * trace write must never fail a tool call.
+ */
+function createDreamerTrace(manifestPath: string) {
+  const tracePath = path.join(path.dirname(manifestPath), "trace.jsonl");
+  return (event: Record<string, unknown>): void => {
+    try {
+      fs.appendFileSync(
+        tracePath,
+        JSON.stringify({ ts: Date.now(), ...event }) + "\n",
+        { encoding: "utf-8", flag: "a", mode: 0o600 },
+      );
+    } catch {
+      // Tracing is best-effort; never fail a tool because the trace could not be written.
+    }
+  };
+}
+
+/**
  * Register dreamer-only tools on the child extension.
  */
 export function registerMemoryDreamTools(
@@ -51,6 +75,7 @@ export function registerMemoryDreamTools(
   // The incremental cursor advances only to where the dreamer actually read,
   // so an unread tail stays eligible for a later dream and is never lost.
   const maxReadMessageOffsetBySession = new Map<string, number>();
+  const trace = createDreamerTrace(ctx.manifestPath);
 
   pi.registerTool({
     name: "memory_list_sessions",
@@ -66,6 +91,7 @@ export function registerMemoryDreamTools(
             `${i + 1}. sessionId=${s.sessionId} minedUntil=${s.minedMessageOffset} mtime=${s.mtimeMs} snapshot=${s.snapshotPath}`,
         )
         .join("\n");
+      trace({ tool: "memory_list_sessions", count: sessions.length });
       return {
         content: [
           {
@@ -133,6 +159,13 @@ export function registerMemoryDreamTools(
         page.nextOffset !== null
           ? `\n\n---\nMore messages: call memory_read_session with offset=${page.nextOffset}`
           : "\n\n---\nEnd of session.";
+      trace({
+        tool: "memory_read_session",
+        sessionId: entry.sessionId,
+        offset: page.offset,
+        nextOffset: page.nextOffset,
+        totalMessages: page.totalMessages,
+      });
       return {
         content: [
           {
@@ -213,6 +246,15 @@ export function registerMemoryDreamTools(
         minedMessageOffset,
         plan,
       });
+      trace({
+        tool: "memory_commit_session",
+        sessionId: entry.sessionId,
+        applied: result.applied,
+        reason: result.reason,
+        operationCount: operations.length,
+        minedMessageOffset,
+        totalMessages,
+      });
       return {
         content: [
           {
@@ -260,6 +302,11 @@ export function registerMemoryDreamTools(
             )
             .join("\n")
         : "No matching active memories.";
+      trace({
+        tool: "memory_recall",
+        count: result.candidates.length,
+        semanticDegraded: result.semanticDegraded,
+      });
       return {
         content: [{ type: "text" as const, text: body }],
         details: {

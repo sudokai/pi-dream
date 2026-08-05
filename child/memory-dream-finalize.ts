@@ -14,7 +14,10 @@ import {
   setMemoryEmbeddingDegradedError,
 } from "../shared/memory-repository.ts";
 import { finalizeMemoryRun } from "../shared/memory-run-claim.ts";
-import { readMemoryDreamManifest } from "../shared/memory-session-discovery.ts";
+import {
+  readMemoryDreamManifest,
+  type MemoryDreamManifestEntry,
+} from "../shared/memory-session-discovery.ts";
 
 export interface FinalizeMemoryDreamRunInput {
   db: DatabaseSync;
@@ -39,18 +42,20 @@ export interface FinalizeMemoryDreamRunResult {
 }
 
 /**
- * Verify every manifest session was checkpointed from its exact immutable
- * snapshot. An empty manifest is valid (a zero-session run).
+ * Manifest sessions not yet checkpointed from their exact immutable snapshot.
+ * Shared by the agent_end completion nudge (so the dreamer gets another chance
+ * to finish them) and by finalize (so a genuinely incomplete run fails loudly
+ * with the culprits named). An empty manifest is valid (a zero-session run).
  */
-function findMemoryCheckpointCompletionError(
+export function findUncheckpointedSessions(
   db: DatabaseSync,
   manifestPath: string,
-): string | null {
+): MemoryDreamManifestEntry[] {
   const entries = readMemoryDreamManifest(manifestPath);
   if (entries.length === 0) {
-    return null;
+    return [];
   }
-  const uncheckpointed = entries.filter((entry) => {
+  return entries.filter((entry) => {
     const checkpoint = getSourceSessionCheckpoint(db, entry.sessionId);
     return (
       !checkpoint ||
@@ -58,8 +63,15 @@ function findMemoryCheckpointCompletionError(
       checkpoint.processedMtimeMs < entry.mtimeMs
     );
   });
+}
+
+/** Finalize error text naming the sessions that were never checkpointed. */
+export function formatMemoryDreamCheckpointError(
+  uncheckpointed: MemoryDreamManifestEntry[],
+): string | null {
   if (uncheckpointed.length === 0) return null;
-  return `Memory dream left ${uncheckpointed.length} manifest session(s) uncheckpointed`;
+  const ids = uncheckpointed.map((entry) => entry.sessionId).join(", ");
+  return `Memory dream left ${uncheckpointed.length} manifest session(s) uncheckpointed: ${ids}`;
 }
 
 /**
@@ -76,9 +88,8 @@ export async function finalizeMemoryDreamRun(
   let errorText = input.errorText ?? null;
   if (!errorText) {
     try {
-      errorText = findMemoryCheckpointCompletionError(
-        input.db,
-        input.manifestPath,
+      errorText = formatMemoryDreamCheckpointError(
+        findUncheckpointedSessions(input.db, input.manifestPath),
       );
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
@@ -113,6 +124,27 @@ export async function finalizeMemoryDreamRun(
   }
 
   const status = errorText ? "failed" : "completed";
+  const runDir = path.dirname(input.manifestPath);
+
+  // On failure, retain the run dir (manifest + trace.jsonl + child.stderr.log)
+  // so the dream is diagnosable after the fact, and point the error text at it
+  // before the terminal row is written — the DB row is what the user sees. The
+  // bulky session-snapshot bodies are dropped: they are copies of transcripts
+  // that still live in the pi sessions dir, and retaining up to 30 per failed
+  // run would leak.
+  if (status === "failed") {
+    for (const entry of readMemoryDreamManifest(input.manifestPath)) {
+      try {
+        fs.rmSync(entry.snapshotPath, { force: true });
+      } catch {
+        // Snapshot cleanup is best-effort; the run dir is retained regardless.
+      }
+    }
+    if (errorText && !errorText.includes("run dir retained")) {
+      errorText = `${errorText} (run dir retained for diagnosis: ${runDir})`;
+    }
+  }
+
   let finalized = false;
   try {
     finalized = finalizeMemoryRun(input.db, input.runId, {
@@ -139,13 +171,14 @@ export async function finalizeMemoryDreamRun(
     };
   }
 
-  try {
-    fs.rmSync(path.dirname(input.manifestPath), {
-      recursive: true,
-      force: true,
-    });
-    return { finalized: true, status, errorText, runDirRetained: false };
-  } catch {
-    return { finalized: true, status, errorText, runDirRetained: true };
+  // Completed runs delete the run dir; failed runs retained it above.
+  if (status === "completed") {
+    try {
+      fs.rmSync(runDir, { recursive: true, force: true });
+      return { finalized: true, status, errorText, runDirRetained: false };
+    } catch {
+      return { finalized: true, status, errorText, runDirRetained: true };
+    }
   }
+  return { finalized: true, status, errorText, runDirRetained: true };
 }

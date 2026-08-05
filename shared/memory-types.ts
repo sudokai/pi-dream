@@ -66,6 +66,15 @@ export const MEMORY_DEFAULT_MIN_MINUTES = 120;
 /** Stale dream-run claim threshold (ms). */
 export const MEMORY_STALE_RUN_MS = 60 * 60 * 1000;
 
+/**
+ * Max server-side completion nudges before an incomplete dream is accepted as
+ * failed. The dreamer sometimes settles before committing every manifest
+ * session (typical at the tail of a large batch); the child queues a targeted
+ * follow-up at agent_end so the model finishes. This budget caps the loop so a
+ * genuinely stuck run still fails loudly at finalize instead of spinning.
+ */
+export const MEMORY_DREAM_MAX_NUDGES = 3;
+
 /** SQLite busy timeout (ms). */
 export const MEMORY_DB_BUSY_TIMEOUT_MS = 5000;
 

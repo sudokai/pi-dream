@@ -18,6 +18,10 @@ import {
 import { writeMemoryDreamManifest } from "../shared/memory-session-discovery.ts";
 import { finalizeMemoryDreamRun } from "./memory-dream-finalize.ts";
 import {
+  findUncheckpointedSessions,
+  formatMemoryDreamCheckpointError,
+} from "./memory-dream-finalize.ts";
+import {
   resetMemoryEmbedderForTests,
   setMemoryEmbedderForTests,
   type MemoryEmbedFn,
@@ -57,6 +61,81 @@ test("finalizeMemoryDreamRun fails when a manifest session was not checkpointed"
     const run = listUnreportedMemoryRuns(db)[0]!;
     assert.equal(run.status, "failed");
     assert.match(run.errorText ?? "", /uncheckpointed/);
+    assert.match(run.errorText ?? "", /session-1/);
+    assert.match(run.errorText ?? "", /run dir retained/);
+    // The failed run dir is kept (manifest + trace) for diagnosis, but the
+    // bulky snapshot body is dropped so retention can't leak transcripts.
+    assert.equal(fs.existsSync(dir), true, "failed run dir retained");
+    assert.equal(
+      fs.existsSync(path.join(dir, "session.jsonl")),
+      false,
+      "bulky snapshot body dropped from a retained failed run",
+    );
+  } finally {
+    closeMemoryDatabase(db);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("findUncheckpointedSessions names exactly the sessions without a current checkpoint", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-unckpt-"));
+  const db = openMemoryDatabaseAtPath(":memory:");
+  try {
+    const snapshotPath = path.join(dir, "snap.jsonl");
+    fs.writeFileSync(snapshotPath, "snapshot bytes\n", "utf-8");
+    const manifestPath = path.join(dir, "manifest.json");
+    writeMemoryDreamManifest(manifestPath, [
+      {
+        sessionId: "s1",
+        sessionPath: "/tmp/s1.jsonl",
+        snapshotPath,
+        cwd: "/tmp",
+        mtimeMs: 100,
+        contentHash: "h1",
+        minedMessageOffset: 0,
+      },
+      {
+        sessionId: "s2",
+        sessionPath: "/tmp/s2.jsonl",
+        snapshotPath,
+        cwd: "/tmp",
+        mtimeMs: 100,
+        contentHash: "h2",
+        minedMessageOffset: 0,
+      },
+      {
+        sessionId: "s3",
+        sessionPath: "/tmp/s3.jsonl",
+        snapshotPath,
+        cwd: "/tmp",
+        mtimeMs: 100,
+        contentHash: "h3",
+        minedMessageOffset: 0,
+      },
+    ]);
+    const claim = acquireMemoryRunClaim(db, "auto");
+    // Only s2 is committed; s1 and s3 have no checkpoint.
+    commitMemoryDreamSession(db, {
+      runId: claim.runId!,
+      sourceSessionId: "s2",
+      sessionPath: "/tmp/s2.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 100,
+      contentHash: "h2",
+      minedMessageOffset: 0,
+      plan: { operations: [{ op: "no_op", reason: "nothing durable" }] },
+    });
+
+    const uncommitted = findUncheckpointedSessions(db, manifestPath);
+    assert.deepEqual(
+      uncommitted.map((e) => e.sessionId),
+      ["s1", "s3"],
+    );
+    assert.equal(
+      formatMemoryDreamCheckpointError(uncommitted),
+      "Memory dream left 2 manifest session(s) uncheckpointed: s1, s3",
+    );
+    assert.equal(formatMemoryDreamCheckpointError([]), null);
   } finally {
     closeMemoryDatabase(db);
     fs.rmSync(dir, { recursive: true, force: true });

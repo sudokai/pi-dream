@@ -43,7 +43,10 @@ Per workspace (identity: canonical git origin → git common dir → real cwd):
 ~/.pi/agent/dream/<workspaceId>/
   memory.db
   config.json
-  runs/<runId>/manifest.json      # temporary
+  runs/<runId>/                   # per dream; deleted on success, retained on failure
+    manifest.json                 # sessions mined this run + immutable content hashes
+    trace.jsonl                   # one line per dreamer tool call (diagnostic)
+    child.stderr.log              # detached dreamer stderr
 ```
 
 Override storage root in tests with `PI_DREAM_STORAGE_ROOT`.
@@ -116,7 +119,7 @@ All variables are optional; defaults exist without them.
 
 ## Dreams
 
-A detached pi child (`PI_DREAM_CHILD=1`, `--no-session`, isolated tools) mines eligible sessions incrementally — each session resumes at the mined-message cursor stored in its checkpoint, so an already-mined prefix is never re-read — and submits structured ops: `create`, `update`, `forget`, `no_op`. Before creating, the dreamer recalls the store with `memory_recall` (read-only retrieval, no citation events) so a restated preference updates the existing memory; a `create` whose normalized text exactly matches an active memory is additionally auto-merged into a restatement version at commit (partial unique index), so duplicate memory nodes cannot occur. Code validates references and text shape and commits memory versions (each carrying the distilled wording, the verbatim evidence quote, and the source session), search projections (FTS + documents + embeddings), and the source-session checkpoint in one transaction. A dream is held to its manifest: finalization fails loudly if any manifest session was not checkpointed from its exact immutable snapshot. At finalization the child also runs the incremental embeddings pass (model id from `PI_DREAM_EMBEDDING_MODEL`), so the semantic retriever's index is maintained offline — never on the parent's interactive first turn; an unavailable embedder degrades to lexical-only retrieval and never fails the run, and the degradation is persisted for `/memory status` and the startup notice, self-healing on the next successful pass.
+A detached pi child (`PI_DREAM_CHILD=1`, `--no-session`, isolated tools) mines eligible sessions incrementally — each session resumes at the mined-message cursor stored in its checkpoint, so an already-mined prefix is never re-read — and submits structured ops: `create`, `update`, `forget`, `no_op`. Before creating, the dreamer recalls the store with `memory_recall` (read-only retrieval, no citation events) so a restated preference updates the existing memory; a `create` whose normalized text exactly matches an active memory is additionally auto-merged into a restatement version at commit (partial unique index), so duplicate memory nodes cannot occur. Code validates references and text shape and commits memory versions (each carrying the distilled wording, the verbatim evidence quote, and the source session), search projections (FTS + documents + embeddings), and the source-session checkpoint in one transaction. A dream is held to its manifest: if the dreamer settles with sessions still uncommitted, the child queues completion follow-ups at `agent_end` (capped at a small fixed number) so the model finishes them; finalization then fails loudly, naming the culprits, should any session remain uncheckpointed from its exact immutable snapshot. At finalization the child also runs the incremental embeddings pass (model id from `PI_DREAM_EMBEDDING_MODEL`), so the semantic retriever's index is maintained offline — never on the parent's interactive first turn; an unavailable embedder degrades to lexical-only retrieval and never fails the run, and the degradation is persisted for `/memory status` and the startup notice, self-healing on the next successful pass.
 
 ## SQL audit examples
 

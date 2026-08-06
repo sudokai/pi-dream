@@ -15,9 +15,9 @@ Guidance for autonomous work in this repository. pi-dream is a pi package (exten
 
 - `index.ts` — extension entrypoint wiring hooks, commands, tools.
 - `parent/` — in-session side: briefing, cadence, `/memory` command, dream launcher, session lifecycle, agent tools.
-- `child/` — detached dreamer (`--no-session` pi child): entry, finalize, tools.
-- `shared/` — pure logic: config, database, graph, search index, embeddings, recall planner, workspace id, pi-process invocation.
-- Domain vocabulary lives in `CONTEXT.md` (Observation, Memory, Memory version, Retrieval, Payload, Synthesizer, Briefing, Citation event, Ingestion, Dream, Dreamer, Workspace id, Source session). Use these terms exactly.
+- `child/` — detached dreamer (`--no-session` pi child, no prompt or tools): entry, finalize.
+- `shared/` — pure logic: config, database, graph, search index, embeddings, recall planner, mining driver, workspace id, pi-process invocation.
+- Domain vocabulary lives in `CONTEXT.md` (Memory, Memory version, Retrieval, Payload, Synthesizer, Briefing, Citation event, Ingestion, Dream, Dreamer, Workspace id, Source session). Use these terms exactly.
 
 ## Constraints to preserve
 

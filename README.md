@@ -146,6 +146,10 @@ SELECT id, trigger, status, started_at, finished_at, error_text
 FROM dream_runs ORDER BY started_at DESC LIMIT 10;
 ```
 
+## Dependency notes
+
+Runtime dependencies are `@xenova/transformers` (embeddings) only; the pi packages are peers provided by the runtime. `package.json` overrides patch two transitive vulnerabilities inside the transformers tree (protobufjs → 7.6.5, sharp → 0.35.3), validated by the embedder smoke test. Two remaining advisories — `undici` and `brace-expansion` under `@earendil-works/pi-coding-agent` — are dev-only (typecheck/test copies) and cannot be overridden because pi-coding-agent publishes an `npm-shrinkwrap.json`, which npm excludes from overrides; they clear when the upstream package bumps those pins.
+
 ## Development
 
 ```bash

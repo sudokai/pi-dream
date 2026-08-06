@@ -14,7 +14,6 @@
     "index.ts",
     "child/memory-dream-entry.ts",
     "child/memory-dream-finalize.ts",
-    "child/memory-dream-tools.ts",
     "parent/memory-briefing.ts",
     "parent/memory-cadence.ts",
     "parent/memory-command.ts",
@@ -29,6 +28,7 @@
     "shared/memory-embedding.ts",
     "shared/memory-fs.ts",
     "shared/memory-graph.ts",
+    "shared/memory-miner.ts",
     "shared/memory-model.ts",
     "shared/memory-payload.ts",
     "shared/memory-prompts.ts",
@@ -72,6 +72,13 @@
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
+  },
+  "overrides": {
+    "brace-expansion@^5.0.5": "5.0.9",
+    "sharp": "0.35.3",
+    "onnx-proto": {
+      "protobufjs": "7.6.5"
+    }
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "0.83.0",

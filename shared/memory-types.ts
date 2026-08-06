@@ -66,15 +66,6 @@ export const MEMORY_DEFAULT_MIN_MINUTES = 120;
 /** Stale dream-run claim threshold (ms). */
 export const MEMORY_STALE_RUN_MS = 60 * 60 * 1000;
 
-/**
- * Max server-side completion nudges before an incomplete dream is accepted as
- * failed. The dreamer sometimes settles before committing every manifest
- * session (typical at the tail of a large batch); the child queues a targeted
- * follow-up at agent_end so the model finishes. This budget caps the loop so a
- * genuinely stuck run still fails loudly at finalize instead of spinning.
- */
-export const MEMORY_DREAM_MAX_NUDGES = 3;
-
 /** SQLite busy timeout (ms). */
 export const MEMORY_DB_BUSY_TIMEOUT_MS = 5000;
 
@@ -106,9 +97,9 @@ export const MEMORY_COMPLETION_TIMEOUT_MS = 30_000;
 export const MEMORY_SESSION_MAX_BYTES = 64 * 1024 * 1024;
 
 /**
- * Deterministic mining budgets. The miner is a batch pipeline, not an agent:
- * the LLM is a pure function of a bounded, forward-only segment stream, so
- * every budget below is enforced by the driver, never by model behavior.
+ * Deterministic mining budgets. The miner is a batch pipeline: the LLM is a
+ * pure function of a bounded, forward-only segment stream, so every budget
+ * below is enforced by the driver, never by model behavior.
  */
 /** Max chars in one extract segment (~6K tokens at 4 chars/token). */
 export const MEMORY_MINE_SEGMENT_CHARS = 24_000;

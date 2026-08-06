@@ -246,7 +246,7 @@ function decodeParts(
 }
 
 /**
- * Decode raw entries into a logical session for dreamer paging.
+ * Decode raw entries into a logical session for the mining driver.
  */
 export function decodeMemorySession(
   entries: MemoryRawEntry[],
@@ -358,9 +358,9 @@ export function loadVerifiedMemorySessionSnapshot(
 }
 
 /**
- * Tool calls/results produced by dream's own memory tools echo stored memory
- * text back into the transcript. They are not user evidence and must not be
- * mined as memory content.
+ * `memory_search` tool calls/results echo stored memory text back into the
+ * transcript. They are not user evidence and must not be mined as memory
+ * content.
  */
 const MEMORY_TOOL_NAMES: ReadonlySet<string> = new Set(["memory_search"]);
 
@@ -382,15 +382,6 @@ function filterMemoryDreamerEvidenceParts(
 ): MemoryDecodedPart[] {
   if (m.role === "custom") return [];
   return m.parts.filter((part) => !isMemoryToolPart(part));
-}
-
-/**
- * Whether a decoded message has dreamer evidence after per-part filtering.
- * Ordinary tool results stay visible even when a message also used Dream's
- * memory tools.
- */
-export function isMemoryDreamerEvidence(m: MemoryDecodedMessage): boolean {
-  return filterMemoryDreamerEvidenceParts(m).length > 0;
 }
 
 /**

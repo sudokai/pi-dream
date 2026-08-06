@@ -1,17 +1,17 @@
 /**
  * Deterministic memory mining driver.
  *
- * The dreamer is NOT an agent: it never pages transcripts through a
- * conversation, so it cannot lose its place, re-read, or loop. The LLM is a
- * pure function of a bounded, forward-only segment stream; the driver owns
- * every piece of state (cursor, budgets, progress, checkpoints).
+ * The dreamer is a batch pipeline: the LLM is a pure function of a bounded,
+ * forward-only segment stream, and every piece of state — cursor, budgets,
+ * progress, checkpoints — lives in this driver, never in a conversation.
+ * Re-reads and loops are therefore structurally impossible.
  *
- * Per session: decode the immutable snapshot -> filter noise (generated
- * briefings, Dream memory-tool parts) -> truncate long content (edges kept)
- * -> split into char-budgeted segments -> one bounded extract call per
- * segment -> deterministic recall against the store -> one bounded
- * consolidate call -> one atomic commit. The mined-message cursor advances
- * only forward; a segment is never re-read after its extract call succeeds.
+ * Per session: decode the immutable snapshot -> filter generated content and
+ * memory-tool parts -> truncate long content (edges kept) -> split into
+ * char-budgeted segments -> one bounded extract call per segment ->
+ * deterministic recall against the store -> one bounded consolidate call ->
+ * one atomic commit. The mined-message cursor advances only forward; a
+ * segment is never re-read after its extract call succeeds.
  *
  * Budgets are structural: segment chars, run chars, and wall clock are
  * enforced by the driver. When a budget exhausts mid-session, the driver
@@ -55,7 +55,6 @@ export interface MemoryMinerInput {
   db: DatabaseSync;
   runId: string;
   manifestPath: string;
-  cwd: string;
   /** One bounded LLM call (extract or consolidate). */
   complete: MemoryMinerCompleteFn;
   signal?: AbortSignal;
@@ -247,7 +246,6 @@ Rules:
 interface SessionMineContext {
   db: DatabaseSync;
   runId: string;
-  cwd: string;
   complete: MemoryMinerCompleteFn;
   signal?: AbortSignal;
   log?: (entry: Record<string, unknown>) => void;
@@ -256,9 +254,8 @@ interface SessionMineContext {
   runChars: number;
   wallClockMs: number;
   startedAt: number;
-  /** Running totals across the whole pass (checked before each segment). */
+  /** Chars already consumed by earlier segments in this pass (budget check). */
   charsUsed: number;
-  segmentsUsed: number;
 }
 
 interface SessionMineOutcome {
@@ -524,7 +521,6 @@ export async function runMemoryDreamMining(
     const ctx: SessionMineContext = {
       db: input.db,
       runId: input.runId,
-      cwd: input.cwd,
       complete: input.complete,
       signal: input.signal,
       log: input.log,
@@ -534,7 +530,6 @@ export async function runMemoryDreamMining(
       wallClockMs,
       startedAt,
       charsUsed: result.charsUsed,
-      segmentsUsed: result.segmentsUsed,
     };
     if (elapsedMs(ctx) >= wallClockMs) {
       stopReason = `wall-clock budget (${wallClockMs} ms) exhausted before session ${entry.sessionId}`;

@@ -149,7 +149,6 @@ test("full pass: extract per segment, consolidate once, commits fully mined", as
       db,
       runId: runIdFor(db),
       manifestPath,
-      cwd: "/tmp/ws",
       complete: ctx.complete,
       segmentChars: 10_000,
     });
@@ -185,7 +184,6 @@ test("budget hit mid-session commits a partial checkpoint; the next run resumes"
       db,
       runId: runIdFor(db),
       manifestPath,
-      cwd: "/tmp/ws",
       complete: ctx.complete,
       segmentChars: 1_200,
       runChars: 1_900,
@@ -215,7 +213,6 @@ test("budget hit mid-session commits a partial checkpoint; the next run resumes"
       db,
       runId: runIdFor(db),
       manifestPath: manifestPath2,
-      cwd: "/tmp/ws",
       complete: ctx2.complete,
       segmentChars: 1_200,
       runChars: 10_000,
@@ -245,7 +242,6 @@ test("wall-clock budget stops the pass before the next session", async () => {
       db,
       runId: runIdFor(db),
       manifestPath,
-      cwd: "/tmp/ws",
       complete: ctx.complete,
       nowMs: Date.now() - 100_000,
       wallClockMs: 1_000,
@@ -270,7 +266,6 @@ test("malformed extract output retries once then fails the run naming the sessio
       db,
       runId: runIdFor(db),
       manifestPath,
-      cwd: "/tmp/ws",
       complete,
       segmentChars: 10_000,
     });
@@ -297,7 +292,6 @@ test("empty session commits a no-op and is fully mined", async () => {
       db,
       runId: runIdFor(db),
       manifestPath,
-      cwd: "/tmp/ws",
       complete: ctx.complete,
     });
     assert.equal(result.ok, true, result.errorText);

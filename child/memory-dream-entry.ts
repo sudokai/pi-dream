@@ -1,13 +1,12 @@
 /**
  * Detached memory dreamer child extension entry.
  *
- * The dreamer is NOT an agent: there is no prompt, no tools, and no agent
- * loop. Print mode fires session_start unconditionally (even with no prompt),
- * and at that seam the extension runs the deterministic mining driver
- * (shared/memory-miner.ts), finalizes the run (checkpoint coverage, the
- * embeddings projection, claim release), and shuts the process down. The
- * driver owns the cursor and the budgets, so the model is a pure function of
- * bounded segments: it cannot re-read, lose its place, or loop.
+ * The child is spawned with no prompt and no tools; print mode fires
+ * session_start unconditionally, and at that seam the extension runs the
+ * deterministic mining driver (shared/memory-miner.ts), finalizes the run
+ * (checkpoint coverage, the embeddings projection, claim release), and shuts
+ * the process down. The driver owns the cursor and the budgets, so the model
+ * is a pure function of bounded segments.
  */
 
 import type {
@@ -108,7 +107,6 @@ async function runDetachedMemoryDream(input: {
     db,
     runId,
     manifestPath,
-    cwd,
     complete,
     signal: ctx.signal,
     log: createDreamerTrace(manifestPath),

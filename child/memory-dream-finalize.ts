@@ -44,9 +44,8 @@ export interface FinalizeMemoryDreamRunResult {
 
 /**
  * Manifest sessions not yet checkpointed from their exact immutable snapshot.
- * Shared by the agent_end completion nudge (so the dreamer gets another chance
- * to finish them) and by finalize (so a genuinely incomplete run fails loudly
- * with the culprits named). An empty manifest is valid (a zero-session run).
+ * Used by finalize so a genuinely incomplete run fails loudly with the
+ * culprits named. An empty manifest is valid (a zero-session run).
  */
 export function findUncheckpointedSessions(
   db: DatabaseSync,

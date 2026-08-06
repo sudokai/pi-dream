@@ -60,10 +60,10 @@ export function buildMemoryDreamerSpawnArgs(
 ): { args: string[]; env: Record<string, string> } {
   const childEntry = memoryExtensionPath("child", "memory-dream-entry.ts");
 
-  // The dreamer is a deterministic batch pipeline, not an agent: no prompt,
-  // no tools, no system-prompt append. The extension body runs the mining
-  // driver at session_start (print mode fires session_start unconditionally,
-  // even with no prompt) and shuts the process down when the pass ends.
+  // The dreamer runs as a deterministic batch pipeline inside the extension
+  // body: no prompt, no tools, no system-prompt append. Print mode fires
+  // session_start unconditionally, even with no prompt, and the extension
+  // shuts the process down when the pass ends.
   const args = [
     "--mode",
     "json",

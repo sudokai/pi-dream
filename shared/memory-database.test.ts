@@ -31,7 +31,7 @@ test("openMemoryDatabaseAtPath migrates fresh schema", () => {
   }
 });
 
-test("schema v6: no observations, no edges, no summaries; FTS5 and dedupe index present", () => {
+test("schema v7: no observations, no edges, no summaries; FTS5 and dedupe index present", () => {
   const db = openMemoryDatabaseAtPath(":memory:");
   try {
     const dedupeIndex = db
@@ -75,6 +75,75 @@ test("schema v6: no observations, no edges, no summaries; FTS5 and dedupe index 
     assert.equal(Number(citations), 1, "citation_events exists");
   } finally {
     closeMemoryDatabase(db);
+  }
+});
+
+test("a v6 store migrates to v7 additively, preserving rows and treating legacy cursors as fully mined", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-migrate-"));
+  const dbPath = path.join(dir, "memory.db");
+  try {
+    // Build the current schema, then downgrade to the v6 shape (drop the two
+    // new columns and reset user_version) to simulate a real v6 store.
+    const db = openMemoryDatabaseAtPath(dbPath);
+    db.exec("ALTER TABLE source_sessions DROP COLUMN total_messages");
+    db.exec("ALTER TABLE workspace_state DROP COLUMN last_failed_run_at_ms");
+    db.exec("PRAGMA user_version = 6");
+    db.prepare(
+      `INSERT INTO source_sessions
+         (session_id, session_path, cwd, processed_mtime_ms, content_hash,
+          mined_message_offset)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run("s1", "/tmp/s1.jsonl", "/tmp", 1000, "h1", 4);
+    db.prepare(
+      `INSERT INTO memories (kind, state, current_version_id, normalized_text, creation_generation)
+       VALUES ('fact', 'active', NULL, 'x is y', 1)`,
+    ).run();
+    closeMemoryDatabase(db);
+
+    const reopened = openMemoryDatabaseAtPath(dbPath);
+    try {
+      const version = (
+        reopened.prepare("PRAGMA user_version").get() as {
+          user_version: number;
+        }
+      ).user_version;
+      assert.equal(
+        version,
+        MEMORY_SCHEMA_VERSION,
+        "migrated to the current version",
+      );
+      const cp = reopened
+        .prepare("SELECT * FROM source_sessions WHERE session_id = 's1'")
+        .get() as { total_messages: number; mined_message_offset: number };
+      assert.equal(
+        cp.total_messages,
+        4,
+        "legacy v6 cursors are treated as fully mined (total = cursor)",
+      );
+      assert.equal(cp.mined_message_offset, 4);
+      const memCount = (
+        reopened.prepare("SELECT COUNT(*) AS n FROM memories").get() as {
+          n: number;
+        }
+      ).n;
+      assert.equal(Number(memCount), 1, "rows survive the additive migration");
+      const ws = (
+        reopened
+          .prepare(
+            "SELECT last_failed_run_at_ms FROM workspace_state WHERE id = 1",
+          )
+          .get() as { last_failed_run_at_ms: number }
+      ).last_failed_run_at_ms;
+      assert.equal(
+        Number(ws),
+        0,
+        "failure-backoff column exists after migration",
+      );
+    } finally {
+      closeMemoryDatabase(reopened);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 

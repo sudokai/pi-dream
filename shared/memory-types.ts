@@ -105,11 +105,25 @@ export const MEMORY_COMPLETION_TIMEOUT_MS = 30_000;
 /** Maximum session JSONL bytes read for discovery/header checks. */
 export const MEMORY_SESSION_MAX_BYTES = 64 * 1024 * 1024;
 
-/** Default page size for dreamer session paging. */
-export const MEMORY_SESSION_PAGE_DEFAULT = 40;
-
-/** Maximum page size for dreamer session paging. */
-export const MEMORY_SESSION_PAGE_MAX = 200;
+/**
+ * Deterministic mining budgets. The miner is a batch pipeline, not an agent:
+ * the LLM is a pure function of a bounded, forward-only segment stream, so
+ * every budget below is enforced by the driver, never by model behavior.
+ */
+/** Max chars in one extract segment (~6K tokens at 4 chars/token). */
+export const MEMORY_MINE_SEGMENT_CHARS = 24_000;
+/** Max messages in one extract segment (safety bound; char budget binds first). */
+export const MEMORY_MINE_SEGMENT_MAX_MESSAGES = 200;
+/** Per-message char cap inside a segment (edges kept; long bodies truncated). */
+export const MEMORY_MINE_MESSAGE_CHARS = 2_000;
+/** Tool-result cap inside a segment (edges kept; bodies are mostly noise). */
+export const MEMORY_MINE_TOOL_RESULT_CHARS = 400;
+/** Max candidates per extract call. */
+export const MEMORY_MINE_MAX_CANDIDATES_PER_SEGMENT = 12;
+/** Hard per-run char budget across all extract segments (~500K tokens). */
+export const MEMORY_MINE_RUN_CHARS = 2_000_000;
+/** Hard per-run wall-clock budget: a dream never runs past this. */
+export const MEMORY_MINE_WALL_CLOCK_MS = 45 * 60 * 1000;
 
 export interface MemoryVersionRow {
   id: number;
@@ -159,6 +173,9 @@ export interface SourceSessionRow {
   contentHash: string | null;
   /** Number of visible session messages already mined; incremental mining resumes here. */
   minedMessageOffset: number;
+  /** Visible-message count of the snapshot at checkpoint time; a checkpoint with
+   * `minedMessageOffset < totalMessages` is a partial mine and stays eligible. */
+  totalMessages: number;
   completedAt: string;
 }
 
@@ -170,6 +187,8 @@ export interface WorkspaceStateRow {
   activityGeneration: number;
   turnsSinceLastRun: number;
   lastSuccessfulRunAtMs: number;
+  /** Set when the most recent dream failed; auto dreaming backs off minMinutes after it. */
+  lastFailedRunAtMs: number;
   lastObservedTranscriptMtimeMs: number | null;
   /** Set when the last recall capacity check failed (provider context too small). */
   recallCapacityError: string | null;
@@ -215,6 +234,10 @@ export interface MemoryDreamCommitInput {
   contentHash: string | null;
   /** Visible-message count of the snapshot mined by this commit (advances the incremental cursor). */
   minedMessageOffset: number;
+  /** Visible-message count of the snapshot; a commit with
+   * `minedMessageOffset < totalMessages` records a partial mine that stays
+   * eligible. Defaults to `minedMessageOffset` (a fully-mined legacy commit). */
+  totalMessages?: number;
   plan: MemoryDreamSessionPlan;
 }
 

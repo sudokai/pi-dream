@@ -6,10 +6,7 @@ import {
   getMemoryCommandArgumentCompletions,
   parseMemoryCommandArgs,
 } from "./memory-command.ts";
-import {
-  buildMemoryDreamerSpawnArgs,
-  MEMORY_DREAMER_TASK,
-} from "../shared/pi-process-invocation.ts";
+import { buildMemoryDreamerSpawnArgs } from "../shared/pi-process-invocation.ts";
 import { evaluateMemoryDreamCadence } from "./memory-cadence.ts";
 import {
   closeMemoryDatabase,
@@ -91,21 +88,20 @@ test("buildMemoryDreamerSpawnArgs is stable and isolated", () => {
   });
   assert.ok(args.includes("--no-session"));
   assert.ok(args.includes("--no-extensions"));
-  assert.ok(args.includes(MEMORY_DREAMER_TASK));
-  // The child tool allowlist must cover every registered dreamer tool,
-  // including the read-path recall used before create.
-  const toolsArg = args[args.indexOf("--tools") + 1]!;
-  for (const tool of [
-    "memory_list_sessions",
-    "memory_read_session",
-    "memory_commit_session",
-    "memory_recall",
-  ]) {
-    assert.ok(
-      toolsArg.split(",").includes(tool),
-      `child tools allowlist must include ${tool}`,
-    );
-  }
+  // The dreamer is a deterministic batch pipeline: no agent prompt and no
+  // tools. The extension body runs the mining driver at session_start.
+  assert.ok(!args.some((a) => a.includes("memory_list_sessions")));
+  assert.ok(!args.includes("--tools"), "no child tool allowlist");
+  assert.ok(
+    !args.includes("-p"),
+    "no prompt: print mode must not run an agent",
+  );
+  assert.ok(args.includes("--mode"));
+  assert.ok(args.includes("json"));
+  assert.ok(args.includes("--model"));
+  assert.ok(args.includes("anthropic/claude-sonnet-4-5"));
+  // The spawn carries no agent task prompt (the driver runs in the extension).
+  assert.ok(!args.some((a) => /dream pass/i.test(a)));
   assert.equal(env.PI_DREAM_CHILD, "1");
   assert.equal(env.PI_DREAM_RUN_ID, "run-1");
   assert.equal(env.PI_DREAM_WORKSPACE_ID, "abc_widget");

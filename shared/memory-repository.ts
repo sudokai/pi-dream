@@ -30,7 +30,7 @@ export function getMemoryWorkspaceState(db: DatabaseSync): WorkspaceStateRow {
     .prepare(
       `SELECT activity_generation, turns_since_last_run, last_successful_run_at_ms,
               last_observed_transcript_mtime_ms, recall_capacity_error,
-              embedding_degraded_error, updated_at
+              embedding_degraded_error, last_failed_run_at_ms, updated_at
        FROM workspace_state WHERE id = 1`,
     )
     .get() as Record<string, unknown>;
@@ -38,6 +38,7 @@ export function getMemoryWorkspaceState(db: DatabaseSync): WorkspaceStateRow {
     activityGeneration: Number(r.activity_generation),
     turnsSinceLastRun: Number(r.turns_since_last_run),
     lastSuccessfulRunAtMs: Number(r.last_successful_run_at_ms),
+    lastFailedRunAtMs: Number(r.last_failed_run_at_ms ?? 0),
     lastObservedTranscriptMtimeMs:
       r.last_observed_transcript_mtime_ms === null ||
       r.last_observed_transcript_mtime_ms === undefined
@@ -56,12 +57,13 @@ export function getMemoryWorkspaceState(db: DatabaseSync): WorkspaceStateRow {
   };
 }
 
-/** Patch the cadence counters in the workspace state row: turns since last run, last successful run, last observed transcript mtime. */
+/** Patch the cadence counters in the workspace state row: turns since last run, last successful run, last failed run, last observed transcript mtime. */
 export function updateMemoryCadenceState(
   db: DatabaseSync,
   patch: {
     turnsSinceLastRun?: number;
     lastSuccessfulRunAtMs?: number;
+    lastFailedRunAtMs?: number;
     lastObservedTranscriptMtimeMs?: number | null;
   },
 ): void {
@@ -70,16 +72,26 @@ export function updateMemoryCadenceState(
     `UPDATE workspace_state
      SET turns_since_last_run = ?,
          last_successful_run_at_ms = ?,
+         last_failed_run_at_ms = ?,
          last_observed_transcript_mtime_ms = ?,
          updated_at = datetime('now')
      WHERE id = 1`,
   ).run(
     patch.turnsSinceLastRun ?? current.turnsSinceLastRun,
     patch.lastSuccessfulRunAtMs ?? current.lastSuccessfulRunAtMs,
+    patch.lastFailedRunAtMs ?? current.lastFailedRunAtMs,
     patch.lastObservedTranscriptMtimeMs === undefined
       ? current.lastObservedTranscriptMtimeMs
       : patch.lastObservedTranscriptMtimeMs,
   );
+}
+
+/** Record a failed dream for cadence backoff (auto dreaming waits minMinutes after the last failure too). */
+export function markMemoryDreamFailure(
+  db: DatabaseSync,
+  nowMs: number = Date.now(),
+): void {
+  updateMemoryCadenceState(db, { lastFailedRunAtMs: nowMs });
 }
 
 /** Persist the provider-context capacity failure for /memory status; null clears it. */
@@ -114,7 +126,7 @@ export function getSourceSessionCheckpoint(
   const r = db
     .prepare(
       `SELECT session_id, session_path, cwd, processed_mtime_ms, content_hash,
-              mined_message_offset, completed_at
+              mined_message_offset, total_messages, completed_at
        FROM source_sessions WHERE session_id = ?`,
     )
     .get(sessionId) as Record<string, unknown> | undefined;
@@ -129,6 +141,7 @@ export function getSourceSessionCheckpoint(
         ? null
         : String(r.content_hash),
     minedMessageOffset: Number(r.mined_message_offset),
+    totalMessages: Number(r.total_messages ?? 0),
     completedAt: String(r.completed_at),
   };
 }
@@ -417,6 +430,8 @@ export function commitMemoryDreamSession(
   }
 
   const operations = input.plan.operations ?? [];
+  // Legacy commits predate the total column: treat the cursor as fully mined.
+  const totalMessages = input.totalMessages ?? input.minedMessageOffset;
   const generation = getMemoryActivityGeneration(db);
 
   db.exec("BEGIN IMMEDIATE");
@@ -433,22 +448,31 @@ export function commitMemoryDreamSession(
         existing.contentHash === input.contentHash;
       const mtimeNotNewer = existing.processedMtimeMs >= input.processedMtimeMs;
       if (hashMatch) {
-        db.prepare(
-          `UPDATE source_sessions
-           SET session_path = ?,
-               cwd = ?,
-               processed_mtime_ms = MAX(processed_mtime_ms, ?),
-               completed_at = datetime('now')
-           WHERE session_id = ? AND content_hash = ?`,
-        ).run(
-          input.sessionPath,
-          normalizeMemoryCwd(input.cwd),
-          input.processedMtimeMs,
-          input.sourceSessionId,
-          input.contentHash,
-        );
-        db.exec("COMMIT");
-        return { applied: false, reason: "already checkpointed" };
+        // A checkpoint whose cursor has not reached its recorded total is a
+        // PARTIAL mine of the same snapshot: it must not short-circuit. The
+        // miner resumes at the cursor and this commit applies ops and
+        // advances the cursor (or records a further partial progress point).
+        const fullyMined =
+          existing.totalMessages <= 0 ||
+          existing.minedMessageOffset >= existing.totalMessages;
+        if (fullyMined) {
+          db.prepare(
+            `UPDATE source_sessions
+             SET session_path = ?,
+                 cwd = ?,
+                 processed_mtime_ms = MAX(processed_mtime_ms, ?),
+                 completed_at = datetime('now')
+             WHERE session_id = ? AND content_hash = ?`,
+          ).run(
+            input.sessionPath,
+            normalizeMemoryCwd(input.cwd),
+            input.processedMtimeMs,
+            input.sourceSessionId,
+            input.contentHash,
+          );
+          db.exec("COMMIT");
+          return { applied: false, reason: "already checkpointed" };
+        }
       }
       if (
         mtimeNotNewer &&
@@ -469,14 +493,15 @@ export function commitMemoryDreamSession(
     db.prepare(
       `INSERT INTO source_sessions
          (session_id, session_path, cwd, processed_mtime_ms, content_hash,
-          mined_message_offset, completed_at)
-       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+          mined_message_offset, total_messages, completed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(session_id) DO UPDATE SET
          session_path = excluded.session_path,
          cwd = excluded.cwd,
          processed_mtime_ms = excluded.processed_mtime_ms,
          content_hash = excluded.content_hash,
          mined_message_offset = excluded.mined_message_offset,
+         total_messages = excluded.total_messages,
          completed_at = datetime('now')`,
     ).run(
       input.sourceSessionId,
@@ -485,6 +510,7 @@ export function commitMemoryDreamSession(
       input.processedMtimeMs,
       input.contentHash,
       input.minedMessageOffset,
+      totalMessages,
     );
 
     db.exec("COMMIT");

@@ -341,6 +341,92 @@ test("same snapshot content is never re-mined even when the live mtime advances"
   }
 });
 
+test("a partial checkpoint stays eligible and the manifest resumes at its cursor", () => {
+  withSessionRoot((root) => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "dream-cwd-"));
+    const snapshotDir = fs.mkdtempSync(path.join(os.tmpdir(), "dream-snap-"));
+    const db = openMemoryDatabaseAtPath(":memory:");
+    try {
+      const livePath = writeSessionFile(root, cwd, [
+        JSON.stringify({ type: "session", id: "sess-1", cwd }),
+        JSON.stringify({
+          type: "message",
+          message: { role: "user", content: "one" },
+        }),
+        JSON.stringify({
+          type: "message",
+          message: { role: "user", content: "two" },
+        }),
+        JSON.stringify({
+          type: "message",
+          message: { role: "user", content: "three" },
+        }),
+      ]);
+      const claim = acquireMemoryRunClaim(db, "manual");
+      const bytes = fs.readFileSync(livePath);
+      const hash = createHash("sha256").update(bytes).digest("hex");
+      const mtime = fs.statSync(livePath).mtimeMs;
+      // Partial mine of the same snapshot: cursor 1 of 3 visible messages.
+      commitMemoryDreamSession(db, {
+        runId: claim.runId!,
+        sourceSessionId: "sess-1",
+        sessionPath: livePath,
+        cwd,
+        processedMtimeMs: mtime,
+        contentHash: hash,
+        minedMessageOffset: 1,
+        totalMessages: 3,
+        plan: { operations: [{ op: "no_op", reason: "partial progress" }] },
+      });
+
+      const manifest = buildMemoryDreamManifest(db, cwd, "ws-any", {
+        snapshotDir,
+      });
+      assert.equal(
+        manifest.length,
+        1,
+        "a partial checkpoint must keep the session eligible",
+      );
+      assert.equal(
+        manifest[0]!.minedMessageOffset,
+        1,
+        "the next dream resumes at the partial cursor",
+      );
+      assert.equal(
+        hasMemoryDreamEligibleSession(db, cwd, "ws-any"),
+        true,
+        "eligibility check agrees with the manifest",
+      );
+
+      // Finishing the session (cursor reaches the total) retires it from
+      // discovery under the same mtime and hash.
+      commitMemoryDreamSession(db, {
+        runId: claim.runId!,
+        sourceSessionId: "sess-1",
+        sessionPath: livePath,
+        cwd,
+        processedMtimeMs: mtime,
+        contentHash: hash,
+        minedMessageOffset: 3,
+        totalMessages: 3,
+        plan: { operations: [{ op: "no_op", reason: "done" }] },
+      });
+      const after = buildMemoryDreamManifest(db, cwd, "ws-any", {
+        snapshotDir,
+      });
+      assert.equal(
+        after.length,
+        0,
+        "fully mined session is no longer eligible",
+      );
+    } finally {
+      closeMemoryDatabase(db);
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(snapshotDir, { recursive: true, force: true });
+    }
+  });
+});
+
 test("manifest entries carry the incremental cursor from the prior checkpoint", () => {
   withSessionRoot((root) => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "dream-cwd-"));

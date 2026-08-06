@@ -1034,3 +1034,71 @@ test("commit advances the incremental cursor; a same-hash replay leaves it untou
     );
   });
 });
+
+test("a partial checkpoint (cursor below total) on the same hash applies ops and advances", async () => {
+  await withClaimedDb((db, runId) => {
+    // Partial mine: cursor 2 of 5 visible messages, no ops yet.
+    commitMemoryDreamSession(db, {
+      runId,
+      sourceSessionId: "sess-partial",
+      sessionPath: "/tmp/sess-partial.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1000,
+      contentHash: "h1",
+      minedMessageOffset: 2,
+      totalMessages: 5,
+      plan: { operations: [{ op: "no_op", reason: "partial progress" }] },
+    });
+    let cp = getSourceSessionCheckpoint(db, "sess-partial")!;
+    assert.equal(cp.minedMessageOffset, 2);
+    assert.equal(cp.totalMessages, 5);
+
+    // Same snapshot resumed to the end: the replay guard must NOT
+    // short-circuit (the checkpoint is partial), so the ops apply and the
+    // cursor advances to the total.
+    const resumed = commitMemoryDreamSession(db, {
+      runId,
+      sourceSessionId: "sess-partial",
+      sessionPath: "/tmp/sess-partial.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1000,
+      contentHash: "h1",
+      minedMessageOffset: 5,
+      totalMessages: 5,
+      plan: {
+        operations: [
+          {
+            op: "create",
+            kind: "fact",
+            evidenceText: "the fact",
+            memoryText: "a durable fact",
+          },
+        ],
+      },
+    });
+    assert.equal(
+      resumed.applied,
+      true,
+      "partial checkpoint must stay resumable",
+    );
+    cp = getSourceSessionCheckpoint(db, "sess-partial")!;
+    assert.equal(cp.minedMessageOffset, 5);
+    assert.equal(cp.totalMessages, 5);
+    assert.equal(listActiveMemories(db).length, 1, "ops were applied");
+
+    // A fully-mined replay of the same snapshot is again a no-op.
+    const replay = commitMemoryDreamSession(db, {
+      runId,
+      sourceSessionId: "sess-partial",
+      sessionPath: "/tmp/sess-partial.jsonl",
+      cwd: "/tmp",
+      processedMtimeMs: 1000,
+      contentHash: "h1",
+      minedMessageOffset: 5,
+      totalMessages: 5,
+      plan: { operations: [{ op: "no_op", reason: "replay" }] },
+    });
+    assert.equal(replay.applied, false);
+    assert.equal(replay.reason, "already checkpointed");
+  });
+});

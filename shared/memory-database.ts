@@ -14,15 +14,14 @@ import {
 import { ensureMemorySecureDir } from "./memory-fs.ts";
 
 /**
- * Schema version. user_version uniquely determines shape: the wipe-on-bump
- * policy discards any older store and the dreamer re-mines from transcripts.
- * v6 shape: `source_sessions.mined_message_offset` (the incremental mining
- * cursor), `memories.normalized_text` with a partial unique index over
- * active rows (one active memory per wording), retirement evidence on the
- * memories row, and the memory-version chain as the complete life of a
- * memory (distilled wording + verbatim evidence + source session per event).
+ * Schema version. user_version uniquely determines shape. v6 and older
+ * stores are discarded and re-mined from transcripts (the wipe-on-bump
+ * policy); v7 is the first additive migration, preserving data.
+ * v7 shape: v6 plus `source_sessions.total_messages` (so a partial mine
+ * stays eligible — `mined_message_offset < total_messages`) and
+ * `workspace_state.last_failed_run_at_ms` (cadence failure backoff).
  */
-export const MEMORY_SCHEMA_VERSION = 6;
+export const MEMORY_SCHEMA_VERSION = 7;
 
 const SCHEMA_SQL = `
 CREATE TABLE workspace_state (
@@ -33,6 +32,9 @@ CREATE TABLE workspace_state (
   last_observed_transcript_mtime_ms INTEGER,
   recall_capacity_error TEXT,
   embedding_degraded_error TEXT,
+  -- Cadence failure backoff: set when a dream fails; auto dreaming is gated
+  -- on elapsed time since the last failure as well as the last success.
+  last_failed_run_at_ms INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -44,6 +46,10 @@ CREATE TABLE source_sessions (
   content_hash TEXT,
   -- Incremental mining cursor: number of visible session messages already mined.
   mined_message_offset INTEGER NOT NULL DEFAULT 0,
+  -- Visible-message count of the snapshot at checkpoint time. A checkpoint
+  -- with mined_message_offset < total_messages is a partial mine: the session
+  -- stays eligible and a later dream resumes at the cursor.
+  total_messages INTEGER NOT NULL DEFAULT 0,
   completed_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -238,6 +244,35 @@ function wipeMemoryDatabase(db: DatabaseSync): void {
   }
 }
 
+/**
+ * Additive v6 → v7 migration (first non-destructive bump): adds the partial-
+ * mine cursor column and the cadence failure-backoff column. Legacy v6
+ * checkpoints are treated as fully mined (`total_messages = cursor`), which
+ * preserves every existing memory and checkpoint; only sessions that were
+ * committed with a partial cursor stay as they were recorded.
+ */
+function migrateV6ToV7(db: DatabaseSync): void {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(
+      "ALTER TABLE source_sessions ADD COLUMN total_messages INTEGER NOT NULL DEFAULT 0",
+    );
+    db.exec("UPDATE source_sessions SET total_messages = mined_message_offset");
+    db.exec(
+      "ALTER TABLE workspace_state ADD COLUMN last_failed_run_at_ms INTEGER NOT NULL DEFAULT 0",
+    );
+    db.exec(`PRAGMA user_version = ${MEMORY_SCHEMA_VERSION}`);
+    db.exec("COMMIT");
+  } catch (err) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      // Nested rollback failure is ignored.
+    }
+    throw err;
+  }
+}
+
 function ensureSchema(db: DatabaseSync): void {
   const version = Number(
     (db.prepare("PRAGMA user_version").get() as { user_version: number })
@@ -249,6 +284,11 @@ function ensureSchema(db: DatabaseSync): void {
     );
   }
   if (version === MEMORY_SCHEMA_VERSION) {
+    validateMemorySchema(db);
+    return;
+  }
+  if (version === 6) {
+    migrateV6ToV7(db);
     validateMemorySchema(db);
     return;
   }

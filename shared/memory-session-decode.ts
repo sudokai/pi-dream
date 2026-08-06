@@ -8,9 +8,11 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
+  MEMORY_MINE_MESSAGE_CHARS,
+  MEMORY_MINE_SEGMENT_CHARS,
+  MEMORY_MINE_SEGMENT_MAX_MESSAGES,
+  MEMORY_MINE_TOOL_RESULT_CHARS,
   MEMORY_SESSION_MAX_BYTES,
-  MEMORY_SESSION_PAGE_DEFAULT,
-  MEMORY_SESSION_PAGE_MAX,
 } from "./memory-types.ts";
 import { redactMemorySensitiveText } from "./memory-redaction.ts";
 
@@ -360,12 +362,7 @@ export function loadVerifiedMemorySessionSnapshot(
  * text back into the transcript. They are not user evidence and must not be
  * mined as memory content.
  */
-const MEMORY_TOOL_NAMES: ReadonlySet<string> = new Set([
-  "memory_search",
-  "memory_list_sessions",
-  "memory_read_session",
-  "memory_commit_session",
-]);
+const MEMORY_TOOL_NAMES: ReadonlySet<string> = new Set(["memory_search"]);
 
 function isMemoryToolPart(part: MemoryDecodedPart): boolean {
   return (
@@ -397,54 +394,139 @@ export function isMemoryDreamerEvidence(m: MemoryDecodedMessage): boolean {
 }
 
 /**
- * Format a page of decoded messages as plain text for the dreamer.
- * Only user evidence passes: generated briefings and memory-tool output are
- * excluded, so the dreamer cannot mine its own generated memory.
+ * Deterministic truncation that keeps both edges of long content: the head
+ * carries the immediate statement, the tail carries conclusions/output
+ * endings — the parts of tool output and assistant reasoning that actually
+ * hold durable facts. The middle is dropped and its size marked.
  */
-export function formatMemorySessionPage(
+function truncateKeepEdges(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  if (maxChars <= 0) return "";
+  const head = Math.ceil(maxChars / 2);
+  const tail = Math.floor(maxChars / 2);
+  const omitted = text.length - maxChars;
+  return `${text.slice(0, head)}…[${omitted} chars omitted]…${text.slice(-tail)}`;
+}
+
+/** Format one message's evidence parts into a bounded plain-text block. */
+function formatEvidenceMessage(m: MemoryDecodedMessage, index: number): string {
+  const blocks: string[] = [];
+  for (const p of m.parts) {
+    if (p.type === "text") {
+      blocks.push(
+        truncateKeepEdges((p.text ?? "").trim(), MEMORY_MINE_MESSAGE_CHARS),
+      );
+    } else if (p.type === "toolCall") {
+      const input = truncateKeepEdges((p.input ?? "").trim(), 200);
+      blocks.push(`[toolCall ${p.tool ?? "?"} ${input}]`);
+    } else {
+      const body = (p.text ?? "").trim();
+      const truncated = truncateKeepEdges(body, MEMORY_MINE_TOOL_RESULT_CHARS);
+      blocks.push(
+        `[toolResult ${p.tool ?? "?"} ${p.isError ? "ERROR " : ""}${truncated}]`,
+      );
+    }
+  }
+  const body = blocks.join("\n").trim();
+  const text = redactMemorySensitiveText(body || "(no text)");
+  return `[${index}] ${String(m.role)}:\n${text}`;
+}
+
+/** The session's dreamer-visible messages (generated content and Dream
+ * memory-tool parts excluded), in order. The visible position is the index
+ * space the mined-message cursor counts against. */
+function visibleEvidenceMessages(
   session: MemoryDecodedSession,
-  opts?: { offset?: number; limit?: number },
-): {
-  totalMessages: number;
-  offset: number;
-  messages: Array<{ index: number; role: string; text: string }>;
-  nextOffset: number | null;
-} {
-  const offset = Math.max(0, opts?.offset ?? 0);
-  const rawLimit = opts?.limit ?? MEMORY_SESSION_PAGE_DEFAULT;
-  const limit = Math.min(Math.max(1, rawLimit), MEMORY_SESSION_PAGE_MAX);
-  const visible = session.messages
-    .map((message) => {
-      const parts = filterMemoryDreamerEvidenceParts(message);
-      return parts.length > 0 ? { ...message, parts } : null;
-    })
-    .filter((message): message is MemoryDecodedMessage => message !== null);
-  const total = visible.length;
-  const slice = visible.slice(offset, offset + limit);
-  const messages = slice.map((m, i) => {
-    const text = redactMemorySensitiveText(
-      m.parts
-        .map((p) => {
-          if (p.type === "text") return p.text ?? "";
-          if (p.type === "toolCall") {
-            return `[toolCall ${p.tool ?? "?"} ${p.input ?? ""}]`;
-          }
-          return `[toolResult ${p.tool ?? "?"} ${p.isError ? "ERROR " : ""}${p.text ?? ""}]`;
-        })
-        .join("\n")
-        .trim(),
-    );
-    return {
-      index: offset + i,
-      role: String(m.role),
-      text,
-    };
-  });
-  const next = offset + limit < total ? offset + limit : null;
-  return {
-    totalMessages: total,
-    offset,
-    messages,
-    nextOffset: next,
+): MemoryDecodedMessage[] {
+  const visible: MemoryDecodedMessage[] = [];
+  for (const message of session.messages) {
+    const parts = filterMemoryDreamerEvidenceParts(message);
+    if (parts.length > 0) {
+      visible.push({ ...message, parts });
+    }
+  }
+  return visible;
+}
+
+/** One deterministic LLM mining segment: a bounded slice of a session's
+ * visible evidence, formatted and truncated so its `text` never exceeds the
+ * char budget. Cursor semantics: consuming a segment advances the session's
+ * mined-message offset to `endIndex`; resuming at `startIndex` regenerates
+ * the exact same segment from the same snapshot. */
+export interface MemorySessionEvidenceSegment {
+  startIndex: number;
+  endIndex: number;
+  text: string;
+  /** chars of `text` — the token-budget metric (≈ chars/4 tokens). */
+  chars: number;
+}
+
+export interface MemorySegmentOptions {
+  /** Resume cursor: absolute visible-message index to start from. */
+  startOffset?: number;
+  /** Char budget per segment (default MEMORY_MINE_SEGMENT_CHARS). */
+  maxChars?: number;
+  /** Safety cap on messages per segment (default MEMORY_MINE_SEGMENT_MAX_MESSAGES). */
+  maxMessages?: number;
+}
+
+/** Number of dreamer-visible messages in a session (the total the mined
+ * cursor counts against). */
+export function countMemorySessionEvidence(
+  session: MemoryDecodedSession,
+): number {
+  return visibleEvidenceMessages(session).length;
+}
+
+/**
+ * Deterministically split a session's visible evidence into bounded segments
+ * for the mining driver. Segmentation depends only on the snapshot content
+ * and the resume offset, so a partial mine resumes to the exact same
+ * segments. Per-message truncation (edges kept) bounds every line well under
+ * the segment budget, so one message can never overflow a segment.
+ */
+export function segmentMemorySessionEvidence(
+  session: MemoryDecodedSession,
+  opts: MemorySegmentOptions = {},
+): MemorySessionEvidenceSegment[] {
+  const startOffset = Math.max(0, opts.startOffset ?? 0);
+  const maxChars = opts.maxChars ?? MEMORY_MINE_SEGMENT_CHARS;
+  const maxMessages = opts.maxMessages ?? MEMORY_MINE_SEGMENT_MAX_MESSAGES;
+  const visible = visibleEvidenceMessages(session);
+  const segments: MemorySessionEvidenceSegment[] = [];
+  let current: {
+    startIndex: number;
+    lines: string[];
+    chars: number;
+  } | null = null;
+
+  const flush = (): void => {
+    if (!current) return;
+    segments.push({
+      startIndex: current.startIndex,
+      endIndex: current.startIndex + current.lines.length,
+      text: current.lines.join("\n\n"),
+      chars: current.chars,
+    });
+    current = null;
   };
+
+  for (let v = startOffset; v < visible.length; v++) {
+    // v is the visible position: the same index space as the mined cursor.
+    const line = formatEvidenceMessage(visible[v]!, v);
+    if (
+      current &&
+      (current.chars + line.length > maxChars ||
+        current.lines.length >= maxMessages)
+    ) {
+      flush();
+    }
+    if (!current) {
+      current = { startIndex: v, lines: [], chars: 0 };
+    }
+    current.lines.push(line);
+    current.chars += line.length;
+  }
+  flush();
+  return segments;
 }

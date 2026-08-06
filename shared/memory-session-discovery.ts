@@ -85,6 +85,15 @@ function isSessionCheckpointCurrent(
 ): boolean {
   if (!checkpoint) return false;
   if (checkpoint.processedMtimeMs < file.mtimeMs) return false;
+  // A checkpoint whose cursor has not reached its recorded total is a
+  // partial mine: the session stays eligible and the next dream resumes at
+  // the cursor instead of treating it as fully processed.
+  if (
+    checkpoint.totalMessages > 0 &&
+    checkpoint.minedMessageOffset < checkpoint.totalMessages
+  ) {
+    return false;
+  }
   if (checkpoint.contentHash === null) return true;
   const currentHash = hashSessionFile(file.path);
   return currentHash !== null && currentHash === checkpoint.contentHash;

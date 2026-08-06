@@ -5,11 +5,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+  countMemorySessionEvidence,
   decodeMemorySession,
-  formatMemorySessionPage,
   loadDecodedMemorySession,
   loadVerifiedMemorySessionSnapshot,
   parseMemoryJsonlLine,
+  segmentMemorySessionEvidence,
 } from "./memory-session-decode.ts";
 
 test("parseMemoryJsonlLine tolerates junk", () => {
@@ -54,11 +55,29 @@ test("decodeMemorySession pages messages", () => {
     const session = loadDecodedMemorySession(file);
     assert.equal(session.sessionId, "sid");
     assert.equal(session.messages.length, 3);
-    const page = formatMemorySessionPage(session, { offset: 0, limit: 2 });
-    assert.equal(page.messages.length, 2);
-    assert.equal(page.nextOffset, 2);
-    const page2 = formatMemorySessionPage(session, { offset: 2, limit: 2 });
-    assert.equal(page2.nextOffset, null);
+    assert.equal(countMemorySessionEvidence(session), 3);
+    // A generous budget yields one segment covering every visible message.
+    const segments = segmentMemorySessionEvidence(session, {
+      maxChars: 10_000,
+    });
+    assert.equal(segments.length, 1);
+    assert.equal(segments[0]!.startIndex, 0);
+    assert.equal(segments[0]!.endIndex, 3);
+    assert.match(segments[0]!.text, /\[0\] user:/);
+    assert.match(segments[0]!.text, /\[2\] user:/);
+    // A tiny budget splits deterministically; resuming at a segment boundary
+    // regenerates the exact same tail.
+    const small = segmentMemorySessionEvidence(session, {
+      maxChars: 20,
+    });
+    assert.ok(small.length > 1, "tiny budget must split into several segments");
+    const tail = segmentMemorySessionEvidence(session, {
+      startOffset: small[1]!.startIndex,
+      maxChars: 20,
+    });
+    assert.equal(tail[0]!.startIndex, small[1]!.startIndex);
+    assert.equal(tail[0]!.endIndex, small[1]!.endIndex);
+    assert.equal(tail[0]!.text, small[1]!.text, "resume must be deterministic");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -149,10 +168,15 @@ test("generated briefings keep provenance and are not dreamer evidence", () => {
   );
   assert.equal(briefing.parts[0]!.type, "text");
 
-  const page = formatMemorySessionPage(decoded);
-  assert.equal(page.totalMessages, 1, "briefing excluded from dreamer input");
-  assert.equal(page.messages[0]!.role, "user");
-  assert.equal(page.messages[0]!.text, "I like tabs");
+  const segments = segmentMemorySessionEvidence(decoded);
+  assert.equal(
+    countMemorySessionEvidence(decoded),
+    1,
+    "briefing excluded from dreamer input",
+  );
+  assert.equal(segments.length, 1);
+  assert.match(segments[0]!.text, /\[0\] user:/);
+  assert.match(segments[0]!.text, /I like tabs/);
 });
 
 test("memory-tool parts are excluded without discarding mixed messages", () => {
@@ -201,14 +225,16 @@ test("memory-tool parts are excluded without discarding mixed messages", () => {
   ]);
   // Ordinary tool results and text alongside a memory call stay visible;
   // only the memory-tool parts are removed.
-  const page = formatMemorySessionPage(decoded);
-  assert.equal(page.totalMessages, 3);
-  assert.equal(page.messages[0]!.role, "assistant");
-  assert.equal(page.messages[0]!.text, "I found the relevant preference.");
-  assert.equal(page.messages[1]!.role, "assistant");
-  assert.equal(page.messages[1]!.text, "I will remember that.");
-  assert.equal(page.messages[2]!.role, "toolResult");
-  assert.equal(page.messages[2]!.text, "[toolResult bash done]");
+  const segments = segmentMemorySessionEvidence(decoded);
+  assert.equal(countMemorySessionEvidence(decoded), 3);
+  assert.equal(segments.length, 1);
+  const text = segments[0]!.text;
+  assert.match(text, /\[0\] assistant:/);
+  assert.match(text, /I found the relevant preference\./);
+  assert.match(text, /\[1\] assistant:/);
+  assert.match(text, /I will remember that\./);
+  assert.match(text, /\[2\] toolResult:/);
+  assert.match(text, /\[toolResult bash done\]/);
 
   // Decoded provenance remains available for consumers that want it.
   assert.equal(decoded.messages[0]!.role, "assistant");

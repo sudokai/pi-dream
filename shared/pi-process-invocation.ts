@@ -39,18 +39,6 @@ export function getMemoryPiInvocation(args: string[]): {
   return { command: "pi", args };
 }
 
-/** Task prompt for the detached dreamer child: mine the sessions in the run manifest. */
-export const MEMORY_DREAMER_TASK =
-  "Run one workspace memory dream pass for the sessions in the run manifest.";
-
-/** Child tool allowlist passed as `--tools`; must cover every registered dreamer tool. */
-export const MEMORY_DREAMER_CHILD_TOOLS = [
-  "memory_list_sessions",
-  "memory_read_session",
-  "memory_commit_session",
-  "memory_recall",
-] as const;
-
 export interface BuildMemoryDreamerSpawnInput {
   cwd: string;
   workspaceId: string;
@@ -71,31 +59,28 @@ export function buildMemoryDreamerSpawnArgs(
   input: BuildMemoryDreamerSpawnInput,
 ): { args: string[]; env: Record<string, string> } {
   const childEntry = memoryExtensionPath("child", "memory-dream-entry.ts");
-  const dreamerPrompt = memoryExtensionPath("prompts", "memory-dreamer.md");
 
+  // The dreamer is a deterministic batch pipeline, not an agent: no prompt,
+  // no tools, no system-prompt append. The extension body runs the mining
+  // driver at session_start (print mode fires session_start unconditionally,
+  // even with no prompt) and shuts the process down when the pass ends.
   const args = [
     "--mode",
     "json",
-    "-p",
     "--no-session",
     "--no-extensions",
     "--no-context-files",
     "--no-skills",
     "--no-prompt-templates",
     "--no-themes",
-    "--append-system-prompt",
-    dreamerPrompt,
     "-e",
     childEntry,
-    "--tools",
-    MEMORY_DREAMER_CHILD_TOOLS.join(","),
     "--model",
     input.dreamModel,
   ];
   if (input.dreamThinking) {
     args.push("--thinking", input.dreamThinking);
   }
-  args.push(MEMORY_DREAMER_TASK);
 
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),

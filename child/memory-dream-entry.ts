@@ -1,28 +1,40 @@
 /**
  * Detached memory dreamer child extension entry.
- * Registers internal dreamer tools (ingestion only) and finalizes the run on
- * agent_settled after the dreamer has finished committing sessions.
+ *
+ * The dreamer is NOT an agent: there is no prompt, no tools, and no agent
+ * loop. Print mode fires session_start unconditionally (even with no prompt),
+ * and at that seam the extension runs the deterministic mining driver
+ * (shared/memory-miner.ts), finalizes the run (checkpoint coverage, the
+ * embeddings projection, claim release), and shuts the process down. The
+ * driver owns the cursor and the budgets, so the model is a pure function of
+ * bounded segments: it cannot re-read, lose its place, or loop.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import type { DatabaseSync } from "node:sqlite";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { completeMemoryModelCall } from "../shared/memory-completion.ts";
+import { loadMemoryConfigForWorkspace } from "../shared/memory-config.ts";
 import {
   openMemoryDatabaseAtPath,
   closeMemoryDatabase,
 } from "../shared/memory-database.ts";
 import {
+  formatSessionModelId,
+  resolveMemoryModel,
+} from "../shared/memory-model.ts";
+import { runMemoryDreamMining } from "../shared/memory-miner.ts";
+import {
   markMemoryRunRunning,
   releaseMemoryRunClaim,
 } from "../shared/memory-run-claim.ts";
-import {
-  MEMORY_DREAM_MAX_NUDGES,
-  MEMORY_EMBEDDING_MODEL_ID,
-} from "../shared/memory-types.ts";
-import { registerMemoryDreamTools } from "./memory-dream-tools.ts";
-import {
-  finalizeMemoryDreamRun,
-  findUncheckpointedSessions,
-} from "./memory-dream-finalize.ts";
+import { MEMORY_EMBEDDING_MODEL_ID } from "../shared/memory-types.ts";
+import { resolveMemoryWorkspaceId } from "../shared/memory-workspace-id.ts";
+import { finalizeMemoryDreamRun } from "./memory-dream-finalize.ts";
 
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -30,6 +42,96 @@ function requireEnv(name: string): string {
     throw new Error(`Memory dreamer missing required env ${name}`);
   }
   return v.trim();
+}
+
+/**
+ * Best-effort append-only audit log of dreamer steps, written to
+ * `<runDir>/trace.jsonl` (the run dir is retained on failure, so this is what
+ * makes a failed dream diagnosable). Never throws; a trace write must never
+ * fail a pass.
+ */
+function createDreamerTrace(manifestPath: string) {
+  const tracePath = path.join(path.dirname(manifestPath), "trace.jsonl");
+  return (event: Record<string, unknown>): void => {
+    try {
+      fs.appendFileSync(
+        tracePath,
+        JSON.stringify({ ts: Date.now(), ...event }) + "\n",
+        { encoding: "utf-8", flag: "a", mode: 0o600 },
+      );
+    } catch {
+      // Tracing is best-effort.
+    }
+  };
+}
+
+/** Run the deterministic mining pass, then finalize (embeddings + claim). */
+async function runDetachedMemoryDream(input: {
+  db: DatabaseSync;
+  runId: string;
+  manifestPath: string;
+  cwd: string;
+  ctx: ExtensionContext;
+}): Promise<void> {
+  const { db, runId, manifestPath, cwd, ctx } = input;
+  const workspaceId =
+    process.env.PI_DREAM_WORKSPACE_ID?.trim() || resolveMemoryWorkspaceId(cwd);
+  const configResult = loadMemoryConfigForWorkspace(workspaceId);
+  if (!configResult.ok) {
+    throw new Error(configResult.error);
+  }
+  const config = configResult.config;
+  const sessionModelId = formatSessionModelId(ctx.model);
+  const resolved = resolveMemoryModel(
+    "dreamModel",
+    config.dreamModel,
+    sessionModelId,
+    ctx.modelRegistry as never,
+    config.dreamThinking,
+  );
+  if (!resolved.ok) {
+    throw new Error(resolved.error);
+  }
+
+  const complete = (call: {
+    system: string;
+    user: string;
+    signal?: AbortSignal;
+  }) =>
+    completeMemoryModelCall(
+      ctx.modelRegistry as never,
+      resolved.resolved,
+      call,
+    );
+
+  const result = await runMemoryDreamMining({
+    db,
+    runId,
+    manifestPath,
+    cwd,
+    complete,
+    signal: ctx.signal,
+    log: createDreamerTrace(manifestPath),
+  });
+
+  const embeddingModel =
+    process.env.PI_DREAM_EMBEDDING_MODEL?.trim() || MEMORY_EMBEDDING_MODEL_ID;
+  const finalized = await finalizeMemoryDreamRun({
+    db,
+    runId,
+    manifestPath,
+    // The driver reports its own failure (budgets, malformed output); when
+    // it succeeded, finalize verifies checkpoint coverage independently.
+    errorText: result.ok ? null : result.errorText,
+    embeddingModel,
+  });
+  if (!result.ok) {
+    console.error(`Memory dream failed: ${result.errorText}`);
+  } else if (!finalized.finalized) {
+    console.error(
+      `Memory dream finalized with status ${finalized.status}: ${finalized.errorText ?? "unknown"}`,
+    );
+  }
 }
 
 export default function memoryDreamChildExtension(pi: ExtensionAPI) {
@@ -72,67 +174,66 @@ export default function memoryDreamChildExtension(pi: ExtensionAPI) {
     return;
   }
 
-  registerMemoryDreamTools(pi, {
-    db,
-    runId,
-    manifestPath,
-    cwd,
-  });
-
-  let finalized = false;
-
-  // Server-side completion: the dreamer sometimes settles before committing
-  // every manifest session (most often the tail of a large batch). agent_end
-  // is the seam where a queued follow-up is still drained by the post-run
-  // loop — agent_settled fires only after that drain, so it is too late to
-  // keep the run alive. Queue a targeted nudge so the model finishes the
-  // remaining sessions; the budget caps the loop so a stuck run still fails
-  // loudly at finalize instead of spinning forever.
-  let nudgeCount = 0;
-  pi.on("agent_end", () => {
-    if (finalized) return;
-    try {
-      const uncommitted = findUncheckpointedSessions(db, manifestPath);
-      if (uncommitted.length === 0) return;
-      if (nudgeCount >= MEMORY_DREAM_MAX_NUDGES) return;
-      nudgeCount += 1;
-      const ids = uncommitted.map((entry) => entry.sessionId).join(", ");
-      pi.sendUserMessage(
-        `You are not finished. ${uncommitted.length} manifest session(s) are still uncommitted: ${ids}. For each one, call memory_read_session (if not yet read) then memory_commit_session — use a no_op operation when nothing durable was found. You must commit every session before stopping; do not summarize or end early.`,
-        { deliverAs: "followUp" },
-      );
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      console.error(`Memory dreamer completion nudge failed: ${detail}`);
-    }
-  });
-
-  pi.on("agent_settled", () => {
-    if (finalized) return;
-    finalized = true;
+  let started = false;
+  const start = (ctx: ExtensionContext): void => {
+    if (started) return;
+    started = true;
     void (async () => {
       try {
-        await finalizeMemoryDreamRun({
-          db,
+        await runDetachedMemoryDream({
+          db: db!,
           runId,
           manifestPath,
-          // The launcher always sets the embedding model; the default here is
-          // defensive for manually invoked children.
-          embeddingModel:
-            process.env.PI_DREAM_EMBEDDING_MODEL?.trim() ||
-            MEMORY_EMBEDDING_MODEL_ID,
+          cwd,
+          ctx,
         });
       } catch (err) {
+        // A driver throw (model resolution, config, infrastructure) still
+        // finalizes so bookkeeping stays consistent: failure backoff, the
+        // embeddings projection, and the retained run dir for diagnosis.
         const detail = err instanceof Error ? err.message : String(err);
-        console.error(`Memory dreamer finalization failed: ${detail}`);
+        console.error(`Memory dream failed: ${detail}`);
+        const embeddingModel =
+          process.env.PI_DREAM_EMBEDDING_MODEL?.trim() ||
+          MEMORY_EMBEDDING_MODEL_ID;
         try {
-          releaseMemoryRunClaim(db, runId, detail);
-        } catch {
-          // Claim release is best-effort after finalization failure.
+          await finalizeMemoryDreamRun({
+            db: db!,
+            runId,
+            manifestPath,
+            errorText: detail,
+            embeddingModel,
+          });
+        } catch (finalizeErr) {
+          const releaseDetail =
+            finalizeErr instanceof Error
+              ? finalizeErr.message
+              : String(finalizeErr);
+          console.error(`Memory dream finalization failed: ${releaseDetail}`);
+          try {
+            releaseMemoryRunClaim(db!, runId, detail);
+          } catch {
+            // Claim release is best-effort after finalization failure.
+          }
         }
       } finally {
-        closeMemoryDatabase(db);
+        try {
+          closeMemoryDatabase(db);
+        } catch {
+          // Close failures are non-fatal at shutdown.
+        }
+        try {
+          ctx.shutdown();
+        } catch {
+          process.exit(0);
+        }
       }
     })();
-  });
+  };
+
+  // Print mode fires session_start unconditionally even with no prompt; the
+  // ctx there carries the model registry and shutdown. agent_settled is a
+  // backstop for runtimes that only deliver a registry ctx at the agent seam.
+  pi.on("session_start", (_event, ctx) => start(ctx));
+  pi.on("agent_settled", (_event, ctx) => start(ctx));
 }

@@ -11,6 +11,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { ensureMemoryEmbeddings } from "../shared/memory-embedding.ts";
 import {
   getSourceSessionCheckpoint,
+  markMemoryDreamFailure,
   setMemoryEmbeddingDegradedError,
 } from "../shared/memory-repository.ts";
 import { finalizeMemoryRun } from "../shared/memory-run-claim.ts";
@@ -124,6 +125,11 @@ export async function finalizeMemoryDreamRun(
   }
 
   const status = errorText ? "failed" : "completed";
+  // Cadence backoff: a failed dream must not re-fire immediately on the same
+  // backlog; auto dreaming also waits minMinutes after the last failure.
+  if (status === "failed") {
+    markMemoryDreamFailure(input.db);
+  }
   const runDir = path.dirname(input.manifestPath);
 
   // On failure, retain the run dir (manifest + trace.jsonl + child.stderr.log)

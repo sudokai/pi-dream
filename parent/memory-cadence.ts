@@ -45,6 +45,14 @@ export function evaluateMemoryDreamCadence(
   const lastRun = prior.lastSuccessfulRunAtMs;
   const minutesSince =
     lastRun > 0 ? (nowMs - lastRun) / 60_000 : Number.POSITIVE_INFINITY;
+  // Failure backoff: when the most recent dream failed, wait the same
+  // minMinutes window before re-firing, so a broken backlog is not retried
+  // on every cadence tick.
+  const lastFailure = prior.lastFailedRunAtMs;
+  const minutesSinceFailure =
+    lastFailure > 0 && lastFailure > lastRun
+      ? (nowMs - lastFailure) / 60_000
+      : Number.POSITIVE_INFINITY;
 
   // A global mtime watermark cannot represent capped runs: a newer processed
   // transcript would hide older uncheckpointed sessions. Check per-session
@@ -65,6 +73,11 @@ export function evaluateMemoryDreamCadence(
       `minutes ${minutesSince === Number.POSITIVE_INFINITY ? "∞" : minutesSince.toFixed(1)}/${input.config.minMinutes}`,
     );
   }
+  if (minutesSinceFailure < input.config.minMinutes) {
+    reasons.push(
+      `failure backoff ${minutesSinceFailure === Number.POSITIVE_INFINITY ? "∞" : minutesSinceFailure.toFixed(1)}/${input.config.minMinutes}`,
+    );
+  }
   if (!transcriptAdvanced) {
     reasons.push("no uncheckpointed transcripts");
   }
@@ -73,6 +86,7 @@ export function evaluateMemoryDreamCadence(
     enabled &&
     turns >= input.config.minTurns &&
     minutesSince >= input.config.minMinutes &&
+    minutesSinceFailure >= input.config.minMinutes &&
     transcriptAdvanced;
 
   return {
